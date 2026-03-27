@@ -9,15 +9,24 @@ from llm_archive.schema import IngestedMessage, IngestedThread
 DEFAULT_ROOT = Path.home() / ".claude" / "projects"
 
 
-def _parse_timestamp(ts: str | None) -> int | None:
-    if not ts:
+def _parse_timestamp(ts) -> int | None:
+    """Parse ISO string, epoch seconds, or epoch milliseconds → epoch ms."""
+    if ts is None:
         return None
-    from datetime import datetime, timezone
-    try:
-        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-        return int(dt.timestamp() * 1000)
-    except Exception:
-        return None
+    if isinstance(ts, (int, float)):
+        return int(ts) if ts > 1e12 else int(ts * 1000)
+    if isinstance(ts, str):
+        from datetime import datetime, timezone
+        try:
+            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            return int(dt.timestamp() * 1000)
+        except Exception:
+            try:
+                v = float(ts)
+                return int(v) if v > 1e12 else int(v * 1000)
+            except Exception:
+                return None
+    return None
 
 
 def _flatten_content(content) -> str:
@@ -48,7 +57,7 @@ def _flatten_content(content) -> str:
             parts.append(f"[Tool: {name}]\n{cmd}")
         elif btype == "tool_result":
             content_inner = block.get("content", "")
-            text = _flatten_content(content_inner)
+            text = _flatten_content(content_inner)[:500]
             parts.append(f"[Tool result]\n{text}")
         else:
             # unknown block type — try to extract any text-like field
@@ -60,7 +69,19 @@ def _flatten_content(content) -> str:
     return "\n\n".join(p for p in parts if p.strip())
 
 
-def _parse_jsonl(path: Path) -> IngestedThread | None:
+def _load_sessions_index(project_dir: Path) -> dict[str, dict]:
+    """Load sessions-index.json and return a dict keyed by sessionId."""
+    index_path = project_dir / "sessions-index.json"
+    if not index_path.exists():
+        return {}
+    try:
+        data = json.loads(index_path.read_text(encoding="utf-8"))
+        return {e["sessionId"]: e for e in data.get("entries", []) if "sessionId" in e}
+    except Exception:
+        return {}
+
+
+def _parse_jsonl(path: Path, index_meta: dict | None = None) -> IngestedThread | None:
     lines = []
     try:
         for line in path.read_text(encoding="utf-8").splitlines():
@@ -140,11 +161,23 @@ def _parse_jsonl(path: Path) -> IngestedThread | None:
     if not messages:
         return None
 
-    # Try to derive title from first user message
-    first_user = next((m for m in messages if m.role == "user"), None)
-    title = None
-    if first_user:
-        title = first_user.content[:80].split("\n")[0].strip()
+    # Prefer summary from sessions-index.json; fall back to first user message
+    meta = index_meta or {}
+    title = meta.get("summary") or None
+    if not title:
+        first_user = next((m for m in messages if m.role == "user"), None)
+        if first_user:
+            title = first_user.content[:80].split("\n")[0].strip()
+
+    # Use index timestamps if available (more reliable than JSONL)
+    if meta.get("created") and created_at is None:
+        created_at = _parse_timestamp(meta["created"])
+    if meta.get("modified") and updated_at is None:
+        updated_at = _parse_timestamp(meta["modified"])
+
+    thread_metadata: dict = {}
+    if meta.get("projectPath"):
+        thread_metadata["projectPath"] = meta["projectPath"]
 
     return IngestedThread(
         id=thread_id,
@@ -171,10 +204,13 @@ class ClaudeCodeIngestor(BaseIngestor):
     async def threads(self, since: int | None = None) -> AsyncIterator[IngestedThread]:
         if not self.root.exists():
             return
-        for jsonl_path in sorted(self.root.rglob("*.jsonl")):
-            thread = _parse_jsonl(jsonl_path)
-            if thread is None:
-                continue
-            if since and thread.updated_at and thread.updated_at < since:
-                continue
-            yield thread
+        for project_dir in sorted(p for p in self.root.iterdir() if p.is_dir()):
+            index = _load_sessions_index(project_dir)
+            for jsonl_path in sorted(project_dir.glob("*.jsonl")):
+                meta = index.get(jsonl_path.stem, {})
+                thread = _parse_jsonl(jsonl_path, meta)
+                if thread is None:
+                    continue
+                if since and thread.updated_at and thread.updated_at < since:
+                    continue
+                yield thread
