@@ -1,21 +1,7 @@
 from __future__ import annotations
 import json
-import re
 from pathlib import Path
 from typing import AsyncIterator
-
-# Tags injected by Claude Code IDE integration that pollute message content
-_STRIP_TAGS = re.compile(
-    r'<(?:ide_opened_file|local-command-caveat|command-name|command-message|command-args|system-reminder)'
-    r'[\s\S]*?</[^>]+>',
-    re.DOTALL,
-)
-
-
-def _clean_user_text(s: str) -> str:
-    """Remove Claude Code IDE injection tags, collapse whitespace."""
-    s = _STRIP_TAGS.sub('', s)
-    return re.sub(r'\s+', ' ', s).strip()
 
 from llm_archive.ingestors.base import BaseIngestor
 from llm_archive.schema import IngestedMessage, IngestedThread
@@ -141,8 +127,7 @@ def _parse_jsonl(path: Path, index_meta: dict | None = None) -> IngestedThread |
 
         content_raw = msg_data.get("content", "")
         content = _flatten_content(content_raw)
-        if role == "user":
-            content = _clean_user_text(content)
+        # Store raw content — cleaning is done at read time via db.clean_content()
         if not content.strip():
             continue
 

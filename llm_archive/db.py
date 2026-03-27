@@ -1,12 +1,40 @@
 from __future__ import annotations
 import hashlib
 import json
+import re
 import sqlite3
 from pathlib import Path
 
 from llm_archive.schema import IngestedThread, IngestedMessage
 
 DB_PATH = Path.home() / ".llm-archive" / "archive.db"
+
+# Tags injected by Claude Code IDE/system that pollute user message content.
+# Extend this list as new injection patterns are discovered.
+_INJECTION_TAGS = re.compile(
+    r'<(?:'
+    r'ide_opened_file'
+    r'|local-command-caveat'
+    r'|command-name'
+    r'|command-message'
+    r'|command-args'
+    r'|system-reminder'
+    r'|user-prompt-submit-hook'
+    r')[\s\S]*?</[^>]+>',
+    re.DOTALL,
+)
+
+
+def clean_content(text: str) -> str:
+    """Strip known IDE/system injection tags from message content.
+
+    Raw content is stored in the database; call this at read/display time.
+    To add a new tag: extend _INJECTION_TAGS above — applies to all future reads.
+    """
+    if not text:
+        return text
+    cleaned = _INJECTION_TAGS.sub('', text)
+    return re.sub(r'\s+', ' ', cleaned).strip()
 
 DDL = """
 PRAGMA journal_mode=WAL;
