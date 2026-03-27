@@ -57,12 +57,13 @@ CREATE TABLE IF NOT EXISTS threads (
 );
 
 CREATE TABLE IF NOT EXISTS messages (
-    id          TEXT PRIMARY KEY,
-    thread_id   TEXT    NOT NULL,
-    role        TEXT    NOT NULL,
-    content     TEXT    NOT NULL,
-    created_at  INTEGER,
-    metadata    TEXT,
+    id              TEXT PRIMARY KEY,
+    thread_id       TEXT    NOT NULL,
+    role            TEXT    NOT NULL,
+    content         TEXT    NOT NULL,
+    content_clean   TEXT,
+    created_at      INTEGER,
+    metadata        TEXT,
     FOREIGN KEY (thread_id) REFERENCES threads(id)
 );
 
@@ -131,10 +132,10 @@ def save_thread(con: sqlite3.Connection, thread: IngestedThread) -> bool:
     )
     for msg in thread.messages:
         con.execute(
-            "INSERT OR REPLACE INTO messages(id, thread_id, role, content, created_at, metadata) "
-            "VALUES(?,?,?,?,?,?)",
-            (msg.id, msg.thread_id, msg.role, msg.content, msg.created_at,
-             json.dumps(msg.metadata) if msg.metadata else None),
+            "INSERT OR REPLACE INTO messages(id, thread_id, role, content, content_clean, created_at, metadata) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (msg.id, msg.thread_id, msg.role, msg.content, clean_content(msg.content),
+             msg.created_at, json.dumps(msg.metadata) if msg.metadata else None),
         )
     con.commit()
     return True

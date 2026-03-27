@@ -12,6 +12,17 @@ LOGIN_URL = "https://claude.ai"
 API_BASE = "https://claude.ai/api"
 RATE_LIMIT_DELAY = 1.0  # seconds between requests
 
+BROWSER_HEADERS = {
+    "user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+    "accept": "application/json",
+    "accept-language": "en-US,en;q=0.9",
+    "referer": "https://claude.ai/",
+    "sec-fetch-dest": "empty",
+    "sec-fetch-mode": "cors",
+    "sec-fetch-site": "same-origin",
+    "anthropic-client-platform": "web_claude_ai",
+}
+
 
 class ClaudeIngestor(BaseIngestor):
     source_id = "claude"
@@ -24,8 +35,10 @@ class ClaudeIngestor(BaseIngestor):
         return True
 
     async def init(self, **kwargs) -> None:
-        from llm_archive.auth.playwright import login_headful
-        await login_headful("claude", LOGIN_URL)
+        from llm_archive.auth.playwright import auth_path, login_headful
+        # Skip re-auth if valid session already exists
+        if not auth_path("claude").exists() or kwargs.get("reauth"):
+            await login_headful("claude", LOGIN_URL)
         self._cookies = {}  # will be loaded on first use
 
     async def _get_cookies(self) -> dict[str, str]:
@@ -66,7 +79,7 @@ class ClaudeIngestor(BaseIngestor):
         return self._org_id
 
     async def threads(self, since: int | None = None) -> AsyncIterator[IngestedThread]:
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=30, headers=BROWSER_HEADERS) as client:
             try:
                 org_id = await self._get_org_id(client)
             except PermissionError:
