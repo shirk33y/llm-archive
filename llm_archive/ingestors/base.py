@@ -6,7 +6,7 @@ from llm_archive.schema import IngestedThread
 
 
 class BaseIngestor(ABC):
-    source_id: str  # e.g. 'claude_code', 'claude', 'opencode', 'windsurf'
+    source_id: str  # e.g. 'claudecode', 'claude', 'opencode', 'windsurf'
 
     @abstractmethod
     async def requires_auth(self) -> bool:
@@ -22,3 +22,6 @@ class BaseIngestor(ABC):
     async def threads(self, since: int | None = None) -> AsyncIterator[IngestedThread]:
         """Yield threads, optionally only those updated after `since` (unix ms)."""
         ...
+
+    async def count_threads(self, since: int | None = None) -> int | None:
+        return None

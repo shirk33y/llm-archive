@@ -22,6 +22,21 @@ class OpenCodeIngestor(BaseIngestor):
     async def init(self, **kwargs) -> None:
         pass
 
+    async def count_threads(self, since: int | None = None) -> int:
+        if not self.db_path.exists():
+            return 0
+        con = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
+        try:
+            query = "SELECT COUNT(*) FROM session"
+            params: list = []
+            if since:
+                query += " WHERE time_updated >= ?"
+                params.append(since)
+            row = con.execute(query, params).fetchone()
+            return row[0] if row else 0
+        finally:
+            con.close()
+
     async def threads(self, since: int | None = None) -> AsyncIterator[IngestedThread]:
         if not self.db_path.exists():
             return
