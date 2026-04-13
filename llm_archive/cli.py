@@ -95,7 +95,7 @@ async def _do_ingest(con, ingestor, since: int | None, force: bool = False):
         TaskProgressColumn(),
         console=progress_console,
         transient=True,
-        disable=True,  # Disable progress bar to avoid conflicts with logging
+        disable=True,  # Disable to avoid conflicts with logging
     ) as progress:
         task = progress.add_task(f"  {ingestor.source_id}", total=total)
         try:

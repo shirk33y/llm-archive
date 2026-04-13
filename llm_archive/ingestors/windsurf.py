@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import AsyncIterator
 
 from llm_archive.ingestors.base import BaseIngestor
-from llm_archive.logging import get_logger
+from llm_archive.logging import get_logger, retry_async
 from llm_archive.schema import IngestedMessage, IngestedPart, IngestedThread
 
 logger = get_logger("windsurf")
@@ -188,6 +188,7 @@ class LanguageServerClient:
         # In production, this should be extracted from the browser
         return "ae3e783d-cf0f-4d70-82ed-bc302ac66605"
     
+    @retry_async(max_retries=3, base_delay=1.0)
     def get_trajectory(self, cascade_id: str) -> dict | None:
         """Get trajectory data for a cascade_id"""
         url = f"{self.base}/exa.language_server_pb.LanguageServerService/GetCascadeTrajectory"
@@ -201,23 +202,19 @@ class LanguageServerClient:
         
         protobuf_message = encode_get_cascade_request(cascade_id)
         
-        try:
-            req = urllib.request.Request(url, data=protobuf_message, headers=headers)
-            with urllib.request.urlopen(req, timeout=10) as response:
-                if response.status != 200:
-                    return None
-                
-                content = response.read()
-                
-                # Decompress if gzipped
-                if response.headers.get('Content-Encoding') == 'gzip':
-                    content = gzip.decompress(content)
-                
-                # Decode the trajectory
-                return self._decode_trajectory(content)
-        except Exception as e:
-            logger.error(f"Error getting trajectory for {cascade_id}: {e}")
-            return None
+        req = urllib.request.Request(url, data=protobuf_message, headers=headers)
+        with urllib.request.urlopen(req, timeout=10) as response:
+            if response.status != 200:
+                return None
+            
+            content = response.read()
+            
+            # Decompress if gzipped
+            if response.headers.get('Content-Encoding') == 'gzip':
+                content = gzip.decompress(content)
+            
+            # Decode the trajectory
+            return self._decode_trajectory(content)
     
     def _decode_trajectory(self, data: bytes) -> dict:
         """Decode GetCascadeTrajectoryResponse"""

@@ -1,7 +1,11 @@
 """Logging utilities for llm-archive."""
 from __future__ import annotations
+import asyncio
 import logging
 import sys
+from functools import wraps
+from rich.logging import RichHandler
+from rich.console import Console
 
 # Global verbose flag
 _verbose = False
@@ -14,10 +18,9 @@ class ComponentFormatter(logging.Formatter):
         if "." in name:
             name = name.split(".")[-1]
         
-        # Format with component prefix and level
+        # Format with component prefix (RichHandler will add colored level)
         message = super().format(record)
-        level = record.levelname
-        return f"{level:8s} [{name}] {message}"
+        return f"[{name}] {message}"
 
 # Configure root logger
 root_logger = logging.getLogger()
@@ -32,8 +35,16 @@ def _setup_handler():
     for handler in root_logger.handlers[:]:
         root_logger.removeHandler(handler)
     
-    # Add plain stream handler to stderr
-    handler = logging.StreamHandler(sys.stderr)
+    # Use stderr console for logging
+    stderr_console = Console(stderr=True)
+    handler = RichHandler(
+        console=stderr_console,
+        rich_tracebacks=True,
+        show_time=False,
+        show_path=False,
+        omit_repeated_times=False,
+        show_level=False,  # Don't show level name, but RichHandler still uses colors
+    )
     handler.setFormatter(ComponentFormatter("%(message)s"))
     root_logger.addHandler(handler)
 
@@ -41,7 +52,7 @@ def _setup_handler():
 _setup_handler()
 
 def set_console(console) -> None:
-    """Set the console instance (no-op for plain handler)."""
+    """Set the console instance (no-op, we use stderr console)."""
     pass
 
 def set_verbose(verbose: bool) -> None:
@@ -79,3 +90,22 @@ def log(message: str, level: str = "info", source: str | None = None) -> None:
     
     log_level = level_map.get(level.lower(), logging.INFO)
     root_logger.log(log_level, message)
+
+def retry_async(max_retries: int = 3, base_delay: float = 1.0):
+    """Async retry decorator with exponential backoff."""
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            for attempt in range(max_retries):
+                try:
+                    return await func(*args, **kwargs)
+                except Exception as e:
+                    if attempt == max_retries - 1:
+                        raise
+                    delay = base_delay * (2 ** attempt)
+                    logger = get_logger("retry")
+                    logger.warning(f"Attempt {attempt + 1}/{max_retries} failed: {e}. Retrying in {delay:.1f}s...")
+                    await asyncio.sleep(delay)
+            return None
+        return wrapper
+    return decorator

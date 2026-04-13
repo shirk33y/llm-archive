@@ -9,7 +9,7 @@ from pathlib import Path
 import httpx
 
 from llm_archive.ingestors.base import BaseIngestor
-from llm_archive.logging import get_logger
+from llm_archive.logging import get_logger, retry_async
 from llm_archive.schema import IngestedMessage, IngestedThread
 
 logger = get_logger("deepseek")
