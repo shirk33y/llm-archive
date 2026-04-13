@@ -741,24 +741,24 @@ class WindsurfIngestor(BaseIngestor):
         logger.info(f"Found {len(cascade_ids)} cascade files")
         
         for cascade_id in cascade_ids:
-            logger.debug(f"Fetching trajectory for {cascade_id}")
+            logger.debug(f"Fetching conversation for {cascade_id}")
             trajectory = ls.get_trajectory(cascade_id)
             
             if not trajectory:
                 logger.warning(f"Failed to fetch {cascade_id}")
                 continue
             
-            logger.debug(f"Got trajectory with {trajectory['step_count']} steps")
+            logger.debug(f"Got conversation with {trajectory['step_count']} steps")
             
             # Convert decoded steps to messages
-            thread = self._convert_trajectory_to_thread(trajectory, cascade_id)
+            thread = self._convert_to_thread(trajectory, cascade_id)
             
             if since and thread.updated_at and thread.updated_at < since:
                 continue
             
             yield thread
     
-    def _convert_trajectory_to_thread(self, trajectory: dict, cascade_id: str) -> IngestedThread:
+    def _convert_to_thread(self, trajectory: dict, cascade_id: str) -> IngestedThread:
         """Convert decoded trajectory to IngestedThread"""
         traj_id = trajectory.get("trajectory_id", cascade_id)
         steps = trajectory.get("steps", [])

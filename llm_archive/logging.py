@@ -11,17 +11,12 @@ from rich.console import Console
 _verbose = False
 _console: Console | None = None
 
-# Custom formatter to show just [component] instead of full logger name
+# Custom formatter to show just the message without component prefix
 class ComponentFormatter(logging.Formatter):
     def format(self, record):
-        # Extract component name from logger name (e.g., "deepseek" from "llm_archive.deepseek")
-        name = record.name
-        if "." in name:
-            name = name.split(".")[-1]
-        
-        # Format with component prefix (RichHandler will add colored level)
+        # Return just the message, no component prefix
         message = super().format(record)
-        return f"[{name}] {message}"
+        return message
 
 # Configure root logger
 root_logger = logging.getLogger()
