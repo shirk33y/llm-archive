@@ -10,7 +10,7 @@ A CLI tool that dumps and syncs AI conversations from multiple sources into a lo
 | `opencode` | ✅ working | local SQLite (`~/.local/share/opencode/opencode.db`) |
 | `claude` | ✅ working | claude.ai REST API + Playwright auth |
 | `deepseek` | ✅ working | deepseek.com REST API + Playwright auth |
-| `windsurf` | ⚠️ blocked | `.pb` files are encrypted — cannot parse |
+| `windsurf` | ✅ working | windsurf.ai REST API + Playwright auth |
 | ChatGPT | 🔜 planned | REST API |
 
 ## Installation
@@ -30,6 +30,7 @@ uv run llm-archive init claude_code   # imports all Claude Code sessions
 uv run llm-archive init opencode      # imports all OpenCode sessions
 uv run llm-archive init claude        # opens browser → log in → dumps all claude.ai conversations
 uv run llm-archive init deepseek      # opens browser → log in → dumps all deepseek.com conversations
+uv run llm-archive init windsurf      # opens browser → log in → dumps all windsurf.ai conversations
 ```
 
 ### Incremental sync
@@ -77,7 +78,7 @@ llm_archive/
     ├── opencode.py     # ~/.local/share/opencode/opencode.db
     ├── claude.py       # claude.ai REST API
     ├── deepseek.py     # deepseek.com REST API
-    └── windsurf.py     # scaffolded (encrypted .pb, WIP)
+    └── windsurf.py     # windsurf.ai REST API
 ```
 
 ## Tests
