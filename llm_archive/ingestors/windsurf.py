@@ -188,7 +188,6 @@ class LanguageServerClient:
         # In production, this should be extracted from the browser
         return "ae3e783d-cf0f-4d70-82ed-bc302ac66605"
     
-    @retry_async(max_retries=3, base_delay=1.0)
     def get_trajectory(self, cascade_id: str) -> dict | None:
         """Get trajectory data for a cascade_id"""
         url = f"{self.base}/exa.language_server_pb.LanguageServerService/GetCascadeTrajectory"
