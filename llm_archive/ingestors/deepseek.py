@@ -76,7 +76,7 @@ class DeepseekIngestor(BaseIngestor):
                         db_updated_at = existing_thread_ids.get(thread_id)
                         # Only stop if DB timestamp is same or newer than API timestamp
                         if db_updated_at and db_updated_at >= updated_at:
-                            logger.info(f"conversation {chat_id} already up to date, stopping sync")
+                            logger.info("no new conversations remaining")
                             break
                         # Otherwise, fetch the updated conversation
                         logger.info(f"conversation {chat_id} was updated, re-fetching")
