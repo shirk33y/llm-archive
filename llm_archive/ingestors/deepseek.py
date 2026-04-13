@@ -19,6 +19,10 @@ BROWSER_HEADERS = {
     "accept-language": "en-US,en;q=0.9",
     "referer": "https://chat.deepseek.com/",
     "x-client-platform": "web",
+    "x-client-version": "1.8.0",
+    "x-client-locale": "en_US",
+    "x-client-timezone-offset": "7200",
+    "x-app-version": "20241129.1",
 }
 
 
@@ -40,7 +44,7 @@ class DeepseekIngestor(BaseIngestor):
             print("[deepseek] login completed and auth state saved")
         self._token = None
 
-    async def threads(self, since: int | None = None):
+    async def threads(self, since: int | None = None, existing_thread_ids: set[str] | None = None):
         print("[deepseek] acquiring auth token")
         token = await self._get_token()
         print("[deepseek] token acquired")
@@ -49,11 +53,35 @@ class DeepseekIngestor(BaseIngestor):
             "authorization": f"Bearer {token}",
         }
 
+        if existing_thread_ids is None:
+            existing_thread_ids = set()
+
         async with httpx.AsyncClient(timeout=30, headers=headers) as client:
             sessions = await self._fetch_sessions(client)
             print(f"[deepseek] found {len(sessions)} conversations")
             for sess in sessions:
+                chat_id = sess.get("id")
+                if not chat_id:
+                    continue
+                thread_id = f"deepseek:{chat_id}"
                 updated_at = _parse_ts(sess.get("updated_at"))
+                
+                # Smart sync: if conversation already exists, check if it's been updated
+                if thread_id in existing_thread_ids:
+                    # If existing_thread_ids is a dict with timestamps, compare them
+                    if isinstance(existing_thread_ids, dict):
+                        db_updated_at = existing_thread_ids.get(thread_id)
+                        # Only stop if DB timestamp is same or newer than API timestamp
+                        if db_updated_at and db_updated_at >= updated_at:
+                            print(f"[deepseek] conversation {chat_id} already up to date, stopping sync")
+                            break
+                        # Otherwise, fetch the updated conversation
+                        print(f"[deepseek] conversation {chat_id} was updated, re-fetching")
+                    else:
+                        # Old behavior: just check if exists
+                        print(f"[deepseek] conversation {chat_id} already in database, stopping sync")
+                        break
+                
                 if since and updated_at and updated_at < since:
                     continue
                 thread = await self._fetch_thread(client, sess)
@@ -80,12 +108,12 @@ class DeepseekIngestor(BaseIngestor):
         print("[deepseek] fetching conversation list")
         sessions: list[dict] = []
         seen: set[str] = set()
-        cursor: int | None = None
+        cursor: float | None = None
 
         while True:
             params = {"lte_cursor.pinned": "false"}
             if cursor is not None:
-                params["lte_cursor.seq_id"] = str(cursor)
+                params["lte_cursor.updated_at"] = str(cursor)
             resp = await client.get(f"{API_BASE}/chat_session/fetch_page", params=params)
             if resp.status_code == 401:
                 print("[deepseek] conversation list returned 401 — reauth required")
@@ -106,11 +134,11 @@ class DeepseekIngestor(BaseIngestor):
             if not data.get("has_more"):
                 break
 
-            last = next((sess for sess in reversed(page) if isinstance(sess.get("seq_id"), int | float)), None)
+            last = next((sess for sess in reversed(page) if sess.get("updated_at")), None)
             if not last:
                 break
 
-            next_cursor = int(last["seq_id"]) - 1
+            next_cursor = last["updated_at"]
             if cursor is not None and next_cursor >= cursor:
                 break
             if not fresh:
@@ -119,6 +147,7 @@ class DeepseekIngestor(BaseIngestor):
 
         if not sessions:
             print("[deepseek] no conversations returned by API")
+        print(f"[deepseek] fetched {len(sessions)} conversations")
         return sessions
 
     async def _fetch_thread(self, client: httpx.AsyncClient, sess: dict) -> IngestedThread | None:
@@ -172,31 +201,87 @@ class DeepseekIngestor(BaseIngestor):
             return self._token
 
         from llm_archive.auth.playwright import auth_path
-        from playwright.async_api import async_playwright
 
         path = auth_path(self.source_id)
         if not path.exists():
-            raise FileNotFoundError("No auth found for 'deepseek'. Run `llm-archive sync deepseek` first.")
+            raise FileNotFoundError("No auth found for 'deepseek'. Run `llm-archive sync deepseek' first.")
 
-        async with async_playwright() as p:
-            print("[deepseek] launching headless browser to extract token")
-            browser = await p.chromium.launch(headless=True)
-            ctx = await browser.new_context(storage_state=str(path))
-            page = await ctx.new_page()
-            fut = asyncio.get_running_loop().create_future()
+        # Try to extract bearer token directly from storage state (localStorage)
+        import json
+        state = json.loads(path.read_text())
+        origins = state.get("origins", [])
+        
+        # Look for bearer token in localStorage
+        for origin in origins:
+            if origin.get("origin") == "https://chat.deepseek.com":
+                for item in origin.get("localStorage", []):
+                    if item.get("name") in ("accessToken", "token", "userToken"):
+                        token = item.get("value")
+                        if token:
+                            # Token might be JSON-encoded
+                            try:
+                                parsed = json.loads(token)
+                                if isinstance(parsed, dict) and "value" in parsed:
+                                    token = parsed["value"]
+                            except (json.JSONDecodeError, TypeError):
+                                pass
+                            self._token = token
+                            print("[deepseek] extracted bearer token from storage state")
+                            return self._token
 
-            async def on_request(req):
-                if "/api/v0/" not in req.url:
-                    return
-                auth = req.headers.get("authorization")
-                if auth and auth.startswith("Bearer ") and not fut.done():
-                    fut.set_result(auth.removeprefix("Bearer ").strip())
+        # If not found in localStorage, fall back to Chrome extraction
+        return await self._get_token_via_chrome(path)
 
-            page.on("request", on_request)
-            await page.goto(LOGIN_URL, wait_until="domcontentloaded")
-            self._token = await asyncio.wait_for(fut, timeout=20)
-            await browser.close()
-            print("[deepseek] extracted bearer token from browser session")
+    async def _get_token_via_chrome(self, path: Path) -> str:
+        """Fallback: extract bearer token by launching Chrome and intercepting request."""
+        from llm_archive.auth.playwright import _find_chrome
+        from playwright.async_api import async_playwright
+
+        # Use CDP to connect to Chrome with saved storage state
+        chrome = _find_chrome()
+        chrome_args = chrome if isinstance(chrome, list) else [chrome]
+        chrome_profile = path.parent / "chrome-profile"
+        chrome_profile.mkdir(parents=True, exist_ok=True)
+
+        proc = subprocess.Popen([
+            *chrome_args,
+            "--remote-debugging-port=9222",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--password-store=basic",
+            "--ozone-platform=x11",
+            "--log-level=3",
+            f"--user-data-dir={chrome_profile}",
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        import time
+        time.sleep(2)
+
+        try:
+            async with async_playwright() as p:
+                print("[deepseek] connecting to Chrome via CDP")
+                browser = await p.chromium.connect_over_cdp("http://localhost:9222")
+                ctx = browser.contexts[0]
+                import json
+                state = json.loads(path.read_text())
+                await ctx.add_cookies(state.get("cookies", []))
+                page = await ctx.new_page()
+                fut = asyncio.get_running_loop().create_future()
+
+                async def on_request(req):
+                    if "/api/v0/" not in req.url:
+                        return
+                    auth = req.headers.get("authorization")
+                    if auth and auth.startswith("Bearer ") and not fut.done():
+                        fut.set_result(auth.removeprefix("Bearer ").strip())
+
+                page.on("request", on_request)
+                await page.goto(LOGIN_URL, wait_until="domcontentloaded")
+                self._token = await asyncio.wait_for(fut, timeout=120)
+                await browser.close()
+                print("[deepseek] extracted bearer token from browser session")
+        finally:
+            proc.terminate()
 
         return self._token
 
@@ -207,31 +292,13 @@ class DeepseekIngestor(BaseIngestor):
 
 
 async def _login() -> None:
-    from playwright.async_api import async_playwright
-    from llm_archive.auth.playwright import AUTH_DIR, _find_chrome, auth_path
+    from llm_archive.auth.playwright import AUTH_DIR, auth_path, login_with_detection
 
     AUTH_DIR.mkdir(parents=True, exist_ok=True)
     out = auth_path("deepseek")
-    chrome = _find_chrome()
-    args = chrome if isinstance(chrome, list) else [chrome]
-    profile = Path(tempfile.mkdtemp(prefix="llm-archive-deepseek-", dir=str(AUTH_DIR)))
-    proc = subprocess.Popen([
-        *args,
-        "--remote-debugging-port=9222",
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--password-store=basic",
-        "--ozone-platform=x11",
-        f"--user-data-dir={profile}",
-        LOGIN_URL,
-    ])
-    time.sleep(2)
 
-    async with async_playwright() as p:
-        print("[deepseek] connecting to Chrome DevTools")
-        browser = await p.chromium.connect_over_cdp("http://127.0.0.1:9222")
-        ctx = browser.contexts[0]
-        page = ctx.pages[0] if ctx.pages else await ctx.new_page()
+    async def detect_login(ctx, page):
+        """Detect DeepSeek login by checking for Bearer token in API requests."""
         fut = asyncio.get_running_loop().create_future()
         done = False
 
@@ -245,17 +312,12 @@ async def _login() -> None:
             if not auth or not auth.startswith("Bearer "):
                 return
             done = True
-            fut.set_result(None)
-            await ctx.storage_state(path=str(out))
+            fut.set_result(True)
 
         page.on("request", on_request)
-        await page.goto(LOGIN_URL, wait_until="domcontentloaded")
-        print("Log in to DeepSeek in the opened browser. Waiting up to 5 minutes...")
-        await asyncio.wait_for(fut, timeout=300)
-        print("[deepseek] login request detected")
-        await browser.close()
+        return await asyncio.wait_for(fut, timeout=300)
 
-    proc.terminate()
+    await login_with_detection("deepseek", LOGIN_URL, detect_login, out)
 
 
 def _role(role: str | None) -> str | None:
