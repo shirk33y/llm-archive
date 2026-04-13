@@ -6,11 +6,11 @@ A CLI tool that dumps and syncs AI conversations from multiple sources into a lo
 
 | Source | Status | Method |
 |--------|--------|--------|
-| `claude_code` | ✅ working | local JSONL (`~/.claude/projects/`) |
+| `claudecode` | ✅ working | local JSONL (`~/.claude/projects/`) |
 | `opencode` | ✅ working | local SQLite (`~/.local/share/opencode/opencode.db`) |
 | `claude` | ✅ working | claude.ai REST API + Playwright auth |
 | `deepseek` | ✅ working | deepseek.com REST API + Playwright auth |
-| `windsurf` | ✅ working | local Language Server API (localhost:34553) |
+| `windsurf` | ✅ working | local Language Server API (auto-detected port) |
 | ChatGPT | 🔜 planned | REST API |
 
 ## Installation
@@ -27,7 +27,7 @@ uv venv && uv sync
 
 ```sh
 uv run llm-archive sync               # sync all sources
-uv run llm-archive sync claude_code   # sync one source
+uv run llm-archive sync claudecode   # sync one source
 uv run llm-archive sync deepseek      # sync deepseek (opens browser for first-time auth)
 uv run llm-archive sync windsurf      # sync windsurf (requires Windsurf running)
 ```
@@ -81,7 +81,7 @@ llm_archive/
     ├── opencode.py     # ~/.local/share/opencode/opencode.db
     ├── claude.py       # claude.ai REST API
     ├── deepseek.py     # deepseek.com REST API
-    └── windsurf.py     # Language Server API (localhost:34553)
+    └── windsurf.py     # Language Server API (auto-detected port)
 ```
 
 ## Tests

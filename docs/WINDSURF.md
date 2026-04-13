@@ -10,16 +10,18 @@ Windsurf stores conversation data in multiple locations using different formats:
 - **Location**: `~/.codeium/windsurf/cascade/*.pb`
 - **Format**: Encrypted Protocol Buffers (protobuf)
 - **Status**: Not directly parseable without encryption key
+- **Access**: Via Language Server API
 
-### 2. LocalStorage Session Index
+### 2. Language Server API
+- **Endpoint**: `http://localhost:<randomized_port>` (auto-detected)
+- **Method**: HTTP POST with protobuf-encoded requests
+- **Status**: Fully implemented for historical .pb file access
+- **Advantages**: Access to all historical conversations, no UI interaction required
+
+### 3. LocalStorage Session Index
 - **Key**: `cascade-open-sessions-by-workspace`
 - **Format**: JSON
 - **Content**: Workspace-scoped session metadata including tab IDs and active session
-
-### 3. In-Memory React State (CDP Accessible)
-- **Location**: React fiber tree inside `windsurf.cascadePanel` DOM element
-- **Key**: `props.trajectory` on React component
-- **Format**: JavaScript objects with protobuf-like structure
 
 ## Encryption Details
 
@@ -33,93 +35,143 @@ Windsurf uses Electron's `safeStorage` API for encrypting `.pb` files:
 
 **Key insight**: On Linux without a secret store, `safeStorage.getSelectedStorageBackend()` returns `basic_text`, indicating potential vulnerability.
 
-## CDP Extraction Method (Implemented)
+## Language Server API Method
 
-The working solution connects to Windsurf via Chrome DevTools Protocol and extracts conversations from the React component tree.
+The Language Server API provides direct access to historical `.pb` files without requiring UI interaction.
 
 ### Connection
-```bash
-# Start Windsurf with remote debugging
-windsurf --remote-debugging-port=9222 --remote-allow-origins='*'
+```python
+from llm_archive.ingestors.windsurf import LanguageServerClient
 
-# Check CDP endpoint
-curl http://localhost:9222/json/list
+ls = LanguageServerClient()
+cascade_ids = ls.get_all_cascade_ids()
+trajectory = ls.get_trajectory(cascade_id)
 ```
 
-### Data Structure
+### Protobuf Decoding
 
-The `trajectory` object contains a `steps` array with the following step types:
+The `CortexTrajectoryStep` protobuf message contains:
+- **Field 1**: `type` (enum - CortexStepType)
+- **Field 4**: `status` (enum - ActionStatus)
+- **Field 5**: `metadata` (message - CortexStepMetadata) - not returned by API
+- **Fields 6-115**: Oneof step data fields
 
-#### `userInput`
-- `userResponse`: User text input
-- `items`: Array of input items (for multi-part inputs)
+### Step Type Enum (CortexStepType)
 
-#### `plannerResponse`
-- `response`: AI's response text
-- `thinking`: Chain-of-thought reasoning (often hidden)
+| Value | Name | Description |
+|-------|------|-------------|
+| 0 | UNSPECIFIED | Unknown step type |
+| 1 | DUMMY | Placeholder |
+| 2 | FINISH | Step completion |
+| 3 | PLAN_INPUT | Plan input |
+| 4 | MQUERY | Model query |
+| 5 | CODE_ACTION | Code action |
+| 6 | GIT_COMMIT | Git commit |
+| 7 | GREP_SEARCH | Grep search |
+| 8 | VIEW_FILE | View file |
+| 9 | LIST_DIRECTORY | List directory |
+| 10 | COMPILE | Compile |
+| 11 | INFORM | Inform |
+| 12 | FILE_BREAKDOWN | File breakdown |
+| 13 | VIEW_CODE_ITEM | View code item |
+| 14 | USER_INPUT | User input |
+| 15 | PLANNER_RESPONSE | Planner response |
+| 16 | WRITE_TO_FILE | Write to file |
+| 21 | RUN_COMMAND | Run command |
+| 22 | RELATED_FILES | Related files |
+| 23 | CHECKPOINT | Checkpoint |
+| 24 | ERROR_MESSAGE | Error message |
+| 25 | FIND | Find/search |
+| 28 | COMMAND_STATUS | Command status |
+| 29 | MEMORY | Memory |
+| 31 | READ_URL_CONTENT | Read URL content |
+| 32 | VIEW_CONTENT_CHUNK | View content chunk |
+| 33 | SEARCH_WEB | Web search |
+| 34 | RETRIEVE_MEMORY | Retrieve memory |
+| 38 | MCP_TOOL | MCP tool |
+| 51 | LIST_RESOURCES | List resources |
+| 52 | READ_RESOURCE | Read resource |
+| 65 | READ_TERMINAL | Read terminal |
+| 73 | TODO_LIST | TODO list |
+| 83 | EDIT_NOTEBOOK | Edit notebook |
+| 87 | FIND_CODE_CONTEXT | Find code context |
+| 91 | GREP_SEARCH_V2 | Grep search v2 |
+| 100 | ASK_USER_QUESTION | Ask user question |
 
-#### `runCommand`
-- `command`: Command name
-- `args`: Command arguments
-- `stdout`/`stdoutBuffer`: Command output
-- `exitCode`: Exit status
+### Field Mappings
 
-#### `writeFile`
-- `path`/`filePath`: Target file path
-- `content`: File content
+| Field Number | Oneof Field | Decoder | Description |
+|--------------|-------------|---------|-------------|
+| 6 | context_memory | `_decode_context_memory` | Binary protobuf with UUIDs, timestamps |
+| 10 | file_content_edit | `_decode_file_content_edit` | Shell scripts, .desktop files |
+| 19 | user_input | `_decode_user_input` | User text input |
+| 20 | planner_response | `_decode_planner_response` | AI response text |
+| 22 | write_file | `_decode_write_file` | File path and content |
+| 23 | run_command | `_decode_run_command` | Command and stdout |
+| 24 | error_message | `_decode_error_message` | Error text from nested protobuf |
+| 25 | find | `_decode_find` | Find/search results |
+| 28 | command_status | `_decode_command_status` | Command status updates |
+| 29 | memory | `_decode_memory` | Memory data |
+| 31 | read_url_content | `_decode_read_url_content` | URL content |
+| 38 | project_context | `_decode_project_context` | Project context with UUIDs |
+| 41 | parsed_url_content | `_decode_parsed_url_content` | Markdown with links |
+| 42 | search_web | `_decode_search_web` | Web search query/results |
+| 43 | empty_field | Generic | Empty string |
+| 47 | mcp_tool | `_decode_mcp_tool` | MCP tool call data |
+| 56 | url_reference | `_decode_url_reference` | URLs |
+| 62 | tool_name | Generic | Tool name |
+| 63 | tool_name_with_state | Generic | Tool name with state |
+| 87 | plan | `_decode_plan` | Plan data |
+| 101 | grep_result | Generic | Grep results |
+| 105 | file_search_pattern | `_decode_file_search_pattern` | Search pattern |
+| 109 | - | Generic | Rare field |
+| 115 | ask_user_question | Generic | User question |
 
-#### `readFile`
-- `path`/`filePath`: Source file path
+### Data Coverage
 
-#### `todoList`
-- `todos`: Array of todo items with `content` field
+- **Total steps**: 3645
+- **Decoded steps**: 2998 (82.2%)
+- **Unknown fields**: 0
+- **Steps without data**: 647 (17.8%) - metadata-only steps (status updates, markers)
 
-#### `checkpoint`
-- `userIntent`: User's stated intent for this phase
+The 17.8% of steps without data are normal - they use common fields (type, status) without oneof data fields. These are typically status updates, markers, or steps that don't contain actual content.
 
-### Extraction Script
+### Decoder Functions
 
-The `-cascade-history` script (located at `~/bin/-cascade-history`) provides:
-- Auto-restart Windsurf with CDP if not running
-- List all sessions via localStorage
-- Extract individual conversations by clicking through sessions
-- Output to JSON or formatted text
+#### Text-based decoders
+- `_decode_user_input`: Extracts user query/response text
+- `_decode_planner_response`: Extracts AI response text
+- `_decode_error_message`: Extracts readable error text from nested protobuf using regex
+- `_decode_file_content_edit`: Extracts shell scripts, .desktop files
+- `_decode_parsed_url_content`: Extracts markdown with links
+- `_decode_url_reference`: Extracts URLs
 
-## Alternative Approaches
+#### Structured decoders
+- `_decode_write_file`: Extracts path and content
+- `_decode_run_command`: Extracts command, stdout, exit_code
+- `_decode_find`: Extracts pattern and results
+- `_decode_command_status`: Extracts command status
+- `_decode_memory`: Extracts memory data
+- `_decode_read_url_content`: Extracts URL and content
+- `_decode_search_web`: Extracts query and results
+- `_decode_mcp_tool`: Extracts tool name and args
+- `_decode_plan`: Extracts plan_id and plans
+- `_decode_file_search_pattern`: Extracts pattern and results
 
-### 1. Source Code Extraction
-Electron apps store code in ASAR archives:
-```bash
-npx asar extract /usr/share/windsurf/resources/app.asar ./extracted
-```
-This could reveal `.proto` definitions and encryption logic.
-
-### 2. Memory Dump
-Since conversations are decrypted in memory for display, attaching a debugger to the renderer process could yield plaintext data.
-
-### 3. API Interception
-Windsurf syncs to `*.codeium.com` and `*.windsurf.com` endpoints. Intercepting these with mitmproxy could capture conversation data in transit.
-
-### 4. IndexedDB/LevelDB
-Chromium-based apps use LevelDB for IndexedDB storage:
-- Location: `~/.config/Windsurf/IndexedDB/` (non-Flatpak)
-- Location: `~/.var/app/<app-id>/config/IndexedDB/` (Flatpak)
-- Tools: [ccl_chromium_reader](https://github.com/cclgroupltd/ccl_chromium_reader)
+#### Binary decoders
+- `_decode_context_memory`: Extracts summary from binary protobuf (UUIDs, timestamps)
+- `_decode_project_context`: Extracts summary from binary protobuf (task descriptions)
 
 ## Implementation
 
-The `WindsurfIngestor` class in `llm_archive/ingestors/windsurf.py` implements CDP-based extraction:
+The `WindsurfIngestor` class in `llm_archive/ingestors/windsurf.py` implements Language Server API extraction:
 
 ```python
 from llm_archive.ingestors import get_ingestor
 
-# Auto-restart Windsurf with CDP if not running
+# Use Language Server API (historical .pb files)
 ingestor = get_ingestor("windsurf")
-await ingestor.init(auto_restart=True)
-
-# Count available sessions
-count = await ingestor.count_threads()
-print(f"Found {count} sessions")
+await ingestor.init()
 
 # Extract all conversations
 async for thread in ingestor.threads():
@@ -128,49 +180,73 @@ async for thread in ingestor.threads():
 
 ### Features
 
-- **Auto-restart**: Automatically kills and restarts Windsurf with CDP enabled
-- **Multi-platform launch**: Supports direct binary, Flatpak, and Distrobox
-- **Session enumeration**: Counts and extracts all available Cascade sessions
-- **Full conversation extraction**: Captures user messages, AI responses, commands, file operations
+- **Language Server API**: Access to all historical .pb files
+- **Full protobuf decoding**: 100% field coverage for step data
+- **No truncation**: Stores full data without size limits
+- **Force sync**: `-f` flag bypasses SHA1 deduplication to re-ingest
 
 ### Requirements
-- `websocket-client` package (added to `pyproject.toml`)
-- Windsurf installed (auto-detected via `windsurf`, `flatpak run com.codeium.Windsurf`, or `distrobox enter windsurf`)
+- Windsurf installed and running (for Language Server API)
+- No external dependencies
 
 ### CLI Usage
 
 ```bash
-# Auto-restart Windsurf with CDP if not running
-uv run llm-archive sync windsurf --restart
-
-# Manual start with CDP already enabled
-windsurf --remote-debugging-port=9222
+# Sync using Language Server API (default)
 uv run llm-archive sync windsurf
 
-# Custom database path
-uv run llm-archive sync windsurf --restart --db-path ~/my-archive.db
-```
+# Force re-ingestion (bypass SHA1 deduplication)
+uv run llm-archive sync windsurf -f
 
-**Note:** The `sync` command performs first-time setup automatically. No separate `init` needed. Use `--restart` to auto-restart Windsurf with CDP enabled.
+# Custom database path
+uv run llm-archive sync windsurf --db-path ~/my-archive.db
+```
 
 ### Message Mapping
 
-| Windsurf Step | Role | Parts |
-|---------------|------|-------|
-| `userInput` | `user` | `text` |
-| `plannerResponse` | `assistant` | `thinking` (hidden), `text` |
-| `runCommand` | `tool` | `tool_call` with command/stdout |
-| `writeFile` | `tool` | `tool_call` with path |
-| `readFile` | `tool` | `tool_call` with path |
-| `todoList` | `tool` | `tool_call` with todos |
-| `checkpoint` | `system` | `system` (hidden) |
+| Step Type | Role | Parts | Data Field |
+|-----------|------|-------|------------|
+| 14 (USER_INPUT) | `user` | `text` | `user_input` |
+| 15 (PLANNER_RESPONSE) | `assistant` | `text` | `planner_response` |
+| 21 (RUN_COMMAND) | `tool` | `tool_call` | `run_command` |
+| 23 (WRITE_TO_FILE) | `tool` | `tool_call` | `write_file` |
+| 8 (VIEW_FILE) | `tool` | `tool_call` | `view_file` |
+| 9 (LIST_DIRECTORY) | `tool` | `tool_call` | `list_directory` |
+| 7 (GREP_SEARCH) | `tool` | `tool_call` | `grep_search` |
+| 33 (SEARCH_WEB) | `tool` | `tool_call` | `search_web` |
+| 23 (CHECKPOINT) | `tool` | `tool_call` | `checkpoint` |
+| 24 (ERROR_MESSAGE) | `tool` | `tool_call` | `error_message` |
+| 25 (FIND) | `tool` | `tool_call` | `find` |
+| 28 (COMMAND_STATUS) | `tool` | `tool_call` | `command_status` |
+| 29 (MEMORY) | `tool` | `tool_call` | `memory` |
+| 31 (READ_URL_CONTENT) | `tool` | `tool_call` | `read_url_content` |
+| 38 (MCP_TOOL) | `tool` | `tool_call` | `mcp_tool` |
+| 87 (PLAN) | `tool` | `tool_call` | `plan` |
+| 115 (ASK_USER_QUESTION) | `tool` | `tool_call` | `ask_user_question` |
+| 10 (file_content_edit) | `tool` | `tool_call` | `file_content_edit` |
+| 41 (parsed_url_content) | `tool` | `tool_call` | `parsed_url_content` |
+| 105 (file_search_pattern) | `tool` | `tool_call` | `file_search_pattern` |
+| 6 (context_memory) | `tool` | `tool_call` | `context_memory` |
+| 38 (project_context) | `tool` | `tool_call` | `project_context` |
+| 56 (url_reference) | `tool` | `tool_call` | `url_reference` |
+
+### Database Schema
+
+Data is stored in SQLite with the following structure:
+
+- **threads**: Thread metadata (id, title, source_id)
+- **messages**: Message metadata (id, thread_id, role, content, metadata)
+- **message_parts**: Message parts (id, message_id, kind, text, search_text, data)
+- **message_raw**: Raw protobuf data (message_id, raw)
+
+The `data` field in `message_parts` stores JSON-structured data from decoded protobuf fields. This is queryable via SQLite JSON functions but not in the full-text search index.
 
 ## Known Limitations
 
-1. **Requires running Windsurf**: Cannot extract from `.pb` files directly
-2. **Session switching**: Must click through each session to extract all conversations (may be flaky)
-3. **Real-time only**: Historical conversations not in the current session list require scrolling/loading in UI
-4. **CDP port conflicts**: If port 9222 is in use, manually specify alternate port
+1. **Field 5 (metadata) not available**: The Language Server API does not return the CortexStepMetadata field (field 5), which contains timestamps, model usage, costs, and execution details.
+2. **17.8% steps without data**: These are metadata-only steps (status updates, markers) that don't contain actual content.
+3. **Language Server required**: Requires Windsurf to be running with the Language Server active.
+4. **Protobuf reverse-engineering**: Decoders are based on reverse-engineering the protobuf structure from the beautified extension code. Field mappings may need updates if the schema changes.
 
 ## References
 
@@ -178,10 +254,11 @@ uv run llm-archive sync windsurf --restart --db-path ~/my-archive.db
 - [ccl_chromium_reader](https://github.com/cclgroupltd/ccl_chromium_reader) - Chromium data extraction
 - [getspecstory](https://github.com/specstoryai/getspecstory) - Third-party conversation export tool (Windsurf support pending)
 - [Electron safeStorage docs](https://www.electronjs.org/docs/latest/api/safe-storage)
+- `extension_beautified.js` - Beautified Windsurf extension code containing protobuf definitions
 
 ## Future Research
 
-1. Investigate if IndexedDB contains cached conversation data
-2. Extract protobuf definitions from ASAR source
-3. Reverse engineer the encryption key derivation on Linux
-4. Monitor network API for export endpoints
+1. Investigate if Field 5 (metadata) can be obtained via alternative API endpoints
+2. Monitor for protobuf schema changes in Windsurf updates
+3. Add full-text search support for JSON data fields
+4. Implement incremental sync to only process new/changed .pb files
