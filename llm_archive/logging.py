@@ -1,10 +1,12 @@
 """Logging utilities for llm-archive."""
 from __future__ import annotations
 import logging
-import sys
+from rich.logging import RichHandler
+from rich.console import Console
 
 # Global verbose flag
 _verbose = False
+_console: Console | None = None
 
 # Custom formatter to show just [component] instead of full logger name
 class ComponentFormatter(logging.Formatter):
@@ -16,10 +18,7 @@ class ComponentFormatter(logging.Formatter):
         
         # Format with component prefix
         message = super().format(record)
-        
-        # Add level prefix (INFO, ERROR, etc.)
-        level = record.levelname
-        return f"{level:8s} [{name}] {message}"
+        return f"[{name}] {message}"
 
 # Configure root logger
 root_logger = logging.getLogger()
@@ -28,10 +27,35 @@ root_logger.setLevel(logging.DEBUG)
 # Suppress httpx INFO logs
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-# Add plain stream handler to stderr (not RichHandler to avoid conflicts with progress bar)
-handler = logging.StreamHandler(sys.stderr)
-handler.setFormatter(ComponentFormatter("%(message)s"))
-root_logger.addHandler(handler)
+def _setup_handler():
+    """Setup logging handler."""
+    global _console
+    if _console is None:
+        _console = Console(stderr=True)
+    
+    # Remove existing handlers
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
+    
+    # Add rich handler with shared console
+    handler = RichHandler(
+        console=_console,
+        rich_tracebacks=True,
+        show_time=False,
+        show_path=False,
+        omit_repeated_times=False,
+    )
+    handler.setFormatter(ComponentFormatter("%(message)s"))
+    root_logger.addHandler(handler)
+
+# Initial setup
+_setup_handler()
+
+def set_console(console: Console) -> None:
+    """Set the Rich console instance to use for logging."""
+    global _console
+    _console = console
+    _setup_handler()
 
 def set_verbose(verbose: bool) -> None:
     """Set global verbose flag."""

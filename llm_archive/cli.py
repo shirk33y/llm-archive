@@ -17,7 +17,7 @@ from rich.text import Text
 
 from llm_archive import db
 from llm_archive.ingestors import INGESTORS, get_ingestor
-from llm_archive.logging import set_verbose
+from llm_archive.logging import set_console, set_verbose
 
 console = Console()
 
@@ -30,6 +30,7 @@ def _run(coro):
 @click.option("-v", "--verbose", is_flag=True, help="Enable verbose logging")
 def main(verbose: bool):
     """llm-archive — dump and sync AI conversations into a local SQLite database."""
+    set_console(console)
     set_verbose(verbose)
 
 
