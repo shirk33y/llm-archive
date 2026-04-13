@@ -284,23 +284,21 @@ class LanguageServerClient:
             if hostname:
                 self._base = f"http://{hostname}:{self.port}"
             else:
-                raise RuntimeError(
-                    "Hostname not found in CSRF token file. Ensure Windsurf is running with CDP enabled "
-                    "(windsurf --remote-debugging-port=9222) and try again to extract the hostname."
-                )
+                # Will be set by _get_csrf_token after CDP extraction
+                self._base = f"http://127.0.0.1:{self.port}"
         return self._base
     
     async def _get_csrf_token(self) -> str:
         """Get CSRF token from running Windsurf with automatic extraction."""
         # Try to load from file first
         token, hostname = _load_csrf_token()
-        if token:
-            if hostname:
-                self._hostname = hostname
+        if token and hostname:
+            self._hostname = hostname
+            self._base = f"http://{hostname}:{self.port}"
             return token
         
         # Try to extract via CDP
-        logger.info("CSRF token not found in file, attempting CDP extraction...")
+        logger.info("CSRF token or hostname not found in file, attempting CDP extraction...")
         token, hostname = await _extract_csrf_token_via_cdp()
         if token and hostname:
             self._hostname = hostname
@@ -313,31 +311,48 @@ class LanguageServerClient:
         )
     
     async def get_trajectory(self, cascade_id: str) -> dict | None:
-        """Get trajectory data for a cascade_id"""
-        url = f"{self.base}/exa.language_server_pb.LanguageServerService/GetCascadeTrajectory"
-        
-        headers = {
-            "x-codeium-csrf-token": await self._get_csrf_token(),
-            "connect-protocol-version": "1",
-            "content-type": "application/proto",
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Windsurf/1.110.1 Chrome/142.0.7444.265 Electron/39.6.0 Safari/537.36"
-        }
-        
-        protobuf_message = encode_get_cascade_request(cascade_id)
-        
-        req = urllib.request.Request(url, data=protobuf_message, headers=headers)
-        with urllib.request.urlopen(req, timeout=10) as response:
-            if response.status != 200:
-                return None
+        """Get trajectory data for a cascade_id with retry and hostname re-extraction"""
+        for attempt in range(3):
+            try:
+                url = f"{self.base}/exa.language_server_pb.LanguageServerService/GetCascadeTrajectory"
+                
+                headers = {
+                    "x-codeium-csrf-token": await self._get_csrf_token(),
+                    "connect-protocol-version": "1",
+                    "content-type": "application/proto",
+                    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Windsurf/1.110.1 Chrome/142.0.7444.265 Electron/39.6.0 Safari/537.36"
+                }
+                
+                protobuf_message = encode_get_cascade_request(cascade_id)
+                
+                req = urllib.request.Request(url, data=protobuf_message, headers=headers)
+                with urllib.request.urlopen(req, timeout=10) as response:
+                    if response.status != 200:
+                        return None
+                    
+                    content = response.read()
+                    
+                    # Decompress if gzipped
+                    if response.headers.get('Content-Encoding') == 'gzip':
+                        content = gzip.decompress(content)
+                    
+                    # Decode the trajectory
+                    return self._decode_trajectory(content)
             
-            content = response.read()
-            
-            # Decompress if gzipped
-            if response.headers.get('Content-Encoding') == 'gzip':
-                content = gzip.decompress(content)
-            
-            # Decode the trajectory
-            return self._decode_trajectory(content)
+            except Exception as e:
+                if attempt == 2:
+                    raise
+                
+                logger.warning(f"Attempt {attempt + 1} failed: {e}. Re-extracting hostname...")
+                # Re-extract hostname via CDP
+                token, hostname = await _extract_csrf_token_via_cdp()
+                if hostname:
+                    self._hostname = hostname
+                    self._base = f"http://{hostname}:{self.port}"
+                    logger.info(f"Re-extracted hostname: {hostname}")
+                await asyncio.sleep(1)
+        
+        return None
     
     def _decode_trajectory(self, data: bytes) -> dict:
         """Decode GetCascadeTrajectoryResponse"""

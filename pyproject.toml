@@ -20,6 +20,9 @@ dependencies = [
     "rich>=13.0",
     "playwright>=1.40",
     "websocket-client>=1.7",
+    "protobuf>=7.34.1",
+    "psutil>=5.9",
+    "websockets>=16.0",
 ]
 
 

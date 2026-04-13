@@ -234,27 +234,60 @@ def search(phrase: str, db_path: str | None, limit: int, threads_only: bool):
         return
     lines: list[Text | str] = []
     if threads_only:
+        formatted_rows = []
         for i, row in enumerate(rows):
             if i:
-                lines.append("")
+                formatted_rows.append(("", "", ""))
             title = row["title"] or "untitled"
-            lines.append(_header(row["source_id"], row["thread_id"], title))
-            lines.append(f"  {row['match_count']} matching messages")
+            short_id = f"t{db.to_base53(row['thread_rowid'])}"
+            rel_time = _relative_time(row["last_match_at"])
+            formatted_rows.append((short_id, rel_time, title))
+        
+        max_id_width = max((len(r[0]) for r in formatted_rows if r[0]), default=0)
+        max_time_width = max((len(r[1]) for r in formatted_rows if r[1]), default=0)
+        
+        for row in formatted_rows:
+            if not row[0]:
+                lines.append("")
+            else:
+                short_id, rel_time, text = row
+                lines.append(_search_result_line(short_id, rel_time, text, max_id_width, max_time_width))
+                if short_id.startswith('t'):
+                    for r in rows:
+                        if f"t{db.to_base53(r['thread_rowid'])}" == short_id:
+                            lines.append(f"  {r['match_count']} matching messages")
+                            break
         _print_lines(lines)
         return
     last = None
+    formatted_rows = []
     for row in rows:
         title = row["title"] or "untitled"
         key = (row["source_id"], row["thread_id"], title)
         if key != last:
             if last is not None:
-                lines.append("")
-            lines.append(_header(row["source_id"], row["thread_id"], title))
+                formatted_rows.append(("", "", ""))
+            short_id = f"t{db.to_base53(row['thread_rowid'])}"
+            rel_time = _relative_time(row["created_at"])
+            formatted_rows.append((short_id, rel_time, title))
             last = key
-        if row["created_at"]:
-            lines.append(_msg_marker_text(row["created_at"], row["role"]))
-        lines.append(_highlight_text(_snippet(row["content_clean"], phrase), phrase))
-        lines.append("")
+        short_id = f"m{db.to_base53(row['message_rowid'])}"
+        rel_time = _relative_time(row["created_at"])
+        snippet = _snippet(row["content_clean"], phrase)
+        formatted_rows.append((short_id, rel_time, snippet, phrase))
+    
+    max_id_width = max((len(r[0]) for r in formatted_rows if r[0]), default=0)
+    max_time_width = max((len(r[1]) for r in formatted_rows if r[1]), default=0)
+    
+    for row in formatted_rows:
+        if not row[0]:
+            lines.append("")
+        elif len(row) == 4:
+            short_id, rel_time, snippet, phrase = row
+            lines.append(_search_result_line_highlighted(short_id, rel_time, snippet, phrase, max_id_width, max_time_width))
+        else:
+            short_id, rel_time, text = row
+            lines.append(_search_result_line(short_id, rel_time, text, max_id_width, max_time_width))
     _print_lines(lines)
 
 
@@ -262,9 +295,43 @@ def search(phrase: str, db_path: str | None, limit: int, threads_only: bool):
 @click.argument("thread")
 @click.option("--db-path", default=None, help="Override database path")
 def show(thread: str, db_path: str | None):
-    """Show a full conversation by provider:id."""
+    """Show a full conversation by ID (short ID like 't5' or full UUID)."""
     con = db.connect(Path(db_path) if db_path else db.DB_PATH)
-    row = db.get_thread(con, thread)
+    
+    # Handle short IDs (t5, m42, etc.)
+    if thread.startswith('t') and len(thread) > 1:
+        try:
+            rowid = db.from_base53(thread[1:])
+            row = con.execute(
+                "SELECT id, source_id, title, created_at, updated_at FROM threads WHERE rowid=?",
+                (rowid,)
+            ).fetchone()
+            if row:
+                row = dict(row)
+                messages = [dict(m) for m in con.execute(
+                    "SELECT id, role, created_at FROM messages WHERE thread_id=? ORDER BY created_at, id",
+                    (row["id"],)
+                ).fetchall()]
+                parts = {}
+                for p in con.execute(
+                    "SELECT message_id, ord, kind, text, data, visible, searchable FROM message_parts "
+                    "WHERE message_id IN (SELECT id FROM messages WHERE thread_id=?) "
+                    "ORDER BY message_id, ord",
+                    (row["id"],)
+                ).fetchall():
+                    p = dict(p)
+                    parts.setdefault(p["message_id"], []).append(p)
+                for msg in messages:
+                    msg["parts"] = parts.get(msg["id"], [])
+                row = {"thread": row, "messages": messages}
+            else:
+                row = None
+        except (ValueError, IndexError):
+            row = None
+    else:
+        # Try as full UUID
+        row = db.get_thread(con, thread)
+    
     if row is None:
         console.print(f"Thread not found: {thread}")
         raise SystemExit(1)
@@ -287,6 +354,69 @@ def show(thread: str, db_path: str | None):
                 lines.append(_render_markdown(part["text"]))
         lines.append("")
     _print_lines(lines)
+
+
+def _relative_time(ms: int) -> str:
+    """Format timestamp as relative time (e.g., '1d', '32m', '2y')."""
+    from datetime import datetime, timezone
+    if not ms:
+        return ""
+    now = datetime.now(tz=timezone.utc).timestamp() * 1000
+    delta_ms = now - ms
+    delta_s = delta_ms / 1000
+    delta_m = delta_s / 60
+    delta_h = delta_m / 60
+    delta_d = delta_h / 24
+    delta_y = delta_d / 365.25
+    
+    if delta_y >= 1:
+        return f"{int(delta_y)}y"
+    if delta_d >= 1:
+        return f"{int(delta_d)}d"
+    if delta_h >= 1:
+        return f"{int(delta_h)}h"
+    if delta_m >= 1:
+        return f"{int(delta_m)}m"
+    return f"{int(delta_s)}s"
+
+
+def _search_result_line(short_id: str, rel_time: str, text: str, id_width: int = 0, time_width: int = 0) -> Text:
+    """Format search result line with dynamic column widths."""
+    line = Text()
+    line.append(short_id.ljust(id_width), style="bold cyan")
+    line.append(" ", style="")
+    line.append(rel_time.ljust(time_width), style="yellow")
+    line.append(" ", style="")
+    line.append(_truncate(text, 100), style="")
+    return line
+
+
+def _search_result_line_highlighted(short_id: str, rel_time: str, text: str, phrase: str, id_width: int = 0, time_width: int = 0) -> Text:
+    """Format search result line with highlighted search phrase and dynamic column widths."""
+    line = Text()
+    line.append(short_id.ljust(id_width), style="bold cyan")
+    line.append(" ", style="")
+    line.append(rel_time.ljust(time_width), style="yellow")
+    line.append(" ", style="")
+    
+    parts = [part for part in re.findall(r"\S+", phrase) if part]
+    if not parts:
+        line.append(_truncate(text, 100), style="")
+        return line
+    
+    truncated = _truncate(text, 100)
+    text_escaped = escape(truncated)
+    for part in parts:
+        pattern = re.escape(part)
+        text_escaped = re.sub(
+            f"({pattern})",
+            r"[bold red]\1[/]",
+            text_escaped,
+            flags=re.IGNORECASE,
+        )
+    
+    line.append_text(Text.from_markup(text_escaped))
+    return line
 
 
 def _fmt_ts(ms: int) -> str:
@@ -312,16 +442,19 @@ def _msg_marker_text(ms: int, role: str) -> Text:
 def _highlight(text: str, phrase: str) -> str:
     if not text:
         return text
-    text = escape(text)
-    parts = [re.escape(part) for part in re.findall(r"\S+", phrase) if part]
+    parts = [part for part in re.findall(r"\S+", phrase) if part]
     if not parts:
-        return text
-    return re.sub(
-        f"({'|'.join(parts)})",
-        r"[bold red]\1[/]",
-        text,
-        flags=re.IGNORECASE,
-    )
+        return escape(text)
+    text = escape(text)
+    for part in parts:
+        pattern = re.escape(part)
+        text = re.sub(
+            f"({pattern})",
+            r"[bold red]\1[/]",
+            text,
+            flags=re.IGNORECASE,
+        )
+    return text
 
 
 def _highlight_text(text: str, phrase: str) -> Text:
@@ -331,10 +464,12 @@ def _highlight_text(text: str, phrase: str) -> Text:
 def _truncate(text: str, limit: int = 200) -> str:
     if len(text) <= limit:
         return text
-    return text[: limit - 1] + "…"
+    return text[: limit - 1] + "…"  # Unicode ellipsis character
 
 
 def _snippet(text: str, phrase: str, limit: int = 200) -> str:
+    text = text.replace('\n', ' ').replace('\r', ' ')
+    text = re.sub(r'\s+', ' ', text).strip()
     if len(text) <= limit:
         return text
     words = [part for part in re.findall(r"\S+", phrase) if part]

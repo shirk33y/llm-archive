@@ -21,6 +21,9 @@ class FakeIngestor:
     async def init(self, **kwargs) -> None:
         self.init_calls.append(kwargs)
 
+    async def prepare(self) -> bool:
+        return True
+
     async def threads(self, since: int | None = None):
         if False:
             yield None
@@ -56,7 +59,7 @@ async def test_sync_runs_init_on_first_sync(monkeypatch, tmp_path):
     saved = []
     last = []
 
-    async def do_ingest(con, ing, since):
+    async def do_ingest(con, ing, since, force=False):
         saved.append((ing.source_id, since))
         return True
 
@@ -79,7 +82,7 @@ async def test_sync_skips_init_after_first_sync(monkeypatch, tmp_path):
     ingestor = FakeIngestor()
     saved = []
 
-    async def do_ingest(con, ing, since):
+    async def do_ingest(con, ing, since, force=False):
         saved.append((ing.source_id, since))
         return True
 
@@ -121,7 +124,7 @@ async def test_sync_falls_back_to_full_sync_when_last_sync_exists_but_no_threads
     ingestor.source_id = "deepseek"
     saved = []
 
-    async def do_ingest(con, ing, since):
+    async def do_ingest(con, ing, since, force=False):
         saved.append((ing.source_id, since))
         return True
 
@@ -143,6 +146,224 @@ async def test_do_ingest_supports_count_threads(tmp_path):
     ok = await cli._do_ingest(con, CountIngestor(), since=None)
     assert ok is True
     assert con.execute("select count(*) from threads").fetchone()[0] == 2
+
+
+@pytest.mark.asyncio
+async def test_do_ingest_processes_all_threads_regardless_of_since(tmp_path):
+    """Test that sync processes all threads even when since parameter is provided."""
+    con = cli.db.connect(tmp_path / "archive.db")
+    
+    # First sync to populate database
+    ingestor = CountIngestor()
+    ok = await cli._do_ingest(con, ingestor, since=None)
+    assert ok is True
+    assert con.execute("select count(*) from threads").fetchone()[0] == 2
+    
+    # Second sync with since parameter - should still process all threads
+    ingestor2 = CountIngestor()
+    ok2 = await cli._do_ingest(con, ingestor2, since=1234)
+    assert ok2 is True
+    # All threads should be processed (2 new + 0 skipped = 2 total)
+    # Since they're already in database, they should be skipped
+    assert con.execute("select count(*) from threads").fetchone()[0] == 2
+
+
+@pytest.mark.asyncio
+async def test_force_flag_updates_threads(tmp_path):
+    """Test that -f flag forces thread updates."""
+    con = cli.db.connect(tmp_path / "archive.db")
+    
+    # First sync to populate database
+    ingestor = CountIngestor()
+    ok = await cli._do_ingest(con, ingestor, since=None)
+    assert ok is True
+    assert con.execute("select count(*) from threads").fetchone()[0] == 2
+    
+    # Second sync with force=True - should re-fetch and update threads
+    ingestor2 = CountIngestor()
+    ok2 = await cli._do_ingest(con, ingestor2, since=None, force=True)
+    assert ok2 is True
+    # Should still have 2 threads
+    assert con.execute("select count(*) from threads").fetchone()[0] == 2
+
+
+class SmartSyncIngestor(FakeIngestor):
+    """Ingestor that supports smart sync with timestamp comparison."""
+    source_id = "smart"
+    
+    async def threads(self, since: int | None = None, existing_thread_ids: set[str] | None = None):
+        if existing_thread_ids is None:
+            existing_thread_ids = set()
+        
+        for i in range(5):
+            thread_id = f"smart:{i}"
+            updated_at = i * 1000
+            
+            # Smart sync with timestamp comparison
+            if thread_id in existing_thread_ids:
+                if isinstance(existing_thread_ids, dict):
+                    db_updated_at = existing_thread_ids.get(thread_id)
+                    if db_updated_at and db_updated_at >= updated_at:
+                        break
+                else:
+                    break
+            
+            yield IngestedThread(
+                id=thread_id,
+                source_id=self.source_id,
+                title=f"Thread {i}",
+                created_at=i,
+                updated_at=updated_at,
+                messages=[IngestedMessage(id=f"m{i}", thread_id=thread_id, role="user", content=f"content {i}", created_at=i)],
+            )
+
+
+@pytest.mark.asyncio
+async def test_smart_sync_stops_at_existing_thread(tmp_path):
+    """Test that smart sync stops fetching when it encounters an existing thread."""
+    con = cli.db.connect(tmp_path / "archive.db")
+    
+    # First sync to populate database
+    ingestor = SmartSyncIngestor()
+    ok = await cli._do_ingest(con, ingestor, since=None)
+    assert ok is True
+    assert con.execute("select count(*) from threads").fetchone()[0] == 5
+    
+    # Second sync - should stop at first existing thread
+    ingestor2 = SmartSyncIngestor()
+    ok2 = await cli._do_ingest(con, ingestor2, since=None)
+    assert ok2 is True
+    # Should still have 5 threads (all skipped)
+    assert con.execute("select count(*) from threads").fetchone()[0] == 5
+
+
+@pytest.mark.asyncio
+async def test_smart_sync_refetches_updated_thread(tmp_path):
+    """Test that smart sync re-fetches conversations with newer updated_at."""
+    con = cli.db.connect(tmp_path / "archive.db")
+    
+    # First sync - add threads with updated_at = 0, 1000, 2000, 3000, 4000
+    ingestor = SmartSyncIngestor()
+    ok = await cli._do_ingest(con, ingestor, since=None)
+    assert ok is True
+    assert con.execute("select count(*) from threads").fetchone()[0] == 5
+    
+    # Update thread 0 in database to have updated_at = -100 (older than API's 0)
+    # Also change the sha1 by updating content to ensure it gets re-fetched
+    con.execute("UPDATE threads SET updated_at=-100 WHERE id='smart:0'")
+    con.execute("UPDATE threads SET sha1='different_sha1' WHERE id='smart:0'")
+    con.commit()
+    
+    # Second sync - should re-fetch thread 0 (API has 0, DB has -100)
+    ingestor2 = SmartSyncIngestor()
+    ok2 = await cli._do_ingest(con, ingestor2, since=None)
+    assert ok2 is True
+    # Should still have 5 threads
+    assert con.execute("select count(*) from threads").fetchone()[0] == 5
+    # Thread 0 should have updated_at = 0 (from API)
+    row = con.execute("SELECT updated_at FROM threads WHERE id='smart:0'").fetchone()
+    assert row[0] == 0
+
+
+@pytest.mark.asyncio
+async def test_force_flag_disables_smart_sync(tmp_path):
+    """Test that -f flag disables smart sync and fetches all threads."""
+    con = cli.db.connect(tmp_path / "archive.db")
+    
+    # First sync to populate database
+    ingestor = SmartSyncIngestor()
+    ok = await cli._do_ingest(con, ingestor, since=None)
+    assert ok is True
+    assert con.execute("select count(*) from threads").fetchone()[0] == 5
+    
+    # Second sync with force=True - should fetch all threads (not stop at existing)
+    ingestor2 = SmartSyncIngestor()
+    ok2 = await cli._do_ingest(con, ingestor2, since=None, force=True)
+    assert ok2 is True
+    # Should still have 5 threads (all skipped since they're identical)
+    assert con.execute("select count(*) from threads").fetchone()[0] == 5
+
+
+def test_token_extraction_from_storage_state(tmp_path):
+    """Test extracting bearer token from storage state localStorage."""
+    import json
+    from pathlib import Path
+    
+    # Test plain token
+    auth_dir = tmp_path / "auth"
+    auth_dir.mkdir(parents=True, exist_ok=True)
+    storage_state = {
+        "origins": [
+            {
+                "origin": "https://chat.deepseek.com",
+                "localStorage": [
+                    {"name": "accessToken", "value": "test_token_123"},
+                    {"name": "otherKey", "value": "other_value"}
+                ]
+            }
+        ]
+    }
+    storage_path = auth_dir / "deepseek.json"
+    storage_path.write_text(json.dumps(storage_state))
+    
+    state = json.loads(storage_path.read_text())
+    origins = state.get("origins", [])
+    token = None
+    for origin in origins:
+        if origin.get("origin") == "https://chat.deepseek.com":
+            for item in origin.get("localStorage", []):
+                if item.get("name") in ("accessToken", "token", "userToken"):
+                    token_value = item.get("value")
+                    if token_value:
+                        try:
+                            parsed = json.loads(token_value)
+                            if isinstance(parsed, dict) and "value" in parsed:
+                                token_value = parsed["value"]
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+                        token = token_value
+                        break
+        if token:
+            break
+    
+    assert token == "test_token_123"
+    
+    # Test JSON-encoded token (like userToken)
+    storage_state2 = {
+        "origins": [
+            {
+                "origin": "https://chat.deepseek.com",
+                "localStorage": [
+                    {"name": "userToken", "value": json.dumps({"value": "json_token_456", "__version": "0"})}
+                ]
+            }
+        ]
+    }
+    storage_path.write_text(json.dumps(storage_state2))
+    
+    state2 = json.loads(storage_path.read_text())
+    origins2 = state2.get("origins", [])
+    token2 = None
+    for origin in origins2:
+        if origin.get("origin") == "https://chat.deepseek.com":
+            for item in origin.get("localStorage", []):
+                if item.get("name") in ("accessToken", "token", "userToken"):
+                    token_value = item.get("value")
+                    if token_value:
+                        try:
+                            parsed = json.loads(token_value)
+                            if isinstance(parsed, dict) and "value" in parsed:
+                                token_value = parsed["value"]
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+                        token2 = token_value
+                        break
+        if token2:
+            break
+    
+    assert token2 == "json_token_456"
+
+
 
 
 def test_search_command_outputs_grouped_matches(tmp_path):

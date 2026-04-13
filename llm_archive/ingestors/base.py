@@ -25,3 +25,11 @@ class BaseIngestor(ABC):
 
     async def count_threads(self, since: int | None = None) -> int | None:
         return None
+
+    async def prepare(self) -> bool:
+        """Pre-flight check before progress bar starts. 
+        
+        Returns True if ready to sync, False to skip this source.
+        Can be used for interactive prompts that should happen before progress display.
+        """
+        return True

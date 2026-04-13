@@ -9,6 +9,27 @@ from llm_archive.schema import IngestedThread, IngestedMessage, IngestedPart
 
 DB_PATH = Path.home() / ".llm-archive" / "archive.db"
 
+BASE53 = "23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz"
+
+
+def to_base53(num: int) -> str:
+    """Encode integer to base53 string."""
+    if num == 0:
+        return BASE53[0]
+    digits = []
+    while num:
+        digits.append(BASE53[num % 53])
+        num //= 53
+    return ''.join(reversed(digits))
+
+
+def from_base53(s: str) -> int:
+    """Decode base53 string to integer."""
+    result = 0
+    for char in s:
+        result = result * 53 + BASE53.index(char)
+    return result
+
 # Tags injected by Claude Code IDE/system that pollute user message content.
 # Extend this list as new injection patterns are discovered.
 _INJECTION_TAGS = re.compile(
@@ -162,11 +183,11 @@ def get_last_sync(con: sqlite3.Connection, source_id: str) -> int | None:
     return row["last_sync"] if row else None
 
 
-def save_thread(con: sqlite3.Connection, thread: IngestedThread) -> bool:
+def save_thread(con: sqlite3.Connection, thread: IngestedThread, force: bool = False) -> bool:
     """Save thread + messages. Returns True if written, False if skipped (dedup)."""
     sha1 = _thread_sha1(thread)
     existing = con.execute("SELECT sha1 FROM threads WHERE id=?", (thread.id,)).fetchone()
-    if existing and existing["sha1"] == sha1:
+    if not force and existing and existing["sha1"] == sha1:
         return False
 
     # Ensure source row exists (FK constraint)
@@ -202,8 +223,12 @@ def save_thread(con: sqlite3.Connection, thread: IngestedThread) -> bool:
         for i, part in enumerate(_message_parts(msg)):
             text = _strip_content(part.text).strip()
             search_text = clean_content(text) if part.searchable else ""
+            # Also add data field content to search_text for better searchability
+            if part.data and part.searchable:
+                data_str = json.dumps(part.data, ensure_ascii=False)
+                search_text += " " + clean_content(data_str)
             con.execute(
-                "INSERT INTO message_parts(message_id, ord, kind, text, search_text, data, visible, searchable) "
+                "INSERT OR REPLACE INTO message_parts(message_id, ord, kind, text, search_text, data, visible, searchable) "
                 "VALUES(?,?,?,?,?,?,?,?)",
                 (
                     msg.id,
@@ -319,13 +344,15 @@ def search_messages(con: sqlite3.Connection, phrase: str, limit: int = 50) -> li
             m.created_at,
             p.kind,
             p.text AS content_clean,
-            p.ord AS ord
+            p.ord AS ord,
+            t.rowid AS thread_rowid,
+            m.rowid AS message_rowid
         FROM message_parts_fts
         JOIN message_parts p ON p.message_id = message_parts_fts.message_id AND p.ord = message_parts_fts.ord
         JOIN messages m ON m.id = p.message_id
         JOIN threads t ON t.id = m.thread_id
         WHERE message_parts_fts MATCH ?
-        ORDER BY t.source_id, t.id, m.created_at, m.id, p.ord
+        ORDER BY rank, t.source_id, t.id, m.created_at DESC, m.id, p.ord
         LIMIT ?
         """,
         (_fts_query(phrase), limit),
@@ -341,7 +368,8 @@ def search_threads(con: sqlite3.Connection, phrase: str, limit: int = 50) -> lis
             t.id AS thread_id,
             t.title,
             COUNT(*) AS match_count,
-            MAX(m.created_at) AS last_match_at
+            MAX(m.created_at) AS last_match_at,
+            t.rowid AS thread_rowid
         FROM message_parts_fts f
         JOIN message_parts p ON p.message_id = f.message_id AND p.ord = f.ord
         JOIN messages m ON m.id = p.message_id
