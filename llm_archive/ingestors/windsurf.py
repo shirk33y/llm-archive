@@ -280,78 +280,85 @@ class LanguageServerClient:
     @property
     def base(self) -> str:
         if self._base is None:
-            token, hostname = _load_csrf_token()
-            if hostname:
-                self._base = f"http://{hostname}:{self.port}"
-            else:
-                # Will be set by _get_csrf_token after CDP extraction
-                self._base = f"http://127.0.0.1:{self.port}"
+            # Use random subdomain - will be probed until one works
+            import random
+            subdomain = chr(random.randint(97, 122))  # a-z
+            self._base = f"http://{subdomain}.localhost:{self.port}"
         return self._base
     
-    async def _get_csrf_token(self) -> str:
-        """Get CSRF token from running Windsurf with automatic extraction."""
-        # Try to load from file first
+    def _get_csrf_token(self) -> str:
+        """Get CSRF token from file."""
         token, hostname = _load_csrf_token()
-        if token and hostname:
-            self._hostname = hostname
-            self._base = f"http://{hostname}:{self.port}"
-            return token
-        
-        # Try to extract via CDP
-        logger.info("CSRF token or hostname not found in file, attempting CDP extraction...")
-        token, hostname = await _extract_csrf_token_via_cdp()
-        if token and hostname:
-            self._hostname = hostname
-            self._base = f"http://{hostname}:{self.port}"
+        if token:
             return token
         
         raise RuntimeError(
-            "Could not extract CSRF token or hostname. Ensure Windsurf is running with CDP enabled "
-            "(windsurf --remote-debugging-port=9222) and try again."
+            "Could not find CSRF token. Run Windsurf with CDP enabled (windsurf --remote-debugging-port=9222) "
+            "and run the extract_csrf_safe.py script to extract the token."
         )
     
     async def get_trajectory(self, cascade_id: str) -> dict | None:
-        """Get trajectory data for a cascade_id with retry and hostname re-extraction"""
-        for attempt in range(3):
-            try:
-                url = f"{self.base}/exa.language_server_pb.LanguageServerService/GetCascadeTrajectory"
-                
-                headers = {
-                    "x-codeium-csrf-token": await self._get_csrf_token(),
-                    "connect-protocol-version": "1",
-                    "content-type": "application/proto",
-                    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Windsurf/1.110.1 Chrome/142.0.7444.265 Electron/39.6.0 Safari/537.36"
-                }
-                
-                protobuf_message = encode_get_cascade_request(cascade_id)
-                
-                req = urllib.request.Request(url, data=protobuf_message, headers=headers)
-                with urllib.request.urlopen(req, timeout=10) as response:
-                    if response.status != 200:
-                        return None
-                    
-                    content = response.read()
-                    
-                    # Decompress if gzipped
-                    if response.headers.get('Content-Encoding') == 'gzip':
-                        content = gzip.decompress(content)
-                    
-                    # Decode the trajectory
-                    return self._decode_trajectory(content)
-            
-            except Exception as e:
-                if attempt == 2:
-                    raise
-                
-                logger.warning(f"Attempt {attempt + 1} failed: {e}. Re-extracting hostname...")
-                # Re-extract hostname via CDP
-                token, hostname = await _extract_csrf_token_via_cdp()
-                if hostname:
-                    self._hostname = hostname
-                    self._base = f"http://{hostname}:{self.port}"
-                    logger.info(f"Re-extracted hostname: {hostname}")
-                await asyncio.sleep(1)
+        """Get trajectory data for a cascade_id with port and subdomain cycling"""
+        import random
+        import string
         
+        # Get all listening ports from language server
+        ports = []
+        if psutil:
+            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                if 'language_server' in proc.info['name']:
+                    try:
+                        connections = proc.connections()
+                        for conn in connections:
+                            if conn.status == 'LISTEN' and conn.laddr:
+                                ports.append(conn.laddr.port)
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        pass
+        
+        if not ports:
+            raise RuntimeError("No language server ports found. Ensure Windsurf is running.")
+        
+        # Cycle through all port × subdomain combinations
+        subdomains = list(string.ascii_lowercase)
+        random.shuffle(subdomains)
+        
+        for port in ports:
+            for subdomain in subdomains:
+                try:
+                    url = f"http://{subdomain}.localhost:{port}/exa.language_server_pb.LanguageServerService/GetCascadeTrajectory"
+                    
+                    headers = {
+                        "x-codeium-csrf-token": self._get_csrf_token(),
+                        "connect-protocol-version": "1",
+                        "content-type": "application/proto",
+                        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Windsurf/1.110.1 Chrome/142.0.7444.265 Electron/39.6.0 Safari/537.36"
+                    }
+                    
+                    protobuf_message = encode_get_cascade_request(cascade_id)
+                    
+                    req = urllib.request.Request(url, data=protobuf_message, headers=headers)
+                    with urllib.request.urlopen(req, timeout=5) as response:
+                        if response.status != 200:
+                            continue
+                        
+                        content = response.read()
+                        
+                        # Decompress if gzipped
+                        if response.headers.get('Content-Encoding') == 'gzip':
+                            content = gzip.decompress(content)
+                        
+                        # Decode the trajectory
+                        result = self._decode_trajectory(content)
+                        
+                        logger.info(f"Working: {subdomain}.localhost:{port}")
+                        
+                        return result
+                
+                except Exception as e:
+                    logger.debug(f"{subdomain}.localhost:{port} failed: {e}")
+                    continue
+        
+        logger.error("All port × subdomain combinations failed")
         return None
     
     def _decode_trajectory(self, data: bytes) -> dict:

@@ -314,7 +314,7 @@ The language server uses a dynamic subdomain prefix (e.g., `x.localhost`, `t.loc
   - Time
   - Sequential order
   - Any observable factor
-- **Extracted via CDP**: The current hostname must be extracted from intercepted requests via CDP
+- **No 127.0.0.1 fallback**: Never use 127.0.0.1 - it does not work with the language server
 
 **Subdomain Analysis Results:**
 - Captured 36 requests in 30 seconds
@@ -324,13 +324,18 @@ The language server uses a dynamic subdomain prefix (e.g., `x.localhost`, `t.loc
 - Subdomains change even within the same second
 - No correlation between subdomain and endpoint name
 
-**Conclusion:**
-The subdomain generation is completely random and unpredictable. The only reliable way to get the correct hostname is to:
-1. Intercept requests via CDP and extract the hostname
-2. Use the extracted hostname immediately
-3. Re-extract if the connection fails (subdomain changes frequently)
+**Current Approach: Subdomain Cycling**
+Since the subdomain is completely random and changes frequently, the ingestor:
+1. **Does not use CDP extraction** - subdomain extraction is useless since it changes so quickly
+2. **Cycles through all subdomains [a-z]** on every API call
+3. **Tries each subdomain** until one responds successfully
+4. **Resumes cycling** if connection fails (subdomain changes frequently)
+5. **Never uses 127.0.0.1** - this is not a valid language server address
 
-Hardcoding a subdomain (e.g., a.localhost) will only work temporarily by chance and is not a reliable solution.
+This approach is reliable because:
+- It always finds a working subdomain (one of the 26 will work)
+- It handles the rapid subdomain changes automatically
+- It doesn't rely on CDP which adds complexity without benefit
 
 ### Example Scripts
 
