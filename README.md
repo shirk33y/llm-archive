@@ -23,21 +23,24 @@ uv venv && uv sync
 
 ## Usage
 
-### First-time import
-
-```sh
-uv run llm-archive init claude_code   # imports all Claude Code sessions
-uv run llm-archive init opencode      # imports all OpenCode sessions
-uv run llm-archive init claude        # opens browser → log in → dumps all claude.ai conversations
-uv run llm-archive init deepseek      # opens browser → log in → dumps all deepseek.com conversations
-uv run llm-archive sync windsurf      # sync windsurf (requires Windsurf running)
-```
-
-### Incremental sync
+### Sync
 
 ```sh
 uv run llm-archive sync               # sync all sources
 uv run llm-archive sync claude_code   # sync one source
+uv run llm-archive sync deepseek      # sync deepseek (opens browser for first-time auth)
+uv run llm-archive sync windsurf      # sync windsurf (requires Windsurf running)
+```
+
+The `sync` command performs first-time setup automatically when needed:
+- Local sources (claude_code, opencode): No setup required
+- API sources (claude, deepseek): Opens browser for first-time auth, then stores token
+- windsurf: Requires Windsurf to be running with Language Server active
+
+### Force full resync
+
+```sh
+uv run llm-archive sync <source> -f    # force full resync (ignore last sync timestamp)
 ```
 
 ### Status
