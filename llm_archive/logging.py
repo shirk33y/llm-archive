@@ -22,6 +22,9 @@ class ComponentFormatter(logging.Formatter):
 root_logger = logging.getLogger()
 root_logger.setLevel(logging.DEBUG)
 
+# Suppress httpx INFO logs
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 # Add rich handler without timestamps
 handler = RichHandler(
     rich_tracebacks=True,
@@ -38,8 +41,10 @@ def set_verbose(verbose: bool) -> None:
     _verbose = verbose
     if verbose:
         root_logger.setLevel(logging.DEBUG)
+        logging.getLogger("httpx").setLevel(logging.DEBUG)
     else:
         root_logger.setLevel(logging.INFO)
+        logging.getLogger("httpx").setLevel(logging.WARNING)
 
 def is_verbose() -> bool:
     """Check if verbose logging is enabled."""
