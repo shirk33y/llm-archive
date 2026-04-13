@@ -1,8 +1,14 @@
 from __future__ import annotations
+import asyncio
 import json
 import subprocess
 import time
 from pathlib import Path
+from typing import Callable, Awaitable
+
+from llm_archive.logging import get_logger
+
+logger = get_logger("auth")
 
 AUTH_DIR = Path.home() / ".llm-archive" / "auth"
 
@@ -13,59 +19,76 @@ def auth_path(source_id: str) -> Path:
 
 async def login_headful(source_id: str, url: str) -> dict:
     """Connect to user's real Chrome via remote debugging, save storageState."""
-    from playwright.async_api import async_playwright
-
     AUTH_DIR.mkdir(parents=True, exist_ok=True)
     out = auth_path(source_id)
 
-    # Find Chrome/Chromium executable
+    async def detect_login(ctx, page):
+        """Detect Claude login by checking for session cookies."""
+        for _ in range(300):
+            cookies = await ctx.cookies()
+            names = {c["name"] for c in cookies}
+            if names & {"sessionKey", "__Secure-next-auth.session-token", "activitySessionId"}:
+                return True
+            await asyncio.sleep(1)
+        return False
+
+    return await login_with_detection(source_id, url, detect_login, out)
+
+
+async def login_with_detection(
+    source_id: str,
+    url: str,
+    detect_login: Callable[[any, any], Awaitable[bool]],
+    output_path: Path,
+    timeout: int = 300
+) -> dict:
+    """Generic login function that uses a callback to detect login completion."""
+    from playwright.async_api import async_playwright
+
+    AUTH_DIR.mkdir(parents=True, exist_ok=True)
+
+    logger.info(f"{source_id.capitalize()} login required. Please press ENTER to open browser and login.")
+    input()
+
     chrome = _find_chrome()
-
-    print(f"\nLaunching your Chrome with remote debugging on port 9222...")
-    print(f"Navigate to {url} and log in.")
-    print("The session will be saved automatically once you're logged in.\n")
-
-    # Use existing Chrome profile so Google login is already active
-    chrome_profile = _find_chrome_profile()
     chrome_args = chrome if isinstance(chrome, list) else [chrome]
+    chrome_profile = _find_chrome_profile()
     proc = subprocess.Popen([
         *chrome_args,
         "--remote-debugging-port=9222",
         "--no-first-run",
         "--no-default-browser-check",
-        "--password-store=basic",   # disable OS keyring so cookies are readable
+        "--password-store=basic",
+        "--ozone-platform=x11",
+        "--log-level=3",
         f"--user-data-dir={chrome_profile}",
-        url,
-    ])
+    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-    # Give Chrome a moment to start
     time.sleep(2)
 
-    async with async_playwright() as p:
-        # Connect to the running Chrome
-        browser = await p.chromium.connect_over_cdp("http://localhost:9222")
-        ctx = browser.contexts[0]
-        pages = ctx.pages
-        page = pages[0] if pages else await ctx.new_page()
+    try:
+        async with async_playwright() as p:
+            logger.info(f"connecting to Chrome DevTools")
+            logger.info("Waiting for login...")
+            browser = await p.chromium.connect_over_cdp("http://localhost:9222")
+            ctx = browser.contexts[0]
+            pages = ctx.pages
+            page = pages[0] if pages else await ctx.new_page()
 
-        # Wait until session cookie appears (means user is logged in)
-        print("Waiting for login (up to 5 minutes)...")
-        import asyncio
-        for _ in range(300):
-            cookies = await ctx.cookies()
-            # Claude sets 'sessionKey' or '__Secure-next-auth.session-token' on login
-            names = {c["name"] for c in cookies}
-            if names & {"sessionKey", "__Secure-next-auth.session-token", "activitySessionId"}:
-                print("Login detected — saving session.")
-                break
-            await asyncio.sleep(1)
-        else:
-            raise TimeoutError("Timed out waiting for login")
+            await page.goto(url, wait_until="domcontentloaded")
 
-        state = await ctx.storage_state(path=str(out))
-        await browser.close()
+            login_detected = await asyncio.wait_for(detect_login(ctx, page), timeout=timeout)
+            if not login_detected:
+                raise TimeoutError("Timed out waiting for login")
 
-    proc.terminate()
+            logger.info(f"login detected — saving session")
+            state = await ctx.storage_state(path=str(output_path))
+            await browser.close()
+            logger.info("closing browser")
+    finally:
+        proc.terminate()
+        proc.wait()
+
     return state
 
 

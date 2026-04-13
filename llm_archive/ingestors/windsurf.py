@@ -1,476 +1,1171 @@
 from __future__ import annotations
+import gzip
 import json
+import re
+import struct
 import subprocess
-import time
+import sys
 import urllib.request
 from pathlib import Path
 from typing import AsyncIterator
 
 from llm_archive.ingestors.base import BaseIngestor
+from llm_archive.logging import get_logger
 from llm_archive.schema import IngestedMessage, IngestedPart, IngestedThread
 
+logger = get_logger("windsurf")
+
 try:
-    import websocket
+    import psutil
 except ImportError:
-    websocket = None
+    psutil = None
 
-CDP_PORT = 9222
-CDP_BASE = f"http://localhost:{CDP_PORT}"
-
-
-def _is_cdp_running() -> bool:
-    try:
-        urllib.request.urlopen(f"{CDP_BASE}/json/version", timeout=2).read()
-        return True
-    except Exception:
-        return False
-
-
-def _get_main_ws() -> str:
-    data = json.loads(urllib.request.urlopen(f"{CDP_BASE}/json/list").read())
-    pages = [t for t in data if t["type"] == "page"]
-    if not pages:
-        raise RuntimeError("No page target in CDP")
-    return pages[0]["webSocketDebuggerUrl"]
-
-
-class CDPClient:
-    def __init__(self, ws_url: str, timeout: int = 15):
-        if websocket is None:
-            raise RuntimeError("websocket-client required: uv add websocket-client")
-        self.ws = websocket.create_connection(ws_url, timeout=timeout)
-        self._id = 0
-
-    def call(self, method: str, params: dict | None = None, timeout: int = 15) -> dict:
-        self._id += 1
-        self.ws.send(json.dumps({"id": self._id, "method": method, "params": params or {}}))
-        self.ws.settimeout(timeout)
-        while True:
-            try:
-                r = json.loads(self.ws.recv())
-                if r.get("id") == self._id:
-                    return r.get("result", {})
-            except websocket.WebSocketTimeoutException:
-                return {}
-
-    def eval(self, expr: str, await_promise: bool = False, timeout: int = 15):
-        params = {"expression": expr, "returnByValue": True}
-        if await_promise:
-            params["awaitPromise"] = True
-        r = self.call("Runtime.evaluate", params, timeout=timeout)
-        res = r.get("result", {})
-        if res.get("type") == "object" and res.get("subtype") == "error":
-            raise RuntimeError(res.get("description", "JS error"))
-        return res.get("value")
-
-    def close(self):
-        self.ws.close()
-
-
-def _store_trajectory(cdp: CDPClient) -> int:
-    count = cdp.eval("""
-    (function() {
-        const el = document.getElementById('windsurf.cascadePanel');
-        if (!el) return -1;
-        const containerKey = Object.keys(el).find(k => k.startsWith('__reactContainer'));
-        if (!containerKey) return -2;
-        let root = el[containerKey];
-        let trajectory = null;
-        let visited = new WeakSet();
-
-        function traverse(fiber, depth) {
-            if (!fiber || depth > 150 || trajectory) return;
-            if (typeof fiber !== 'object') return;
-            try { if (visited.has(fiber)) return; visited.add(fiber); } catch(e) { return; }
-            let props = fiber.memoizedProps || fiber.pendingProps;
-            if (props && props.trajectory && props.trajectory.steps && props.trajectory.steps.length > 0) {
-                trajectory = props.trajectory;
-                return;
-            }
-            traverse(fiber.child, depth+1);
-            traverse(fiber.sibling, depth+1);
-        }
-
-        traverse(root, 0);
-        window.__cascadeTrajectory = trajectory;
-        return trajectory ? trajectory.steps.length : 0;
-    })()
-    """)
-    return count or 0
-
-
-def _extract_conversation(cdp: CDPClient) -> dict | None:
-    raw = cdp.eval("""
-    (function() {
-        let traj = window.__cascadeTrajectory;
-        if (!traj) return null;
-
-        let turns = [];
-        for (let step of traj.steps) {
-            let case_ = step.step && step.step.case;
-            let val = step.step && step.step.value;
-            let meta = step.metadata || {};
-
-            if (case_ === 'userInput' && val) {
-                let text = val.userResponse || (val.items && val.items.map(i=>i.text||'').join('')) || '';
-                if (text) turns.push({role: 'user', text: text, at: meta.createdAt});
-            }
-            else if (case_ === 'plannerResponse' && val) {
-                if (val.response) {
-                    turns.push({
-                        role: 'assistant',
-                        text: val.response,
-                        thinking: val.thinking || null,
-                        at: meta.createdAt
-                    });
-                }
-            }
-            else if (case_ === 'runCommand' && val) {
-                turns.push({
-                    role: 'tool',
-                    command: val.command || '',
-                    args: val.args || [],
-                    stdout: val.stdout || val.stdoutBuffer || '',
-                    exitCode: val.exitCode,
-                    at: meta.createdAt
-                });
-            }
-            else if (case_ === 'writeFile' && val) {
-                turns.push({
-                    role: 'tool',
-                    tool: 'write_file',
-                    path: val.path || val.filePath || '',
-                    content: val.content || '',
-                    at: meta.createdAt
-                });
-            }
-            else if (case_ === 'readFile' && val) {
-                turns.push({role: 'tool', tool: 'read_file', path: val.path || val.filePath || '', at: meta.createdAt});
-            }
-            else if (case_ === 'todoList' && val) {
-                turns.push({role: 'tool', tool: 'todo_list', todos: (val.todos || []).map(t => t.content), at: meta.createdAt});
-            }
-            else if (case_ === 'checkpoint' && val) {
-                turns.push({role: 'checkpoint', intent: val.userIntent || '', at: meta.createdAt});
-            }
-        }
-
-        return JSON.stringify({
-            trajectoryId: traj.trajectoryId,
-            turns: turns
-        });
-    })()
-    """)
-    if not raw:
-        return None
-    return json.loads(raw)
-
-
-def _parse_timestamp(ts: str | None) -> int | None:
-    if not ts:
-        return None
-    from datetime import datetime, timezone
-    try:
-        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-        return int(dt.timestamp() * 1000)
-    except Exception:
-        return None
-
-
-def _convert_to_thread(conv: dict, title: str = "") -> IngestedThread:
-    traj_id = conv.get("trajectoryId", "unknown")
-    turns = conv.get("turns", [])
-
-    messages: list[IngestedMessage] = []
-    created_at = None
-    updated_at = None
-
-    for i, turn in enumerate(turns):
-        role = turn.get("role")
-        ts = _parse_timestamp(turn.get("at"))
-
-        if ts:
-            if created_at is None:
-                created_at = ts
-            updated_at = ts
-
-        parts: list[IngestedPart] = []
-        content = ""
-
-        if role == "user":
-            content = turn.get("text", "")
-            parts.append(IngestedPart(kind="text", text=content))
-
-        elif role == "assistant":
-            thinking = turn.get("thinking")
-            text = turn.get("text", "")
-            if thinking:
-                parts.append(IngestedPart(kind="thinking", text=thinking, visible=False))
-                content = f"[Thinking]\n{thinking}\n\n{text}"
-            else:
-                content = text
-            parts.append(IngestedPart(kind="text", text=text))
-
-        elif role == "tool":
-            tool = turn.get("tool", "")
-            if tool == "write_file":
-                path = turn.get("path", "")
-                content = f"[Write file: {path}]"
-                parts.append(IngestedPart(kind="tool_call", text=content, data={"path": path}))
-            elif tool == "read_file":
-                path = turn.get("path", "")
-                content = f"[Read file: {path}]"
-                parts.append(IngestedPart(kind="tool_call", text=content, data={"path": path}))
-            elif tool == "todo_list":
-                todos = turn.get("todos", [])
-                content = "[TODO list]\n" + "\n".join(f"  - {t}" for t in todos)
-                parts.append(IngestedPart(kind="tool_call", text=content, data={"todos": todos}))
-            elif turn.get("command"):
-                cmd = " ".join([turn.get("command", "")] + (turn.get("args") or []))
-                stdout = turn.get("stdout", "")
-                content = f"[Command: {cmd}]"
-                if stdout:
-                    content += f"\nOutput:\n{stdout[:500]}"
-                parts.append(IngestedPart(kind="tool_call", text=content, data={"command": cmd, "stdout": stdout}))
-            else:
-                content = str(turn)
-                parts.append(IngestedPart(kind="text", text=content))
-
-        elif role == "checkpoint":
-            intent = turn.get("intent", "")
-            content = f"[Checkpoint: {intent}]"
-            parts.append(IngestedPart(kind="system", text=content, visible=False))
-
-        else:
-            content = str(turn)
-            parts.append(IngestedPart(kind="text", text=content))
-
-        messages.append(IngestedMessage(
-            id=f"windsurf:{traj_id}:{i}",
-            thread_id=f"windsurf:{traj_id}",
-            role=role if role in ("user", "assistant", "system", "tool") else "system",
-            content=content,
-            created_at=ts,
-            metadata={},
-            parts=parts,
-            raw=turn,
-        ))
-
-    if not title and messages:
-        first_user = next((m for m in messages if m.role == "user"), None)
-        if first_user:
-            title = first_user.content[:80].split("\n")[0].strip()
-
-    return IngestedThread(
-        id=f"windsurf:{traj_id}",
-        source_id="windsurf",
-        title=title or traj_id,
-        created_at=created_at,
-        updated_at=updated_at,
-        messages=messages,
+def _detect_ls_port() -> int:
+    """Detect the local language server port by finding the process and its listening ports."""
+    # Try to find language server process and its ports using psutil
+    if psutil:
+        try:
+            for proc in psutil.process_iter(['name', 'pid', 'cmdline', 'exe', 'cwd']):
+                try:
+                    # Check if this is the Windsurf language server by examining:
+                    # 1. Binary name contains "language_server"
+                    # 2. Command line has Windsurf-specific flags
+                    # 3. Working directory contains Windsurf-specific paths
+                    name = proc.info.get('name', '')
+                    exe = proc.info.get('exe', '')
+                    cmdline = proc.info.get('cmdline', [])
+                    cwd = proc.info.get('cwd', '')
+                    
+                    # Check binary name or path
+                    is_language_server = 'language_server' in name.lower() or (exe and 'language_server' in exe.lower())
+                    
+                    # Check for Windsurf-specific flags in command line
+                    # Using most specific flags: --windsurf_version, --codeium_dir
+                    has_windsurf_flags = False
+                    if cmdline:
+                        cmdline_str = ' '.join(cmdline).lower()
+                        has_windsurf_flags = any(flag in cmdline_str for flag in [
+                            '--windsurf_version',
+                            '--codeium_dir'
+                        ])
+                    
+                    # Check working directory for Windsurf-specific paths
+                    has_windsurf_cwd = False
+                    if cwd:
+                        cwd_lower = cwd.lower()
+                        has_windsurf_cwd = 'windsurf' in cwd_lower or 'codeium' in cwd_lower
+                    
+                    if is_language_server and (has_windsurf_flags or has_windsurf_cwd):
+                        # Found Windsurf language server process, check its listening ports
+                        for conn in proc.net_connections(kind='inet'):
+                            if conn.status == 'LISTEN' and conn.laddr:
+                                port = conn.laddr.port
+                                # Return the first listening port (language server LSP port)
+                                return port
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    continue
+        except Exception:
+            pass
+    
+    # If psutil not available or process not found, raise error
+    raise RuntimeError(
+        "Could not detect Windsurf language server port. "
+        "Please ensure Windsurf is running with the language server enabled."
     )
 
 
-def _restart_windsurf_with_cdp(cdp_port: int = CDP_PORT) -> bool:
-    """Kill existing Windsurf and restart with CDP enabled."""
-    print("Restarting Windsurf with CDP...", file=__import__("sys").stderr)
+# Protobuf encoding/decoding
+def encode_varint(value: int) -> bytes:
+    """Encode a varint (variable-length integer)"""
+    result = bytes()
+    while value > 0x7F:
+        result += bytes([(value & 0x7F) | 0x80])
+        value >>= 7
+    result += bytes([value])
+    return result
 
-    # Kill existing windsurf processes
-    subprocess.run(["pkill", "-f", "windsurf"], capture_output=True)
-    time.sleep(2)
 
-    # Try different launch methods
-    launch_cmds = [
-        # Direct binary
-        ["windsurf", f"--remote-debugging-port={cdp_port}", "--remote-allow-origins=*"],
-        # Flatpak
-        ["flatpak", "run", "com.codeium.Windsurf", f"--remote-debugging-port={cdp_port}", "--remote-allow-origins=*"],
-        # Distrobox container
-        ["distrobox", "enter", "windsurf", "--", "windsurf", f"--remote-debugging-port={cdp_port}", "--remote-allow-origins=*"],
-    ]
+def decode_varint(data: bytes, offset: int) -> tuple[int, int]:
+    """Decode a varint from data at offset, return (value, new_offset)"""
+    result = 0
+    shift = 0
+    while True:
+        if offset >= len(data):
+            return (0, offset)
+        byte = data[offset]
+        offset += 1
+        result |= (byte & 0x7F) << shift
+        if (byte & 0x80) == 0:
+            break
+        shift += 7
+    return (result, offset)
 
-    for cmd in launch_cmds:
+
+def decode_field(data: bytes, offset: int) -> tuple[int, int, bytes | int | None, int]:
+    """Decode a protobuf field, return (field_number, wire_type, value, new_offset)"""
+    if offset >= len(data):
+        return (0, 0, None, offset)
+    
+    tag, offset = decode_varint(data, offset)
+    field_number = tag >> 3
+    wire_type = tag & 0x7
+    
+    if wire_type == 0:  # varint
+        value, offset = decode_varint(data, offset)
+    elif wire_type == 1:  # 64-bit
+        value = struct.unpack("<Q", data[offset:offset+8])[0]
+        offset += 8
+    elif wire_type == 2:  # length-delimited
+        length, offset = decode_varint(data, offset)
+        value = data[offset:offset+length]
+        offset += length
+    elif wire_type == 5:  # 32-bit
+        value = struct.unpack("<I", data[offset:offset+4])[0]
+        offset += 4
+    else:
+        value = None
+    
+    return (field_number, wire_type, value, offset)
+
+
+def serialize_step(step: dict) -> dict:
+    """Convert bytes in step dict to strings for JSON serialization"""
+    def serialize_value(val):
+        if isinstance(val, bytes):
+            return val.decode('utf-8', errors='replace')
+        elif isinstance(val, dict):
+            return {k: serialize_value(v) for k, v in val.items()}
+        elif isinstance(val, list):
+            return [serialize_item(v) for v in val]
+        return val
+    
+    def serialize_item(val):
+        if isinstance(val, bytes):
+            return val.decode('utf-8', errors='replace')
+        elif isinstance(val, dict):
+            return {k: serialize_item(v) for k, v in val.items()}
+        return val
+    
+    return {k: serialize_value(v) for k, v in step.items()}
+
+
+def encode_get_cascade_request(cascade_id: str) -> bytes:
+    """Encode GetCascadeTrajectoryRequest protobuf message"""
+    field_number = 1
+    wire_type = 2  # length-delimited
+    tag = (field_number << 3) | wire_type
+    cascade_id_bytes = cascade_id.encode('utf-8')
+    message = bytes()
+    message += encode_varint(tag)
+    message += encode_varint(len(cascade_id_bytes))
+    message += cascade_id_bytes
+    return message
+
+
+class LanguageServerClient:
+    """Client for Windsurf language server API"""
+    
+    def __init__(self, port: int | None = None):
+        self._port = port
+        self._base = None
+        self.csrf_token = None
+    
+    @property
+    def port(self) -> int:
+        if self._port is None:
+            self._port = _detect_ls_port()
+        return self._port
+    
+    @property
+    def base(self) -> str:
+        if self._base is None:
+            self._base = f"http://localhost:{self.port}"
+        return self._base
+    
+    def _get_csrf_token(self) -> str:
+        """Get CSRF token from running Windsurf"""
+        # For now, use a fixed token from captured traffic
+        # In production, this should be extracted from the browser
+        return "ae3e783d-cf0f-4d70-82ed-bc302ac66605"
+    
+    def get_trajectory(self, cascade_id: str) -> dict | None:
+        """Get trajectory data for a cascade_id"""
+        url = f"{self.base}/exa.language_server_pb.LanguageServerService/GetCascadeTrajectory"
+        
+        headers = {
+            "x-codeium-csrf-token": self._get_csrf_token(),
+            "connect-protocol-version": "1",
+            "content-type": "application/proto",
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Windsurf/1.110.1 Chrome/142.0.7444.265 Electron/39.6.0 Safari/537.36"
+        }
+        
+        protobuf_message = encode_get_cascade_request(cascade_id)
+        
         try:
-            # Try to run the command
-            result = subprocess.run(cmd[:1] + ["--version"], capture_output=True, timeout=5)
-            if result.returncode == 0 or b"windsurf" in result.stdout.lower():
-                # Command exists, launch Windsurf
-                subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    start_new_session=True,
-                )
-                break
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            continue
-
-    # Wait for CDP to become available
-    cdp_base = f"http://localhost:{cdp_port}"
-    for i in range(30):
-        time.sleep(1)
-        try:
-            urllib.request.urlopen(f"{cdp_base}/json/version", timeout=2).read()
-            print(f"CDP ready on port {cdp_port}.", file=__import__("sys").stderr)
-            time.sleep(2)  # Extra wait for workbench to load
-            return True
-        except Exception:
-            pass
-
-    print(f"ERROR: CDP did not start on port {cdp_port} within 30s", file=__import__("sys").stderr)
-    return False
+            req = urllib.request.Request(url, data=protobuf_message, headers=headers)
+            with urllib.request.urlopen(req, timeout=10) as response:
+                if response.status != 200:
+                    return None
+                
+                content = response.read()
+                
+                # Decompress if gzipped
+                if response.headers.get('Content-Encoding') == 'gzip':
+                    content = gzip.decompress(content)
+                
+                # Decode the trajectory
+                return self._decode_trajectory(content)
+        except Exception as e:
+            logger.error(f"Error getting trajectory for {cascade_id}: {e}")
+            return None
+    
+    def _decode_trajectory(self, data: bytes) -> dict:
+        """Decode GetCascadeTrajectoryResponse"""
+        offset = 0
+        result = {
+            "trajectory_id": None,
+            "cascade_id": None,
+            "step_count": 0,
+            "steps": []
+        }
+        
+        while offset < len(data):
+            field_number, wire_type, value, offset = decode_field(data, offset)
+            
+            if field_number == 1:  # trajectory (CortexTrajectory)
+                trajectory_offset = 0
+                while trajectory_offset < len(value):
+                    fn, wt, val, trajectory_offset = decode_field(value, trajectory_offset)
+                    
+                    if fn == 1:  # trajectory_id
+                        result["trajectory_id"] = val.decode('utf-8', errors='replace')
+                    elif fn == 6:  # cascade_id
+                        result["cascade_id"] = val.decode('utf-8', errors='replace')
+                    elif fn == 2:  # steps (repeated CortexTrajectoryStep)
+                        step = self._decode_step(val)
+                        result["step_count"] += 1
+                        result["steps"].append(step)
+            
+            elif field_number == 3:  # num_total_steps
+                result["step_count"] = value
+        
+        return result
+    
+    def _decode_step(self, data: bytes) -> dict:
+        """Decode CortexTrajectoryStep"""
+        offset = 0
+        step = {"type": None, "status": None, "data": {}}
+        
+        while offset < len(data):
+            fn, wt, val, offset = decode_field(data, offset)
+            
+            if fn == 1:  # type (enum)
+                step["type"] = val
+            elif fn == 4:  # status (enum)
+                step["status"] = val
+            elif fn == 5:  # metadata (message) - just timestamps, not actual data
+                pass
+            elif fn == 13:  # grep_search (oneof: step)
+                if isinstance(val, bytes):
+                    step["data"]["grep_search"] = self._decode_grep_search(val)
+            elif fn == 14:  # view_file (oneof: step)
+                if isinstance(val, bytes):
+                    step["data"]["view_file"] = self._decode_view_file(val)
+            elif fn == 15:  # list_directory (oneof: step)
+                if isinstance(val, bytes):
+                    step["data"]["list_directory"] = self._decode_list_directory(val)
+            elif fn == 19:  # user_input (oneof: step)
+                if isinstance(val, bytes):
+                    step["data"]["user_input"] = self._decode_user_input(val)
+            elif fn == 20:  # planner_response (oneof: step)
+                if isinstance(val, bytes):
+                    step["data"]["planner_response"] = self._decode_planner_response(val)
+            elif fn == 23:  # write_to_file (oneof: step)
+                if isinstance(val, bytes):
+                    step["data"]["write_file"] = self._decode_write_file(val)
+            elif fn == 28:  # run_command (oneof: step)
+                if isinstance(val, bytes):
+                    step["data"]["run_command"] = self._decode_run_command(val)
+            elif fn == 29:  # related_files (oneof: step)
+                if isinstance(val, bytes):
+                    step["data"]["related_files"] = val.decode('utf-8', errors='replace')
+            elif fn == 30:  # checkpoint (oneof: step)
+                if isinstance(val, bytes):
+                    step["data"]["checkpoint"] = self._decode_checkpoint(val)
+            elif fn == 24:  # error_message (oneof: step)
+                if isinstance(val, bytes):
+                    step["data"]["error_message"] = self._decode_error_message(val)
+            elif fn == 34:  # find (oneof: step)
+                if isinstance(val, bytes):
+                    step["data"]["find"] = self._decode_find(val)
+            elif fn == 37:  # command_output (oneof: step)
+                if isinstance(val, bytes):
+                    step["data"]["command_output"] = self._decode_command_output(val)
+            elif fn == 40:  # read_url_content (oneof: step)
+                if isinstance(val, bytes):
+                    step["data"]["read_url_content"] = self._decode_read_url_content(val)
+            elif fn == 47:  # mcp_tool (oneof: step)
+                if isinstance(val, bytes):
+                    step["data"]["mcp_tool"] = self._decode_mcp_tool(val)
+            elif fn == 62:  # tool_name (oneof: step)
+                if isinstance(val, bytes):
+                    step["data"]["tool_name"] = val.decode('utf-8', errors='replace')
+            elif fn == 63:  # tool_name_with_state (oneof: step)
+                if isinstance(val, bytes):
+                    step["data"]["tool_name_with_state"] = val.decode('utf-8', errors='replace')
+            elif fn == 6:  # context_memory (oneof: step)
+                if isinstance(val, bytes):
+                    step["data"]["context_memory"] = self._decode_context_memory(val)
+            elif fn == 38:  # project_context (oneof: step)
+                if isinstance(val, bytes):
+                    step["data"]["project_context"] = self._decode_project_context(val)
+            elif fn == 43:  # empty_field (oneof: step)
+                if isinstance(val, bytes):
+                    step["data"]["empty_field"] = val.decode('utf-8', errors='replace')
+            elif fn == 56:  # url_reference (oneof: step)
+                if isinstance(val, bytes):
+                    step["data"]["url_reference"] = self._decode_url_reference(val)
+            elif fn == 10:  # file_content_edit (oneof: step)
+                if isinstance(val, bytes):
+                    step["data"]["file_content_edit"] = self._decode_file_content_edit(val)
+            elif fn == 41:  # parsed_url_content (oneof: step)
+                if isinstance(val, bytes):
+                    step["data"]["parsed_url_content"] = self._decode_parsed_url_content(val)
+            elif fn == 105:  # file_search_pattern (oneof: step)
+                if isinstance(val, bytes):
+                    step["data"]["file_search_pattern"] = self._decode_file_search_pattern(val)
+            elif fn == 87:  # plan (oneof: step)
+                if isinstance(val, bytes):
+                    step["data"]["plan"] = self._decode_plan(val)
+            elif fn == 97:  # file_uri (oneof: step)
+                if isinstance(val, bytes):
+                    step["data"]["file_uri"] = val.decode('utf-8', errors='replace')
+            elif fn == 101:  # grep_result (oneof: step)
+                if isinstance(val, bytes):
+                    step["data"]["grep_result"] = val.decode('utf-8', errors='replace')
+            elif fn == 115:  # ask_user_question (oneof: step)
+                if isinstance(val, bytes):
+                    step["data"]["ask_user_question"] = val.decode('utf-8', errors='replace')
+            elif fn == 42:  # search_web (oneof: step)
+                if isinstance(val, bytes):
+                    step["data"]["search_web"] = self._decode_search_web(val)
+            elif fn in [109]:  # Other/rare step data fields - keep generic
+                if isinstance(val, bytes):
+                    step[f"data_{fn}"] = val.decode('utf-8', errors='replace')
+            else:
+                # Store unknown fields for debugging
+                if fn not in [1, 2, 3, 4, 5]:  # Skip common non-step fields
+                    step[f"field_{fn}"] = val
+        
+        return step
+    
+    def _decode_user_input(self, data: bytes) -> str:
+        """Decode CortexStepUserInput"""
+        offset = 0
+        result = ""
+        
+        while offset < len(data):
+            fn, wt, val, offset = decode_field(data, offset)
+            
+            if fn == 1:  # query
+                if isinstance(val, bytes):
+                    result = val.decode('utf-8', errors='replace')
+            elif fn == 2:  # user_response
+                if isinstance(val, bytes):
+                    result = val.decode('utf-8', errors='replace')
+        
+        return result
+    
+    def _decode_planner_response(self, data: bytes) -> str:
+        """Decode CortexStepPlannerResponse"""
+        offset = 0
+        result = ""
+        thinking = ""
+        
+        while offset < len(data):
+            fn, wt, val, offset = decode_field(data, offset)
+            
+            if fn == 1:  # response
+                if isinstance(val, bytes):
+                    result = val.decode('utf-8', errors='replace')
+            elif fn == 8:  # modified_response
+                if isinstance(val, bytes):
+                    result = val.decode('utf-8', errors='replace')
+            elif fn == 3:  # thinking
+                if isinstance(val, bytes):
+                    thinking = val.decode('utf-8', errors='replace')
+        
+        if thinking:
+            return f"[Thinking]\n{thinking}\n\n{result}"
+        return result
+    
+    def _decode_write_file(self, data: bytes) -> dict:
+        """Decode WriteToFile message"""
+        offset = 0
+        result = {}
+        
+        while offset < len(data):
+            fn, wt, val, offset = decode_field(data, offset)
+            
+            if fn == 1:  # path
+                if isinstance(val, bytes):
+                    result["path"] = val.decode('utf-8', errors='replace')
+            elif fn == 2:  # content
+                if isinstance(val, bytes):
+                    result["content"] = val.decode('utf-8', errors='replace')
+        
+        return result
+    
+    def _decode_run_command(self, data: bytes) -> dict:
+        """Decode RunCommand message"""
+        offset = 0
+        result = {}
+        
+        while offset < len(data):
+            fn, wt, val, offset = decode_field(data, offset)
+            
+            if fn == 1:  # command
+                if isinstance(val, bytes):
+                    result["command"] = val.decode('utf-8', errors='replace')
+            elif fn == 2:  # args (repeated)
+                if isinstance(val, bytes):
+                    result["args"] = val.decode('utf-8', errors='replace')
+            elif fn == 3:  # stdout
+                if isinstance(val, bytes):
+                    result["stdout"] = val.decode('utf-8', errors='replace')
+            elif fn == 4:  # exit_code
+                result["exit_code"] = val
+        
+        return result
+    
+    def _decode_view_file(self, data: bytes) -> dict:
+        """Decode CortexStepViewFile"""
+        offset = 0
+        result = {}
+        
+        while offset < len(data):
+            fn, wt, val, offset = decode_field(data, offset)
+            
+            if fn == 1:  # absolute_path_uri
+                if isinstance(val, bytes):
+                    result["path"] = val.decode('utf-8', errors='replace')
+            elif fn == 4:  # content
+                if isinstance(val, bytes):
+                    result["content"] = val.decode('utf-8', errors='replace')
+            elif fn == 2:  # start_line
+                result["start_line"] = val
+            elif fn == 3:  # end_line
+                result["end_line"] = val
+        
+        return result
+    
+    def _decode_list_directory(self, data: bytes) -> dict:
+        """Decode CortexStepListDirectory"""
+        offset = 0
+        result = {}
+        
+        while offset < len(data):
+            fn, wt, val, offset = decode_field(data, offset)
+            
+            if fn == 1:  # directory_path_uri
+                if isinstance(val, bytes):
+                    result["path"] = val.decode('utf-8', errors='replace')
+            elif fn == 2:  # children (repeated strings)
+                if isinstance(val, bytes):
+                    result["children"] = val.decode('utf-8', errors='replace')
+            elif fn == 4:  # dir_not_found
+                result["not_found"] = val
+        
+        return result
+    
+    def _decode_grep_search(self, data: bytes) -> dict:
+        """Decode CortexStepGrepSearch"""
+        offset = 0
+        result = {}
+        
+        while offset < len(data):
+            fn, wt, val, offset = decode_field(data, offset)
+            
+            if fn == 1:  # query
+                if isinstance(val, bytes):
+                    result["query"] = val.decode('utf-8', errors='replace')
+            elif fn == 11:  # search_path_uri
+                if isinstance(val, bytes):
+                    result["path"] = val.decode('utf-8', errors='replace')
+            elif fn == 7:  # total_results
+                result["total"] = val
+        
+        return result
+    
+    def _decode_search_web(self, data: bytes) -> dict:
+        """Decode SearchWeb"""
+        offset = 0
+        result = {}
+        
+        while offset < len(data):
+            fn, wt, val, offset = decode_field(data, offset)
+            
+            if fn == 1:  # query
+                if isinstance(val, bytes):
+                    result["query"] = val.decode('utf-8', errors='replace')
+            elif fn == 2:  # results
+                if isinstance(val, bytes):
+                    result["results"] = val.decode('utf-8', errors='replace')
+        
+        return result
+    
+    def _decode_checkpoint(self, data: bytes) -> dict:
+        """Decode Checkpoint"""
+        offset = 0
+        result = {}
+        
+        while offset < len(data):
+            fn, wt, val, offset = decode_field(data, offset)
+            
+            if fn == 1:  # message
+                if isinstance(val, bytes):
+                    result["message"] = val.decode('utf-8', errors='replace')
+            elif fn == 2:  # checkpoint_id
+                if isinstance(val, bytes):
+                    result["checkpoint_id"] = val.decode('utf-8', errors='replace')
+        
+        return result
+    
+    def _decode_error_message(self, data: bytes) -> str:
+        """Decode error message (field 24) - protobuf encoded"""
+        # Field 24 contains nested protobuf with error text
+        # Extract readable text by decoding as UTF-8 and removing control characters
+        text = data.decode('utf-8', errors='replace')
+        # Remove common protobuf control characters and extract readable text
+        # The error text is usually the longest readable segment
+        # Extract sequences of printable ASCII text longer than 20 chars
+        readable = re.findall(r'[ -~]{20,}', text)
+        if readable:
+            return ' '.join(readable)
+        return text  # Return full text
+    
+    def _decode_find(self, data: bytes) -> dict:
+        """Decode find/file search results"""
+        offset = 0
+        result = {}
+        
+        while offset < len(data):
+            fn, wt, val, offset = decode_field(data, offset)
+            if fn == 1:  # pattern
+                if isinstance(val, bytes):
+                    result["pattern"] = val.decode('utf-8', errors='replace')
+            elif fn == 2:  # results
+                if isinstance(val, bytes):
+                    result["results"] = val.decode('utf-8', errors='replace')
+        
+        return result
+    
+    def _decode_command_output(self, data: bytes) -> dict:
+        """Decode command output"""
+        offset = 0
+        result = {}
+        
+        while offset < len(data):
+            fn, wt, val, offset = decode_field(data, offset)
+            if fn == 1:  # stdout
+                if isinstance(val, bytes):
+                    result["stdout"] = val.decode('utf-8', errors='replace')
+            elif fn == 2:  # stderr
+                if isinstance(val, bytes):
+                    result["stderr"] = val.decode('utf-8', errors='replace')
+        
+        return result
+    
+    def _decode_read_url_content(self, data: bytes) -> dict:
+        """Decode read URL content"""
+        offset = 0
+        result = {}
+        
+        while offset < len(data):
+            fn, wt, val, offset = decode_field(data, offset)
+            if fn == 1:  # url
+                if isinstance(val, bytes):
+                    result["url"] = val.decode('utf-8', errors='replace')
+            elif fn == 2:  # content
+                if isinstance(val, bytes):
+                    result["content"] = val.decode('utf-8', errors='replace')
+        
+        return result
+    
+    def _decode_mcp_tool(self, data: bytes) -> dict:
+        """Decode MCP tool call"""
+        offset = 0
+        result = {}
+        
+        while offset < len(data):
+            fn, wt, val, offset = decode_field(data, offset)
+            if fn == 1:  # tool_name
+                if isinstance(val, bytes):
+                    result["tool_name"] = val.decode('utf-8', errors='replace')
+            elif fn == 2:  # call_id
+                if isinstance(val, bytes):
+                    result["call_id"] = val.decode('utf-8', errors='replace')
+            elif fn == 3:  # method
+                if isinstance(val, bytes):
+                    result["method"] = val.decode('utf-8', errors='replace')
+            elif fn == 4:  # args
+                if isinstance(val, bytes):
+                    result["args"] = val.decode('utf-8', errors='replace')
+        
+        return result
+    
+    def _decode_plan(self, data: bytes) -> dict:
+        """Decode plan data"""
+        offset = 0
+        result = {}
+        
+        while offset < len(data):
+            fn, wt, val, offset = decode_field(data, offset)
+            if fn == 1:  # plan_id
+                if isinstance(val, bytes):
+                    result["plan_id"] = val.decode('utf-8', errors='replace')
+            elif fn == 2:  # plans
+                if isinstance(val, bytes):
+                    result["plans"] = val.decode('utf-8', errors='replace')
+        
+        return result
+    
+    def _decode_file_content_edit(self, data: bytes) -> str:
+        """Decode file content for editing (field 10)"""
+        # Field 10 contains shell scripts, .desktop files, etc.
+        # Extract readable text
+        text = data.decode('utf-8', errors='replace')
+        # Extract sequences of printable text
+        readable = re.findall(r'[ -~]{10,}', text)
+        if readable:
+            return '\n'.join(readable)
+        return text
+    
+    def _decode_parsed_url_content(self, data: bytes) -> str:
+        """Decode parsed URL content (field 41)"""
+        # Field 41 contains markdown-formatted URL content with links
+        text = data.decode('utf-8', errors='replace')
+        # Extract readable text, preserving markdown links
+        readable = re.findall(r'[ -~]{10,}', text)
+        if readable:
+            return ' '.join(readable)
+        return text
+    
+    def _decode_file_search_pattern(self, data: bytes) -> dict:
+        """Decode file search pattern (field 105)"""
+        offset = 0
+        result = {}
+        
+        while offset < len(data):
+            fn, wt, val, offset = decode_field(data, offset)
+            if fn == 1:  # pattern
+                if isinstance(val, bytes):
+                    result["pattern"] = val.decode('utf-8', errors='replace')
+            elif fn == 2:  # results
+                if isinstance(val, bytes):
+                    result["results"] = val.decode('utf-8', errors='replace')
+        
+        return result
+    
+    def _decode_context_memory(self, data: bytes) -> dict:
+        """Decode context/memory state (field 6) - binary protobuf with UUIDs"""
+        # Field 6 contains binary protobuf with UUIDs, timestamps, encrypted content
+        # Extract any readable text
+        text = data.decode('utf-8', errors='replace')
+        readable = re.findall(r'[ -~]{10,}', text)
+        if readable:
+            return {"summary": ' '.join(readable)}
+        return {"raw": text}
+    
+    def _decode_project_context(self, data: bytes) -> dict:
+        """Decode project context (field 38) - binary protobuf with UUIDs and task descriptions"""
+        # Field 38 contains UUIDs, task summaries, project context
+        text = data.decode('utf-8', errors='replace')
+        readable = re.findall(r'[ -~]{10,}', text)
+        if readable:
+            return {"summary": ' '.join(readable)}
+        return {"raw": text}
+    
+    def _decode_url_reference(self, data: bytes) -> str:
+        """Decode URL reference (field 56)"""
+        # Field 56 contains URLs or minimal data
+        text = data.decode('utf-8', errors='replace')
+        # Extract URLs
+        urls = re.findall(r'https?://[^\s<>"{}|\\^`\[\]]+', text)
+        if urls:
+            return urls[0]
+        return text
+    
+    def get_all_cascade_ids(self) -> list[str]:
+        """Get all cascade_ids from .pb files"""
+        cascade_dir = Path.home() / ".codeium/windsurf/cascade"
+        if not cascade_dir.exists():
+            return []
+        
+        cascade_ids = []
+        for pb_file in cascade_dir.glob("*.pb"):
+            cascade_id = pb_file.stem
+            cascade_ids.append(cascade_id)
+        
+        return cascade_ids
 
 
 class WindsurfIngestor(BaseIngestor):
     source_id = "windsurf"
 
-    def __init__(self, cdp_port: int = CDP_PORT, auto_restart: bool = False):
-        self.cdp_port = cdp_port
-        self.cdp_base = f"http://localhost:{cdp_port}"
-        self.auto_restart = auto_restart
+    def __init__(self):
+        pass
+
+    async def init(self, **kwargs) -> None:
+        pass
 
     async def requires_auth(self) -> bool:
         return False
 
-    async def init(self, **kwargs) -> None:
-        if "cdp_port" in kwargs:
-            self.cdp_port = kwargs["cdp_port"]
-            self.cdp_base = f"http://localhost:{self.cdp_port}"
-        if "auto_restart" in kwargs:
-            self.auto_restart = kwargs["auto_restart"]
-
-    def _is_running(self) -> bool:
-        try:
-            urllib.request.urlopen(f"{self.cdp_base}/json/version", timeout=2).read()
-            return True
-        except Exception:
-            return False
-
-    def _get_ws_url(self) -> str:
-        data = json.loads(urllib.request.urlopen(f"{self.cdp_base}/json/list").read())
-        pages = [t for t in data if t["type"] == "page"]
-        if not pages:
-            raise RuntimeError("No page target in CDP")
-        return pages[0]["webSocketDebuggerUrl"]
-
     async def count_threads(self, since: int | None = None) -> int:
         """Return approximate count of available sessions."""
-        if not self._is_running():
-            if self.auto_restart:
-                if not _restart_windsurf_with_cdp(self.cdp_port):
-                    return 0
-            else:
-                return 0
-
+        # Use language server API
         try:
-            ws_url = self._get_ws_url()
-            cdp = CDPClient(ws_url, timeout=5)
-            try:
-                cdp.call("Runtime.enable")
-                sessions_raw = cdp.eval("""
-                (function() {
-                    let raw = localStorage.getItem('cascade-open-sessions-by-workspace');
-                    return raw || '{}';
-                })()
-                """)
-                sessions_by_ws = json.loads(sessions_raw or "{}")
-                count = 0
-                for ws_data in sessions_by_ws.values():
-                    for tab in ws_data.get("tabs", []):
-                        if tab.get("type") == "cascade":
-                            count += 1
-                return count
-            finally:
-                cdp.close()
+            ls = LanguageServerClient()
+            cascade_ids = ls.get_all_cascade_ids()
+            return len(cascade_ids)
         except Exception:
             return 0
 
     async def threads(self, since: int | None = None) -> AsyncIterator[IngestedThread]:
-        if websocket is None:
-            raise RuntimeError(
-                "websocket-client required. Install with: uv add websocket-client"
-            )
+        # Use language server API for historical .pb files by default
+        async for thread in self.threads_from_language_server(since=since):
+            yield thread
 
-        if not self._is_running():
-            if self.auto_restart:
-                if not _restart_windsurf_with_cdp(self.cdp_port):
-                    raise RuntimeError(
-                        "Failed to auto-restart Windsurf with CDP. "
-                        "Please start manually: windsurf --remote-debugging-port=9222"
-                    )
-            else:
-                raise RuntimeError(
-                    "Windsurf not running with CDP. "
-                    "Start with: windsurf --remote-debugging-port=9222 "
-                    "Or use init(auto_restart=True) to auto-restart."
-                )
-
-        ws_url = self._get_ws_url()
-        cdp = CDPClient(ws_url)
-
-        try:
-            cdp.call("Runtime.enable")
-
-            # Get list of sessions from localStorage
-            sessions_raw = cdp.eval("""
-            (function() {
-                let raw = localStorage.getItem('cascade-open-sessions-by-workspace');
-                return raw || '{}';
-            })()
-            """)
-
-            sessions_by_ws = json.loads(sessions_raw or "{}")
-            session_ids: list[str] = []
-
-            for ws_key, ws_data in sessions_by_ws.items():
-                for tab in ws_data.get("tabs", []):
-                    if tab.get("type") == "cascade":
-                        session_ids.append(tab["id"])
-
-            if not session_ids:
-                # Try to get current active session only
-                count = _store_trajectory(cdp)
-                if count > 0:
-                    conv = _extract_conversation(cdp)
-                    if conv:
-                        thread = _convert_to_thread(conv)
-                        if since and thread.updated_at and thread.updated_at < since:
-                            pass
-                        else:
-                            yield thread
-                return
-
-            for session_id in session_ids:
-                # Click session to activate it
-                cdp.eval(f"""
-                (function() {{
-                    let el = document.getElementById('windsurf.cascadePanel');
-                    if (!el) return;
-                    let items = el.querySelectorAll('[data-session-id]');
-                    for (let item of items) {{
-                        if (item.dataset.sessionId === {json.dumps(session_id)}) {{
-                            item.click();
-                            return true;
-                        }}
-                    }}
-                    return false;
-                }})()
-                """)
-                time.sleep(1)
-
-                count = _store_trajectory(cdp)
-                if count <= 0:
-                    continue
-
-                conv = _extract_conversation(cdp)
-                if not conv:
-                    continue
-
-                thread = _convert_to_thread(conv)
-                if since and thread.updated_at and thread.updated_at < since:
-                    continue
-
-                yield thread
-
-        finally:
-            cdp.close()
+    async def threads_from_language_server(self, since: int | None = None) -> AsyncIterator[IngestedThread]:
+        """Fetch historical conversations from language server API"""
+        ls = LanguageServerClient()
+        cascade_ids = ls.get_all_cascade_ids()
+        
+        logger.info(f"Found {len(cascade_ids)} cascade files")
+        
+        for cascade_id in cascade_ids:
+            logger.debug(f"Fetching trajectory for {cascade_id}")
+            trajectory = ls.get_trajectory(cascade_id)
+            
+            if not trajectory:
+                logger.warning(f"Failed to fetch {cascade_id}")
+                continue
+            
+            logger.debug(f"Got trajectory with {trajectory['step_count']} steps")
+            
+            # Convert decoded steps to messages
+            thread = self._convert_trajectory_to_thread(trajectory, cascade_id)
+            
+            if since and thread.updated_at and thread.updated_at < since:
+                continue
+            
+            yield thread
+    
+    def _convert_trajectory_to_thread(self, trajectory: dict, cascade_id: str) -> IngestedThread:
+        """Convert decoded trajectory to IngestedThread"""
+        traj_id = trajectory.get("trajectory_id", cascade_id)
+        steps = trajectory.get("steps", [])
+        
+        messages: list[IngestedMessage] = []
+        
+        for i, step in enumerate(steps):
+            step_type = step.get("type")
+            data = step.get("data", {})
+            
+            # Map step types to message roles (based on enum values from beautified code)
+            # 14 = CORTEX_STEP_TYPE_USER_INPUT
+            # 15 = CORTEX_STEP_TYPE_PLANNER_RESPONSE
+            # 23 = CORTEX_STEP_TYPE_WRITE_TO_FILE
+            # 28 = CORTEX_STEP_TYPE_RUN_COMMAND
+            # 8 = CORTEX_STEP_TYPE_VIEW_FILE
+            # 9 = CORTEX_STEP_TYPE_LIST_DIRECTORY
+            # 7 = CORTEX_STEP_TYPE_GREP_SEARCH
+            # etc.
+            
+            if step_type == 14:  # USER_INPUT
+                user_input = data.get("user_input", "")
+                if user_input:
+                    parts = [IngestedPart(kind="text", text=user_input)]
+                    messages.append(IngestedMessage(
+                        id=f"windsurf:ls:{traj_id}:{i}",
+                        thread_id=f"windsurf:ls:{traj_id}",
+                        role="user",
+                        content=user_input,
+                        created_at=None,
+                        metadata={},
+                        parts=parts,
+                        raw=serialize_step(step),
+                    ))
+            
+            elif step_type == 15:  # PLANNER_RESPONSE
+                planner_response = data.get("planner_response", "")
+                if planner_response:
+                    parts = [IngestedPart(kind="text", text=planner_response)]
+                    messages.append(IngestedMessage(
+                        id=f"windsurf:ls:{traj_id}:{i}",
+                        thread_id=f"windsurf:ls:{traj_id}",
+                        role="assistant",
+                        content=planner_response,
+                        created_at=None,
+                        metadata={},
+                        parts=parts,
+                        raw=serialize_step(step),
+                    ))
+            
+            elif step_type == 28:  # RUN_COMMAND
+                cmd_data = data.get("run_command", {})
+                command = cmd_data.get("command", "")
+                if command:
+                    stdout = cmd_data.get("stdout", "")
+                    content = f"[Command: {command}]"
+                    if stdout:
+                        content += f"\nOutput:\n{stdout}"
+                    parts = [IngestedPart(kind="tool_call", text=content, data=cmd_data)]
+                    messages.append(IngestedMessage(
+                        id=f"windsurf:ls:{traj_id}:{i}",
+                        thread_id=f"windsurf:ls:{traj_id}",
+                        role="tool",
+                        content=content,
+                        created_at=None,
+                        metadata={},
+                        parts=parts,
+                        raw=serialize_step(step),
+                    ))
+            
+            elif step_type == 23:  # WRITE_TO_FILE
+                write_data = data.get("write_file", {})
+                path = write_data.get("path", "")
+                if path:
+                    content = f"[Write file: {path}]"
+                    parts = [IngestedPart(kind="tool_call", text=content, data=write_data)]
+                    messages.append(IngestedMessage(
+                        id=f"windsurf:ls:{traj_id}:{i}",
+                        thread_id=f"windsurf:ls:{traj_id}",
+                        role="tool",
+                        content=content,
+                        created_at=None,
+                        metadata={},
+                        parts=parts,
+                        raw=serialize_step(step),
+                    ))
+            
+            elif step_type == 8:  # VIEW_FILE
+                view_data = data.get("view_file", {})
+                path = view_data.get("path", "")
+                if path:
+                    content = f"[View file: {path}]"
+                    parts = [IngestedPart(kind="tool_call", text=content, data=view_data)]
+                    messages.append(IngestedMessage(
+                        id=f"windsurf:ls:{traj_id}:{i}",
+                        thread_id=f"windsurf:ls:{traj_id}",
+                        role="tool",
+                        content=content,
+                        created_at=None,
+                        metadata={},
+                        parts=parts,
+                        raw=serialize_step(step),
+                    ))
+            
+            elif step_type == 9:  # LIST_DIRECTORY
+                list_data = data.get("list_directory", {})
+                path = list_data.get("path", "")
+                if path:
+                    content = f"[List directory: {path}]"
+                    parts = [IngestedPart(kind="tool_call", text=content, data=list_data)]
+                    messages.append(IngestedMessage(
+                        id=f"windsurf:ls:{traj_id}:{i}",
+                        thread_id=f"windsurf:ls:{traj_id}",
+                        role="tool",
+                        content=content,
+                        created_at=None,
+                        metadata={},
+                        parts=parts,
+                        raw=serialize_step(step),
+                    ))
+            
+            elif step_type == 7:  # GREP_SEARCH
+                grep_data = data.get("grep_search", {})
+                query = grep_data.get("query", "")
+                if query:
+                    content = f"[Grep search: {query}]"
+                    parts = [IngestedPart(kind="tool_call", text=content, data=grep_data)]
+                    messages.append(IngestedMessage(
+                        id=f"windsurf:ls:{traj_id}:{i}",
+                        thread_id=f"windsurf:ls:{traj_id}",
+                        role="tool",
+                        content=content,
+                        created_at=None,
+                        metadata={},
+                        parts=parts,
+                        raw=serialize_step(step),
+                    ))
+            
+            elif step_type == 33:  # SEARCH_WEB
+                search_data = data.get("search_web", {})
+                query = search_data.get("query", "")
+                results = search_data.get("results", "")
+                if query:
+                    content = f"[Web search: {query}]"
+                    if results:
+                        content += f"\n{results}"
+                    parts = [IngestedPart(kind="tool_call", text=content, data=search_data)]
+                    messages.append(IngestedMessage(
+                        id=f"windsurf:ls:{traj_id}:{i}",
+                        thread_id=f"windsurf:ls:{traj_id}",
+                        role="tool",
+                        content=content,
+                        created_at=None,
+                        metadata={},
+                        parts=parts,
+                        raw=serialize_step(step),
+                    ))
+            
+            elif step_type == 23:  # CHECKPOINT
+                checkpoint_data = data.get("checkpoint", {})
+                message = checkpoint_data.get("message", "")
+                if message:
+                    content = f"[Checkpoint: {message}]"
+                    parts = [IngestedPart(kind="tool_call", text=content, data=checkpoint_data)]
+                    messages.append(IngestedMessage(
+                        id=f"windsurf:ls:{traj_id}:{i}",
+                        thread_id=f"windsurf:ls:{traj_id}",
+                        role="tool",
+                        content=content,
+                        created_at=None,
+                        metadata={},
+                        parts=parts,
+                        raw=serialize_step(step),
+                    ))
+            
+            elif "error_message" in data:
+                error_msg = data["error_message"]
+                if error_msg:
+                    content = f"[Error: {error_msg}]"
+                    parts = [IngestedPart(kind="tool_call", text=content, data={"error_message": error_msg})]
+                    messages.append(IngestedMessage(
+                        id=f"windsurf:ls:{traj_id}:{i}",
+                        thread_id=f"windsurf:ls:{traj_id}",
+                        role="tool",
+                        content=content,
+                        created_at=None,
+                        metadata={},
+                        parts=parts,
+                        raw=serialize_step(step),
+                    ))
+            
+            elif "find" in data:
+                find_data = data["find"]
+                pattern = find_data.get("pattern", "")
+                if pattern:
+                    content = f"[Find: {pattern}]"
+                    parts = [IngestedPart(kind="tool_call", text=content, data=find_data)]
+                    messages.append(IngestedMessage(
+                        id=f"windsurf:ls:{traj_id}:{i}",
+                        thread_id=f"windsurf:ls:{traj_id}",
+                        role="tool",
+                        content=content,
+                        created_at=None,
+                        metadata={},
+                        parts=parts,
+                        raw=serialize_step(step),
+                    ))
+            
+            elif "command_output" in data:
+                cmd_output = data["command_output"]
+                stdout = cmd_output.get("stdout", "")
+                if stdout:
+                    content = f"[Command output]\n{stdout}"
+                    parts = [IngestedPart(kind="tool_call", text=content, data=cmd_output)]
+                    messages.append(IngestedMessage(
+                        id=f"windsurf:ls:{traj_id}:{i}",
+                        thread_id=f"windsurf:ls:{traj_id}",
+                        role="tool",
+                        content=content,
+                        created_at=None,
+                        metadata={},
+                        parts=parts,
+                        raw=serialize_step(step),
+                    ))
+            
+            elif "read_url_content" in data:
+                url_data = data["read_url_content"]
+                url = url_data.get("url", "")
+                if url:
+                    content = f"[Read URL: {url}]"
+                    parts = [IngestedPart(kind="tool_call", text=content, data=url_data)]
+                    messages.append(IngestedMessage(
+                        id=f"windsurf:ls:{traj_id}:{i}",
+                        thread_id=f"windsurf:ls:{traj_id}",
+                        role="tool",
+                        content=content,
+                        created_at=None,
+                        metadata={},
+                        parts=parts,
+                        raw=serialize_step(step),
+                    ))
+            
+            elif "mcp_tool" in data:
+                mcp_data = data["mcp_tool"]
+                tool_name = mcp_data.get("tool_name", "")
+                if tool_name:
+                    content = f"[MCP tool: {tool_name}]"
+                    parts = [IngestedPart(kind="tool_call", text=content, data=mcp_data)]
+                    messages.append(IngestedMessage(
+                        id=f"windsurf:ls:{traj_id}:{i}",
+                        thread_id=f"windsurf:ls:{traj_id}",
+                        role="tool",
+                        content=content,
+                        created_at=None,
+                        metadata={},
+                        parts=parts,
+                        raw=serialize_step(step),
+                    ))
+            
+            elif "plan" in data:
+                plan_data = data["plan"]
+                plans = plan_data.get("plans", "")
+                if plans:
+                    content = f"[Plan]\n{plans}"
+                    parts = [IngestedPart(kind="tool_call", text=content, data=plan_data)]
+                    messages.append(IngestedMessage(
+                        id=f"windsurf:ls:{traj_id}:{i}",
+                        thread_id=f"windsurf:ls:{traj_id}",
+                        role="tool",
+                        content=content,
+                        created_at=None,
+                        metadata={},
+                        parts=parts,
+                        raw=serialize_step(step),
+                    ))
+            
+            elif "ask_user_question" in data:
+                question = data["ask_user_question"]
+                if question:
+                    content = f"[User question: {question}]"
+                    parts = [IngestedPart(kind="tool_call", text=content, data={"question": question})]
+                    messages.append(IngestedMessage(
+                        id=f"windsurf:ls:{traj_id}:{i}",
+                        thread_id=f"windsurf:ls:{traj_id}",
+                        role="tool",
+                        content=content,
+                        created_at=None,
+                        metadata={},
+                        parts=parts,
+                        raw=serialize_step(step),
+                    ))
+            
+            elif "file_content_edit" in data:
+                file_content = data["file_content_edit"]
+                if file_content:
+                    content = f"[File content edit]\n{file_content}"
+                    parts = [IngestedPart(kind="tool_call", text=content, data={"file_content": file_content})]
+                    messages.append(IngestedMessage(
+                        id=f"windsurf:ls:{traj_id}:{i}",
+                        thread_id=f"windsurf:ls:{traj_id}",
+                        role="tool",
+                        content=content,
+                        created_at=None,
+                        metadata={},
+                        parts=parts,
+                        raw=serialize_step(step),
+                    ))
+            
+            elif "parsed_url_content" in data:
+                url_content = data["parsed_url_content"]
+                if url_content:
+                    content = f"[Parsed URL content]\n{url_content}"
+                    parts = [IngestedPart(kind="tool_call", text=content, data={"url_content": url_content})]
+                    messages.append(IngestedMessage(
+                        id=f"windsurf:ls:{traj_id}:{i}",
+                        thread_id=f"windsurf:ls:{traj_id}",
+                        role="tool",
+                        content=content,
+                        created_at=None,
+                        metadata={},
+                        parts=parts,
+                        raw=serialize_step(step),
+                    ))
+            
+            elif "file_search_pattern" in data:
+                search_pattern = data["file_search_pattern"]
+                pattern = search_pattern.get("pattern", "")
+                if pattern:
+                    content = f"[File search pattern: {pattern}]"
+                    parts = [IngestedPart(kind="tool_call", text=content, data=search_pattern)]
+                    messages.append(IngestedMessage(
+                        id=f"windsurf:ls:{traj_id}:{i}",
+                        thread_id=f"windsurf:ls:{traj_id}",
+                        role="tool",
+                        content=content,
+                        created_at=None,
+                        metadata={},
+                        parts=parts,
+                        raw=serialize_step(step),
+                    ))
+            
+            elif "context_memory" in data:
+                context = data["context_memory"]
+                summary = context.get("summary", "")
+                if summary:
+                    content = f"[Context memory: {summary}]"
+                    parts = [IngestedPart(kind="tool_call", text=content, data=context)]
+                    messages.append(IngestedMessage(
+                        id=f"windsurf:ls:{traj_id}:{i}",
+                        thread_id=f"windsurf:ls:{traj_id}",
+                        role="tool",
+                        content=content,
+                        created_at=None,
+                        metadata={},
+                        parts=parts,
+                        raw=serialize_step(step),
+                    ))
+            
+            elif "project_context" in data:
+                project_ctx = data["project_context"]
+                summary = project_ctx.get("summary", "")
+                if summary:
+                    content = f"[Project context: {summary}]"
+                    parts = [IngestedPart(kind="tool_call", text=content, data=project_ctx)]
+                    messages.append(IngestedMessage(
+                        id=f"windsurf:ls:{traj_id}:{i}",
+                        thread_id=f"windsurf:ls:{traj_id}",
+                        role="tool",
+                        content=content,
+                        created_at=None,
+                        metadata={},
+                        parts=parts,
+                        raw=serialize_step(step),
+                    ))
+            
+            elif "url_reference" in data:
+                url_ref = data["url_reference"]
+                if url_ref:
+                    content = f"[URL reference: {url_ref}]"
+                    parts = [IngestedPart(kind="tool_call", text=content, data={"url": url_ref})]
+                    messages.append(IngestedMessage(
+                        id=f"windsurf:ls:{traj_id}:{i}",
+                        thread_id=f"windsurf:ls:{traj_id}",
+                        role="tool",
+                        content=content,
+                        created_at=None,
+                        metadata={},
+                        parts=parts,
+                        raw=serialize_step(step),
+                    ))
+        
+        # Generate title from first user message
+        title = f"Cascade {cascade_id[:8]} ({len(messages)} messages)"
+        if messages:
+            first_user = next((m for m in messages if m.role == "user"), None)
+            if first_user:
+                title = first_user.content[:80].split("\n")[0].strip()
+        
+        return IngestedThread(
+            id=f"windsurf:ls:{traj_id}",
+            source_id="windsurf",
+            title=title,
+            created_at=None,
+            updated_at=None,
+            messages=messages,
+        )

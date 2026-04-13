@@ -17,6 +17,7 @@ from rich.text import Text
 
 from llm_archive import db
 from llm_archive.ingestors import INGESTORS, get_ingestor
+from llm_archive.logging import set_verbose
 
 console = Console()
 
@@ -26,27 +27,28 @@ def _run(coro):
 
 
 @click.group()
-def main():
+@click.option("-v", "--verbose", is_flag=True, help="Enable verbose logging")
+def main(verbose: bool):
     """llm-archive — dump and sync AI conversations into a local SQLite database."""
-    pass
+    set_verbose(verbose)
 
 
 @main.command()
 @click.argument("source", type=click.Choice(list(INGESTORS)), required=False)
 @click.option("--path", default=None, help="Override local path (for windsurf, etc.)")
 @click.option("--db-path", default=None, help="Override database path")
-@click.option("--restart", is_flag=True, help="Auto-restart Windsurf with CDP if needed")
-def sync(source: str | None, path: str | None, db_path: str | None, restart: bool = False):
+@click.option("-f", "--force", is_flag=True, help="Force full resync (ignore last sync timestamp)")
+def sync(source: str | None, path: str | None, db_path: str | None, force: bool):
     """Sync sources. Performs first-time setup automatically when needed."""
-    _run(_sync(source, db_path, path, restart))
+    _run(_sync(source, db_path, path, force))
 
 
-async def _sync(source: str | None, db_path_str: str | None, path: str | None = None, restart: bool = False):
+async def _sync(source: str | None, db_path_str: str | None, path: str | None = None, force: bool = False):
     con = db.connect(Path(db_path_str) if db_path_str else db.DB_PATH)
     sources = [source] if source else list(INGESTORS)
 
     for src in sources:
-        since = db.get_last_sync(con, src)
+        since = None if force else db.get_last_sync(con, src)
         if since is not None and _source_thread_count(con, src) == 0:
             since = None
         ingestor = get_ingestor(src)
@@ -54,15 +56,14 @@ async def _sync(source: str | None, db_path_str: str | None, path: str | None = 
             ingestor.path = Path(path)
         db.upsert_source(con, src, {"path": path} if path and src == source else {})
         console.print(f"[bold]Syncing:[/bold] {src}")
+        
         try:
             if since is None:
-                init_kwargs: dict = {}
-                if src == source:
-                    init_kwargs["path"] = path
-                if restart and src == "windsurf":
-                    init_kwargs["auto_restart"] = True
-                await ingestor.init(**init_kwargs)
-            ok = await _do_ingest(con, ingestor, since=since)
+                await ingestor.init(path=path if src == source else None)
+            # Pre-flight check before progress bar (for interactive setup like CDP)
+            if not await ingestor.prepare():
+                continue  # Skip this source if not ready
+            ok = await _do_ingest(con, ingestor, since=since, force=force)
             if ok:
                 db.set_last_sync(con, src, int(time.time() * 1000))
         except Exception as e:
@@ -74,11 +75,17 @@ def _source_thread_count(con, source: str) -> int:
     return row[0] if row else 0
 
 
-async def _do_ingest(con, ingestor, since: int | None):
+async def _do_ingest(con, ingestor, since: int | None, force: bool = False):
     written = 0
     skipped = 0
     errors = 0
-    total = await _ingest_total(ingestor, since)
+    total = await _ingest_total(ingestor, None)  # Get total count without since filter
+
+    # Fetch existing thread IDs and updated_at for smart sync (disabled when force=True)
+    existing_threads = {}
+    if not force:
+        rows = con.execute("SELECT id, updated_at FROM threads WHERE source_id=?", (ingestor.source_id,)).fetchall()
+        existing_threads = {row["id"]: row["updated_at"] for row in rows}
 
     with Progress(
         SpinnerColumn(),
@@ -90,17 +97,39 @@ async def _do_ingest(con, ingestor, since: int | None):
     ) as progress:
         task = progress.add_task(f"  {ingestor.source_id}", total=total)
         try:
-            async for thread in ingestor.threads(since=since):
-                saved = db.save_thread(con, thread)
-                if saved:
-                    written += 1
-                else:
-                    skipped += 1
-                progress.update(
-                    task,
-                    advance=1 if total is not None else 0,
-                    description=f"  {ingestor.source_id} — {written} new, {skipped} skipped",
-                )
+            # Check if ingestor supports existing_thread_ids parameter
+            import inspect
+            sig = inspect.signature(ingestor.threads)
+            if "existing_thread_ids" in sig.parameters:
+                async for thread in ingestor.threads(since=None, existing_thread_ids=existing_threads):
+                    # Force update if thread exists and has newer updated_at
+                    thread_force = force
+                    if not force and thread.id in existing_threads:
+                        db_updated_at = existing_threads[thread.id]
+                        if thread.updated_at and thread.updated_at > db_updated_at:
+                            thread_force = True
+                    saved = db.save_thread(con, thread, force=thread_force)
+                    if saved:
+                        written += 1
+                    else:
+                        skipped += 1
+                    progress.update(
+                        task,
+                        advance=1 if total is not None else 0,
+                        description=f"  {ingestor.source_id} — {written} new, {skipped} skipped",
+                    )
+            else:
+                async for thread in ingestor.threads(since=None):
+                    saved = db.save_thread(con, thread, force=force)
+                    if saved:
+                        written += 1
+                    else:
+                        skipped += 1
+                    progress.update(
+                        task,
+                        advance=1 if total is not None else 0,
+                        description=f"  {ingestor.source_id} — {written} new, {skipped} skipped",
+                    )
         except NotImplementedError as e:
             console.print(f"  [yellow]Not implemented:[/yellow] {e}")
             return False
@@ -110,6 +139,10 @@ async def _do_ingest(con, ingestor, since: int | None):
         except Exception as e:
             console.print(f"  [red]Error:[/red] {e}")
             errors += 1
+
+    # Calculate skipped from total - written - errors (for smart sync)
+    if total is not None:
+        skipped = total - written - errors
 
     status = f"[green]{written} new[/green], {skipped} skipped"
     if errors:
