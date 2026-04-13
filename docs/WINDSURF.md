@@ -243,10 +243,11 @@ The `data` field in `message_parts` stores JSON-structured data from decoded pro
 
 ## Known Limitations
 
-1. **Field 5 (metadata) not available**: The Language Server API does not return the CortexStepMetadata field (field 5), which contains timestamps, model usage, costs, and execution details.
+1. **Field 5 (metadata) availability**: The Language Server API may or may not return the CortexStepMetadata field (field 5), which contains timestamps, model usage, costs, and execution details. The beautified extension code shows this field exists and contains a `created_at` timestamp (CortexStepMetadata field 1). Current implementation attempts to extract this timestamp if present.
 2. **17.8% steps without data**: These are metadata-only steps (status updates, markers) that don't contain actual content.
 3. **Language Server required**: Requires Windsurf to be running with the Language Server active.
 4. **Protobuf reverse-engineering**: Decoders are based on reverse-engineering the protobuf structure from the beautified extension code. Field mappings may need updates if the schema changes.
+5. **CSRF token**: Language Server API requires a valid CSRF token. The token is generated at Windsurf startup using `crypto.randomUUID()` and stored in the LanguageServerClient instance. It can be extracted via CDP by intercepting network requests, but CDP operations (especially deep object traversal) can cause Windsurf to hang or become unresponsive. The token is not stored in localStorage, sessionStorage, cookies, or easily accessible window properties.
 
 ## References
 
