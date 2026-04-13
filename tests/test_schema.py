@@ -46,7 +46,7 @@ def _make_jsonl(tmp_path: Path, entries: list[dict]) -> Path:
     return p
 
 
-def test_claude_code_basic_parse(tmp_path):
+def test_claudecode_basic_parse(tmp_path):
     entries = [
         {
             "type": "user",
@@ -76,7 +76,7 @@ def test_claude_code_basic_parse(tmp_path):
         assert msg.thread_id == thread.id
 
 
-def test_claude_code_skips_empty_content(tmp_path):
+def test_claudecode_skips_empty_content(tmp_path):
     entries = [
         {"type": "user", "sessionId": "s1", "uuid": "m1",
          "timestamp": "2024-01-01T10:00:00Z",
@@ -91,7 +91,7 @@ def test_claude_code_skips_empty_content(tmp_path):
     assert thread.messages[0].role == "assistant"
 
 
-def test_claude_code_tool_use_flattened(tmp_path):
+def test_claudecode_tool_use_flattened(tmp_path):
     entries = [
         {
             "type": "assistant",
@@ -115,19 +115,19 @@ def test_claude_code_tool_use_flattened(tmp_path):
     assert "ls -la" in content
 
 
-def test_claude_code_tool_result_truncated():
+def test_claudecode_tool_result_truncated():
     content = [{"type": "tool_result", "content": "x" * 1000}]
     result = _flatten_content(content)
     assert len(result) < 600  # "[Tool result]\n" + 500 chars
 
 
-def test_claude_code_returns_none_for_empty_file(tmp_path):
+def test_claudecode_returns_none_for_empty_file(tmp_path):
     path = tmp_path / "empty.jsonl"
     path.write_text("")
     assert _parse_jsonl(path) is None
 
 
-def test_claude_code_skips_non_message_entries(tmp_path):
+def test_claudecode_skips_non_message_entries(tmp_path):
     entries = [
         {"type": "queue-operation", "operation": "enqueue", "sessionId": "s1"},
         {"type": "file-history-snapshot", "messageId": "x", "sessionId": "s1"},

@@ -33,7 +33,7 @@ uv run llm-archive sync windsurf      # sync windsurf (requires Windsurf running
 ```
 
 The `sync` command performs first-time setup automatically when needed:
-- Local sources (claude_code, opencode): No setup required
+- Local sources (claudecode, opencode): No setup required
 - API sources (claude, deepseek): Opens browser for first-time auth, then stores token
 - windsurf: Requires Windsurf to be running with Language Server active
 
@@ -77,7 +77,7 @@ llm_archive/
 │   └── playwright.py   # headful/headless auth, storageState management
 └── ingestors/
     ├── base.py         # BaseIngestor ABC
-    ├── claude_code.py  # ~/.claude/projects/**/*.jsonl
+    ├── claudecode.py  # ~/.claude/projects/**/*.jsonl
     ├── opencode.py     # ~/.local/share/opencode/opencode.db
     ├── claude.py       # claude.ai REST API
     ├── deepseek.py     # deepseek.com REST API
