@@ -1,8 +1,10 @@
 """Logging utilities for llm-archive."""
 from __future__ import annotations
 import logging
+import sys
 from rich.logging import RichHandler
 from rich.console import Console
+from rich.theme import Theme
 
 # Global verbose flag
 _verbose = False
@@ -16,7 +18,7 @@ class ComponentFormatter(logging.Formatter):
         if "." in name:
             name = name.split(".")[-1]
         
-        # Format with component prefix
+        # Format with component prefix (no level prefix, RichHandler adds that)
         message = super().format(record)
         return f"[{name}] {message}"
 
@@ -27,11 +29,17 @@ root_logger.setLevel(logging.DEBUG)
 # Suppress httpx INFO logs
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
+def _detect_color_support() -> bool:
+    """Detect if terminal supports colors."""
+    return sys.stderr.isatty()
+
 def _setup_handler():
     """Setup logging handler."""
     global _console
+    color_support = _detect_color_support()
+    
     if _console is None:
-        _console = Console(stderr=True)
+        _console = Console(stderr=True, force_terminal=color_support)
     
     # Remove existing handlers
     for handler in root_logger.handlers[:]:
@@ -44,6 +52,7 @@ def _setup_handler():
         show_time=False,
         show_path=False,
         omit_repeated_times=False,
+        show_level=True,
     )
     handler.setFormatter(ComponentFormatter("%(message)s"))
     root_logger.addHandler(handler)
