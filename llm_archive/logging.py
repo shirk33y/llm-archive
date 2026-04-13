@@ -1,7 +1,7 @@
 """Logging utilities for llm-archive."""
 from __future__ import annotations
 import logging
-from rich.logging import RichHandler
+import sys
 
 # Global verbose flag
 _verbose = False
@@ -16,7 +16,10 @@ class ComponentFormatter(logging.Formatter):
         
         # Format with component prefix
         message = super().format(record)
-        return f"[{name}] {message}"
+        
+        # Add level prefix (INFO, ERROR, etc.)
+        level = record.levelname
+        return f"{level:8s} [{name}] {message}"
 
 # Configure root logger
 root_logger = logging.getLogger()
@@ -25,13 +28,8 @@ root_logger.setLevel(logging.DEBUG)
 # Suppress httpx INFO logs
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-# Add rich handler without timestamps
-handler = RichHandler(
-    rich_tracebacks=True,
-    show_time=False,
-    show_path=False,
-    omit_repeated_times=False,
-)
+# Add plain stream handler to stderr (not RichHandler to avoid conflicts with progress bar)
+handler = logging.StreamHandler(sys.stderr)
 handler.setFormatter(ComponentFormatter("%(message)s"))
 root_logger.addHandler(handler)
 

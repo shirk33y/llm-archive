@@ -61,7 +61,7 @@ class DeepseekIngestor(BaseIngestor):
 
         async with httpx.AsyncClient(timeout=30, headers=headers) as client:
             sessions = await self._fetch_sessions(client)
-            print(f"[deepseek] found {len(sessions)} conversations")
+            logger.info(f"found {len(sessions)} conversations")
             for sess in sessions:
                 chat_id = sess.get("id")
                 if not chat_id:
