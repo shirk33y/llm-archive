@@ -9,6 +9,7 @@ from rich.console import Console
 
 # Global verbose flag
 _verbose = False
+_console: Console | None = None
 
 # Custom formatter to show just [component] instead of full logger name
 class ComponentFormatter(logging.Formatter):
