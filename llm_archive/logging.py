@@ -35,10 +35,10 @@ def _setup_handler():
     for handler in root_logger.handlers[:]:
         root_logger.removeHandler(handler)
     
-    # Use stderr console for logging
-    stderr_console = Console(stderr=True)
+    # Use shared console if set, otherwise default to stderr
+    console_to_use = _console if _console else Console(stderr=True)
     handler = RichHandler(
-        console=stderr_console,
+        console=console_to_use,
         rich_tracebacks=True,
         show_time=False,
         show_path=False,
@@ -51,9 +51,11 @@ def _setup_handler():
 # Initial setup
 _setup_handler()
 
-def set_console(console) -> None:
-    """Set the console instance (no-op, we use stderr console)."""
-    pass
+def set_console(console: Console) -> None:
+    """Set the Rich console instance to use for logging."""
+    global _console
+    _console = console
+    _setup_handler()
 
 def set_verbose(verbose: bool) -> None:
     """Set global verbose flag."""

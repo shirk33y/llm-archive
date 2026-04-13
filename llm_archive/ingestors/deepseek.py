@@ -108,7 +108,7 @@ class DeepseekIngestor(BaseIngestor):
         )
 
     async def _fetch_sessions(self, client: httpx.AsyncClient) -> list[dict]:
-        logger.info("fetching conversation list")
+        logger.debug("fetching conversation list")
         sessions: list[dict] = []
         seen: set[str] = set()
         cursor: float | None = None
@@ -150,7 +150,7 @@ class DeepseekIngestor(BaseIngestor):
 
         if not sessions:
             logger.warning("no conversations returned by API")
-        logger.info(f"fetched {len(sessions)} conversations")
+        logger.debug(f"fetched {len(sessions)} conversations")
         return sessions
 
     async def _fetch_thread(self, client: httpx.AsyncClient, sess: dict) -> IngestedThread | None:
