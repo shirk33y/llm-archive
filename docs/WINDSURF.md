@@ -249,6 +249,74 @@ The `data` field in `message_parts` stores JSON-structured data from decoded pro
 4. **Protobuf reverse-engineering**: Decoders are based on reverse-engineering the protobuf structure from the beautified extension code. Field mappings may need updates if the schema changes.
 5. **CSRF token**: Language Server API requires a valid CSRF token. The token is generated at Windsurf startup using `crypto.randomUUID()` and stored in the LanguageServerClient instance. It can be extracted via CDP by intercepting network requests, but CDP operations (especially deep object traversal) can cause Windsurf to hang or become unresponsive. The token is not stored in localStorage, sessionStorage, cookies, or easily accessible window properties.
 
+## Chrome DevTools Protocol (CDP)
+
+CDP can be used to inspect and interact with running Windsurf instances for debugging and data extraction.
+
+### Connecting to Windsurf via CDP
+
+Windsurf must be started with remote debugging enabled:
+
+```bash
+windsurf --remote-debugging-port=9222
+```
+
+Once running, connect to CDP via HTTP to list targets:
+
+```bash
+curl http://127.0.0.1:9222/json
+```
+
+This returns a JSON list of targets including the main page target with a WebSocket URL.
+
+### Interception Methods
+
+#### Network Request Interception
+
+The Network domain can intercept HTTP requests to extract headers including the CSRF token:
+
+1. Connect to CDP WebSocket
+2. Enable Network domain
+3. Listen for `Network.requestWillBeSent` events
+4. Filter for language server requests
+5. Extract `x-codeium-csrf-token` header
+
+**Automatic extraction**: Windsurf makes automatic language server requests on startup (e.g., `GetUnleashData`). By waiting for these automatic requests, the CSRF token can be extracted without requiring user interaction. This method is safe and does not cause Windsurf to hang.
+
+#### Runtime Object Inspection
+
+The Runtime domain can evaluate JavaScript to search for the CSRF token in the window object:
+
+1. Connect to CDP WebSocket
+2. Enable Runtime domain
+3. Use `Runtime.evaluate` to search window object
+4. Look for UUID patterns in object properties
+
+**Limitations**: Deep object traversal can cause Windsurf to hang or become unresponsive. The CSRF token is not stored in localStorage, sessionStorage, cookies, or easily accessible window properties.
+
+### CSRF Token Location
+
+From beautified extension code analysis:
+- Generated at startup with `crypto.randomUUID()`
+- Stored in `H.LanguageServerClient.getInstance().csrfToken`
+- Also set via `I.windsurfLanguageServer.setCsrfToken(token)`
+- Not accessible via standard browser storage APIs
+- Only appears in HTTP request headers to the language server
+
+### Example Scripts
+
+See `llm_archive/windsurf_protocol/` for CDP extraction scripts:
+- `extract_csrf_safe.py` - Intercepts automatic language server requests (no user interaction, safe)
+- `extract_csrf_from_request.py` - Intercepts network requests (requires user interaction)
+- `extract_csrf_auto.py` - Searches window object (may cause hangs)
+
+### CDP Safety Notes
+
+- Deep object traversal via Runtime.evaluate can freeze Windsurf
+- Network interception for automatic requests is safe and doesn't require user interaction
+- CDP operations should be kept minimal to avoid stability issues
+- Always test CDP scripts on a non-production Windsurf instance
+
 ## References
 
 - Reddit discussions: r/Codeium and r/windsurf
