@@ -17,9 +17,10 @@ from rich.text import Text
 
 from llm_archive import db
 from llm_archive.ingestors import INGESTORS, get_ingestor
-from llm_archive.logging import set_console, set_verbose
+from llm_archive.logging import set_verbose
 
 console = Console()
+progress_console = Console()
 
 
 def _run(coro):
@@ -30,7 +31,6 @@ def _run(coro):
 @click.option("-v", "--verbose", is_flag=True, help="Enable verbose logging")
 def main(verbose: bool):
     """llm-archive — dump and sync AI conversations into a local SQLite database."""
-    set_console(console)
     set_verbose(verbose)
 
 
@@ -93,8 +93,9 @@ async def _do_ingest(con, ingestor, since: int | None, force: bool = False):
         TextColumn("[progress.description]{task.description}"),
         BarColumn(),
         TaskProgressColumn(),
-        console=console,
+        console=progress_console,
         transient=True,
+        disable=True,  # Disable progress bar to avoid conflicts with logging
     ) as progress:
         task = progress.add_task(f"  {ingestor.source_id}", total=total)
         try:
