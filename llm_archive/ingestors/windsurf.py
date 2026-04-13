@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 import gzip
 import json
 import re
@@ -19,6 +20,104 @@ try:
     import psutil
 except ImportError:
     psutil = None
+
+def _csrf_token_path() -> Path:
+    """Get path to CSRF token file."""
+    return Path.home() / ".llm-archive" / "auth" / "windsurf.json"
+
+
+def _save_csrf_token(token: str, hostname: str | None = None) -> None:
+    """Save CSRF token and hostname to file."""
+    _csrf_token_path().parent.mkdir(parents=True, exist_ok=True)
+    data = {"csrf_token": token}
+    if hostname:
+        data["hostname"] = hostname
+    _csrf_token_path().write_text(json.dumps(data))
+
+
+def _load_csrf_token() -> tuple[str | None, str | None]:
+    """Load CSRF token and hostname from file."""
+    path = _csrf_token_path()
+    if path.exists():
+        data = json.loads(path.read_text())
+        return data.get("csrf_token"), data.get("hostname")
+    return None, None
+
+
+async def _extract_csrf_token_via_cdp(cdp_port: int = 9222, timeout: int = 30) -> tuple[str | None, str | None]:
+    """Extract CSRF token and hostname by intercepting automatic language server requests via CDP."""
+    import urllib.request
+    import websockets
+    
+    cdp_url = f"http://127.0.0.1:{cdp_port}/json"
+    logger.info(f"Connecting to CDP on port {cdp_port}...")
+    
+    try:
+        with urllib.request.urlopen(cdp_url, timeout=5) as resp:
+            targets = json.loads(resp.read().decode())
+            
+            page_target = None
+            for target in targets:
+                if target.get('type') == 'page':
+                    page_target = target
+                    break
+            
+            if not page_target:
+                logger.error("No page target found in CDP")
+                return None, None
+            
+            ws_url = page_target['webSocketDebuggerUrl']
+            logger.info(f"Connecting to CDP WebSocket")
+    except Exception as e:
+        logger.error(f"Error getting CDP targets: {e}")
+        return None, None
+    
+    async with websockets.connect(ws_url) as ws:
+        await ws.send(json.dumps({
+            "id": 1,
+            "method": "Network.enable",
+            "params": {}
+        }))
+        
+        logger.info(f"Listening for automatic language server requests (timeout: {timeout}s)...")
+        
+        csrf_token = None
+        hostname = None
+        start_time = asyncio.get_event_loop().time()
+        
+        while asyncio.get_event_loop().time() - start_time < timeout:
+            try:
+                msg = await asyncio.wait_for(ws.recv(), timeout=1.0)
+                data = json.loads(msg)
+                
+                if data.get('method') == 'Network.requestWillBeSent':
+                    request_data = data['params']['request']
+                    url = request_data['url']
+                    headers = request_data.get('headers', {})
+                    
+                    if 'language_server' in url.lower():
+                        logger.info(f"Intercepted request: {url}")
+                        # Extract hostname from URL (e.g., http://t.localhost:42361 -> t.localhost)
+                        from urllib.parse import urlparse
+                        parsed = urlparse(url)
+                        hostname = parsed.hostname
+                        logger.info(f"Extracted hostname: {hostname}")
+                        
+                        for key, value in headers.items():
+                            if 'csrf' in key.lower():
+                                csrf_token = value
+                                logger.info(f"Found CSRF token: {csrf_token}")
+                                _save_csrf_token(csrf_token, hostname)
+                                return csrf_token, hostname
+            
+            except asyncio.TimeoutError:
+                continue
+            except Exception as e:
+                logger.error(f"Error processing message: {e}")
+        
+        logger.error("No language server request detected within timeout")
+        return None, None
+
 
 def _detect_ls_port() -> int:
     """Detect the local language server port by finding the process and its listening ports."""
@@ -57,11 +156,13 @@ def _detect_ls_port() -> int:
                     
                     if is_language_server and (has_windsurf_flags or has_windsurf_cwd):
                         # Found Windsurf language server process, check its listening ports
+                        ports = []
                         for conn in proc.net_connections(kind='inet'):
                             if conn.status == 'LISTEN' and conn.laddr:
-                                port = conn.laddr.port
-                                # Return the first listening port (language server LSP port)
-                                return port
+                                ports.append(conn.laddr.port)
+                        # Return the first port (API port)
+                        if ports:
+                            return ports[0]
                 except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                     continue
         except Exception:
@@ -168,7 +269,7 @@ class LanguageServerClient:
     def __init__(self, port: int | None = None):
         self._port = port
         self._base = None
-        self.csrf_token = None
+        self._hostname = None
     
     @property
     def port(self) -> int:
@@ -179,21 +280,44 @@ class LanguageServerClient:
     @property
     def base(self) -> str:
         if self._base is None:
-            self._base = f"http://localhost:{self.port}"
+            token, hostname = _load_csrf_token()
+            if hostname:
+                self._base = f"http://{hostname}:{self.port}"
+            else:
+                raise RuntimeError(
+                    "Hostname not found in CSRF token file. Ensure Windsurf is running with CDP enabled "
+                    "(windsurf --remote-debugging-port=9222) and try again to extract the hostname."
+                )
         return self._base
     
-    def _get_csrf_token(self) -> str:
-        """Get CSRF token from running Windsurf"""
-        # For now, use a fixed token from captured traffic
-        # In production, this should be extracted from the browser
-        return "ae3e783d-cf0f-4d70-82ed-bc302ac66605"
+    async def _get_csrf_token(self) -> str:
+        """Get CSRF token from running Windsurf with automatic extraction."""
+        # Try to load from file first
+        token, hostname = _load_csrf_token()
+        if token:
+            if hostname:
+                self._hostname = hostname
+            return token
+        
+        # Try to extract via CDP
+        logger.info("CSRF token not found in file, attempting CDP extraction...")
+        token, hostname = await _extract_csrf_token_via_cdp()
+        if token and hostname:
+            self._hostname = hostname
+            self._base = f"http://{hostname}:{self.port}"
+            return token
+        
+        raise RuntimeError(
+            "Could not extract CSRF token or hostname. Ensure Windsurf is running with CDP enabled "
+            "(windsurf --remote-debugging-port=9222) and try again."
+        )
     
-    def get_trajectory(self, cascade_id: str) -> dict | None:
+    async def get_trajectory(self, cascade_id: str) -> dict | None:
         """Get trajectory data for a cascade_id"""
         url = f"{self.base}/exa.language_server_pb.LanguageServerService/GetCascadeTrajectory"
         
         headers = {
-            "x-codeium-csrf-token": self._get_csrf_token(),
+            "x-codeium-csrf-token": await self._get_csrf_token(),
             "connect-protocol-version": "1",
             "content-type": "application/proto",
             "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Windsurf/1.110.1 Chrome/142.0.7444.265 Electron/39.6.0 Safari/537.36"
@@ -247,10 +371,36 @@ class LanguageServerClient:
         
         return result
     
+    def _decode_metadata_timestamp(self, data: bytes) -> int | None:
+        """Decode CortexStepMetadata to extract created_at timestamp (field 1)."""
+        if not data:
+            return None
+        offset = 0
+        while offset < len(data):
+            fn, wt, val, offset = decode_field(data, offset)
+            if fn == 1:  # created_at (Timestamp message)
+                # Timestamp has fields: seconds (field 1), nanos (field 2)
+                if isinstance(val, bytes):
+                    ts_offset = 0
+                    seconds = 0
+                    nanos = 0
+                    while ts_offset < len(val):
+                        ts_fn, ts_wt, ts_val, ts_offset = decode_field(val, ts_offset)
+                        if ts_fn == 1:  # seconds
+                            seconds = ts_val
+                        elif ts_fn == 2:  # nanos
+                            nanos = ts_val
+                    # Convert to milliseconds
+                    return int(seconds * 1000 + nanos / 1000000)
+                elif isinstance(val, int):
+                    # Might be just seconds in some cases
+                    return int(val * 1000)
+        return None
+    
     def _decode_step(self, data: bytes) -> dict:
         """Decode CortexTrajectoryStep"""
         offset = 0
-        step = {"type": None, "status": None, "data": {}}
+        step = {"type": None, "status": None, "data": {}, "timestamp_ms": None}
         
         while offset < len(data):
             fn, wt, val, offset = decode_field(data, offset)
@@ -259,8 +409,8 @@ class LanguageServerClient:
                 step["type"] = val
             elif fn == 4:  # status (enum)
                 step["status"] = val
-            elif fn == 5:  # metadata (message) - just timestamps, not actual data
-                pass
+            elif fn == 5:  # metadata (message) - CortexStepMetadata
+                step["timestamp_ms"] = self._decode_metadata_timestamp(val)
             elif fn == 13:  # grep_search (oneof: step)
                 if isinstance(val, bytes):
                     step["data"]["grep_search"] = self._decode_grep_search(val)
@@ -742,7 +892,7 @@ class WindsurfIngestor(BaseIngestor):
         
         for cascade_id in cascade_ids:
             logger.debug(f"Fetching conversation for {cascade_id}")
-            trajectory = ls.get_trajectory(cascade_id)
+            trajectory = await ls.get_trajectory(cascade_id)
             
             if not trajectory:
                 logger.warning(f"Failed to fetch {cascade_id}")
@@ -768,6 +918,7 @@ class WindsurfIngestor(BaseIngestor):
         for i, step in enumerate(steps):
             step_type = step.get("type")
             data = step.get("data", {})
+            timestamp = step.get("timestamp_ms")
             
             # Map step types to message roles (based on enum values from beautified code)
             # 14 = CORTEX_STEP_TYPE_USER_INPUT
@@ -788,7 +939,7 @@ class WindsurfIngestor(BaseIngestor):
                         thread_id=f"windsurf:ls:{traj_id}",
                         role="user",
                         content=user_input,
-                        created_at=None,
+                        created_at=timestamp,
                         metadata={},
                         parts=parts,
                         raw=serialize_step(step),
@@ -803,7 +954,7 @@ class WindsurfIngestor(BaseIngestor):
                         thread_id=f"windsurf:ls:{traj_id}",
                         role="assistant",
                         content=planner_response,
-                        created_at=None,
+                        created_at=timestamp,
                         metadata={},
                         parts=parts,
                         raw=serialize_step(step),
@@ -823,7 +974,7 @@ class WindsurfIngestor(BaseIngestor):
                         thread_id=f"windsurf:ls:{traj_id}",
                         role="tool",
                         content=content,
-                        created_at=None,
+                        created_at=timestamp,
                         metadata={},
                         parts=parts,
                         raw=serialize_step(step),
@@ -840,7 +991,7 @@ class WindsurfIngestor(BaseIngestor):
                         thread_id=f"windsurf:ls:{traj_id}",
                         role="tool",
                         content=content,
-                        created_at=None,
+                        created_at=timestamp,
                         metadata={},
                         parts=parts,
                         raw=serialize_step(step),
@@ -857,7 +1008,7 @@ class WindsurfIngestor(BaseIngestor):
                         thread_id=f"windsurf:ls:{traj_id}",
                         role="tool",
                         content=content,
-                        created_at=None,
+                        created_at=timestamp,
                         metadata={},
                         parts=parts,
                         raw=serialize_step(step),
@@ -874,7 +1025,7 @@ class WindsurfIngestor(BaseIngestor):
                         thread_id=f"windsurf:ls:{traj_id}",
                         role="tool",
                         content=content,
-                        created_at=None,
+                        created_at=timestamp,
                         metadata={},
                         parts=parts,
                         raw=serialize_step(step),
@@ -891,7 +1042,7 @@ class WindsurfIngestor(BaseIngestor):
                         thread_id=f"windsurf:ls:{traj_id}",
                         role="tool",
                         content=content,
-                        created_at=None,
+                        created_at=timestamp,
                         metadata={},
                         parts=parts,
                         raw=serialize_step(step),
@@ -911,7 +1062,7 @@ class WindsurfIngestor(BaseIngestor):
                         thread_id=f"windsurf:ls:{traj_id}",
                         role="tool",
                         content=content,
-                        created_at=None,
+                        created_at=timestamp,
                         metadata={},
                         parts=parts,
                         raw=serialize_step(step),
@@ -928,7 +1079,7 @@ class WindsurfIngestor(BaseIngestor):
                         thread_id=f"windsurf:ls:{traj_id}",
                         role="tool",
                         content=content,
-                        created_at=None,
+                        created_at=timestamp,
                         metadata={},
                         parts=parts,
                         raw=serialize_step(step),
@@ -944,7 +1095,7 @@ class WindsurfIngestor(BaseIngestor):
                         thread_id=f"windsurf:ls:{traj_id}",
                         role="tool",
                         content=content,
-                        created_at=None,
+                        created_at=timestamp,
                         metadata={},
                         parts=parts,
                         raw=serialize_step(step),
@@ -961,7 +1112,7 @@ class WindsurfIngestor(BaseIngestor):
                         thread_id=f"windsurf:ls:{traj_id}",
                         role="tool",
                         content=content,
-                        created_at=None,
+                        created_at=timestamp,
                         metadata={},
                         parts=parts,
                         raw=serialize_step(step),
@@ -978,7 +1129,7 @@ class WindsurfIngestor(BaseIngestor):
                         thread_id=f"windsurf:ls:{traj_id}",
                         role="tool",
                         content=content,
-                        created_at=None,
+                        created_at=timestamp,
                         metadata={},
                         parts=parts,
                         raw=serialize_step(step),
@@ -995,7 +1146,7 @@ class WindsurfIngestor(BaseIngestor):
                         thread_id=f"windsurf:ls:{traj_id}",
                         role="tool",
                         content=content,
-                        created_at=None,
+                        created_at=timestamp,
                         metadata={},
                         parts=parts,
                         raw=serialize_step(step),
@@ -1012,7 +1163,7 @@ class WindsurfIngestor(BaseIngestor):
                         thread_id=f"windsurf:ls:{traj_id}",
                         role="tool",
                         content=content,
-                        created_at=None,
+                        created_at=timestamp,
                         metadata={},
                         parts=parts,
                         raw=serialize_step(step),
@@ -1029,7 +1180,7 @@ class WindsurfIngestor(BaseIngestor):
                         thread_id=f"windsurf:ls:{traj_id}",
                         role="tool",
                         content=content,
-                        created_at=None,
+                        created_at=timestamp,
                         metadata={},
                         parts=parts,
                         raw=serialize_step(step),
@@ -1045,7 +1196,7 @@ class WindsurfIngestor(BaseIngestor):
                         thread_id=f"windsurf:ls:{traj_id}",
                         role="tool",
                         content=content,
-                        created_at=None,
+                        created_at=timestamp,
                         metadata={},
                         parts=parts,
                         raw=serialize_step(step),
@@ -1061,7 +1212,7 @@ class WindsurfIngestor(BaseIngestor):
                         thread_id=f"windsurf:ls:{traj_id}",
                         role="tool",
                         content=content,
-                        created_at=None,
+                        created_at=timestamp,
                         metadata={},
                         parts=parts,
                         raw=serialize_step(step),
@@ -1077,7 +1228,7 @@ class WindsurfIngestor(BaseIngestor):
                         thread_id=f"windsurf:ls:{traj_id}",
                         role="tool",
                         content=content,
-                        created_at=None,
+                        created_at=timestamp,
                         metadata={},
                         parts=parts,
                         raw=serialize_step(step),
@@ -1094,7 +1245,7 @@ class WindsurfIngestor(BaseIngestor):
                         thread_id=f"windsurf:ls:{traj_id}",
                         role="tool",
                         content=content,
-                        created_at=None,
+                        created_at=timestamp,
                         metadata={},
                         parts=parts,
                         raw=serialize_step(step),
@@ -1111,7 +1262,7 @@ class WindsurfIngestor(BaseIngestor):
                         thread_id=f"windsurf:ls:{traj_id}",
                         role="tool",
                         content=content,
-                        created_at=None,
+                        created_at=timestamp,
                         metadata={},
                         parts=parts,
                         raw=serialize_step(step),
@@ -1128,7 +1279,7 @@ class WindsurfIngestor(BaseIngestor):
                         thread_id=f"windsurf:ls:{traj_id}",
                         role="tool",
                         content=content,
-                        created_at=None,
+                        created_at=timestamp,
                         metadata={},
                         parts=parts,
                         raw=serialize_step(step),
@@ -1144,7 +1295,7 @@ class WindsurfIngestor(BaseIngestor):
                         thread_id=f"windsurf:ls:{traj_id}",
                         role="tool",
                         content=content,
-                        created_at=None,
+                        created_at=timestamp,
                         metadata={},
                         parts=parts,
                         raw=serialize_step(step),
@@ -1157,11 +1308,14 @@ class WindsurfIngestor(BaseIngestor):
             if first_user:
                 title = first_user.content[:80].split("\n")[0].strip()
         
+        # Use first message's timestamp for thread
+        first_timestamp = messages[0].created_at if messages else None
+        
         return IngestedThread(
             id=f"windsurf:ls:{traj_id}",
             source_id="windsurf",
             title=title,
-            created_at=None,
-            updated_at=None,
+            created_at=first_timestamp,
+            updated_at=first_timestamp,
             messages=messages,
         )
