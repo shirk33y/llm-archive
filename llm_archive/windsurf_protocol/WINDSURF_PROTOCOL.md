@@ -13,7 +13,7 @@ Windsurf stores conversation data in multiple locations using different formats:
 - **Access**: Via Language Server API
 
 ### 2. Language Server API
-- **Endpoint**: `http://localhost:<randomized_port>` (auto-detected)
+- **Endpoint**: `http://a.localhost:<api_port>` (port auto-detected)
 - **Method**: HTTP POST with protobuf-encoded requests
 - **Status**: Fully implemented for historical .pb file access
 - **Advantages**: Access to all historical conversations, no UI interaction required
@@ -40,20 +40,70 @@ Windsurf uses Electron's `safeStorage` API for encrypting `.pb` files:
 The Language Server API provides direct access to historical `.pb` files without requiring UI interaction.
 
 ### Connection
+
+The language server listens on **two ports**, but only one serves the API. The other port silently hangs on requests. The correct port must be identified by probing.
+
 ```python
 from llm_archive.ingestors.windsurf import LanguageServerClient
 
 ls = LanguageServerClient()
-cascade_ids = ls.get_all_cascade_ids()
-trajectory = ls.get_trajectory(cascade_id)
+trajectory = await ls.get_trajectory(cascade_id)
 ```
+
+### Port Detection
+
+The language server process (`language_server`) listens on 2 TCP ports:
+- **API port**: Responds to HTTP requests (returns HTTP errors like 401/500 for invalid requests)
+- **Silent port**: Accepts connections but never responds (hangs until timeout)
+
+Detection strategy:
+1. Find all LISTEN ports from the `language_server` process via `psutil`
+2. Probe each port with a short timeout (2s) — the API port responds, the silent one hangs
+3. Cache the working API port for the session
+
+### Subdomain
+
+The URL subdomain (e.g., `a.localhost`, `t.localhost`) **does not matter**. Any single lowercase letter works identically — all 26 subdomains route to the same API. The subdomain can be hardcoded to `a.localhost`.
+
+Previous analysis showed the Windsurf UI cycling through different subdomains, leading to the assumption that the subdomain was significant. Empirical testing proved otherwise: all subdomains return identical responses with the same CSRF token.
+
+### CSRF Token
+
+The API requires a valid `x-codeium-csrf-token` header. Key behaviors:
+
+- **Generated at LS startup** using `crypto.randomUUID()`
+- **Invalidated on LS restart** — the old token returns HTTP 401 with `{"code":"unauthenticated","message":"invalid CSRF token"}`
+- **Auto-refresh via CDP** — when a 401 is detected, the client automatically extracts a fresh token by intercepting network requests via CDP
+- **Not in standard storage** — not in localStorage, sessionStorage, or cookies; only appears in HTTP request headers
+
+### Request Flow
+
+1. Discover API port via `_find_ls_ports()` + `_probe_api_port()`
+2. Load CSRF token from `~/.llm-archive/auth/windsurf.json`
+3. POST to `http://a.localhost:<port>/exa.language_server_pb.LanguageServerService/GetCascadeTrajectory`
+4. On HTTP 401 → auto-refresh CSRF token via CDP, retry once
+5. On connection failure → re-probe ports (LS may have restarted), retry once
+6. On success → decode protobuf response
+
+### Required Headers
+
+```
+x-codeium-csrf-token: <uuid>
+connect-protocol-version: 1
+content-type: application/proto
+User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Windsurf/1.110.1 Chrome/142.0.7444.265 Electron/39.6.0 Safari/537.36
+```
+
+### Timeout Considerations
+
+Large trajectories (9+ MB .pb files) can take 30-40 seconds for the LS to process and return. Use a 60-second timeout for `GetCascadeTrajectory` requests. Port probing uses 2-second timeouts since the API port responds quickly to invalid requests.
 
 ### Protobuf Decoding
 
 The `CortexTrajectoryStep` protobuf message contains:
 - **Field 1**: `type` (enum - CortexStepType)
 - **Field 4**: `status` (enum - ActionStatus)
-- **Field 5**: `metadata` (message - CortexStepMetadata) - not returned by API
+- **Field 5**: `metadata` (message - CortexStepMetadata) - contains `created_at` timestamp (verified: all steps return timestamps)
 - **Fields 6-115**: Oneof step data fields
 
 ### Step Type Enum (CortexStepType)
@@ -184,10 +234,16 @@ async for thread in ingestor.threads():
 - **Full protobuf decoding**: 100% field coverage for step data
 - **No truncation**: Stores full data without size limits
 - **Force sync**: `-f` flag bypasses SHA1 deduplication to re-ingest
+- **Smart sync**: Skips conversations whose `.pb` files haven't changed since last sync (compares mtime against DB `updated_at`)
+- **Progress reporting**: Shows conversation title in progress bar during fetch
+- **Auto CSRF refresh**: Detects stale tokens and refreshes via CDP automatically
+- **Auto port detection**: Probes for the correct API port among the LS's two listening ports
 
 ### Requirements
+
 - Windsurf installed and running (for Language Server API)
-- No external dependencies
+- Windsurf started with `--remote-debugging-port=9222` (for initial CSRF token extraction; auto-refreshed on 401)
+- `psutil` Python package (for port detection)
 
 ### CLI Usage
 
@@ -243,15 +299,16 @@ The `data` field in `message_parts` stores JSON-structured data from decoded pro
 
 ## Known Limitations
 
-1. **Field 5 (metadata) availability**: The Language Server API may or may not return the CortexStepMetadata field (field 5), which contains timestamps, model usage, costs, and execution details. The beautified extension code shows this field exists and contains a `created_at` timestamp (CortexStepMetadata field 1). Current implementation attempts to extract this timestamp if present.
+1. **trajectory_id ≠ cascade_id**: The `trajectory_id` returned by the API differs from the `.pb` filename (cascade_id). This means thread IDs in the DB (`windsurf:ls:{trajectory_id}`) cannot be matched back to `.pb` files by name. Smart sync works around this by comparing `.pb` mtime against the newest `updated_at` in the DB as a proxy for last sync time.
 2. **17.8% steps without data**: These are metadata-only steps (status updates, markers) that don't contain actual content.
 3. **Language Server required**: Requires Windsurf to be running with the Language Server active.
 4. **Protobuf reverse-engineering**: Decoders are based on reverse-engineering the protobuf structure from the beautified extension code. Field mappings may need updates if the schema changes.
-5. **CSRF token**: Language Server API requires a valid CSRF token. The token is generated at Windsurf startup using `crypto.randomUUID()` and stored in the LanguageServerClient instance. It can be extracted via CDP by intercepting network requests, but CDP operations (especially deep object traversal) can cause Windsurf to hang or become unresponsive. The token is not stored in localStorage, sessionStorage, cookies, or easily accessible window properties.
+5. **CSRF token expiry**: The CSRF token is invalidated when the language server restarts. The client auto-refreshes via CDP, but CDP must be enabled (`--remote-debugging-port=9222`).
+6. **Large trajectories**: Very large conversations (9+ MB .pb) can take 30-40 seconds for the LS to process.
 
 ## Chrome DevTools Protocol (CDP)
 
-CDP can be used to inspect and interact with running Windsurf instances for debugging and data extraction.
+CDP is used to extract fresh CSRF tokens when the cached one becomes stale (e.g., after LS restart).
 
 ### Connecting to Windsurf via CDP
 
@@ -269,30 +326,17 @@ curl http://127.0.0.1:9222/json
 
 This returns a JSON list of targets including the main page target with a WebSocket URL.
 
-### Interception Methods
+### CSRF Token Extraction via Network Interception
 
-#### Network Request Interception
-
-The Network domain can intercept HTTP requests to extract headers including the CSRF token:
+The Network domain intercepts HTTP requests to extract the CSRF token:
 
 1. Connect to CDP WebSocket
 2. Enable Network domain
 3. Listen for `Network.requestWillBeSent` events
-4. Filter for language server requests
+4. Filter for language server requests (URL contains `language_server`)
 5. Extract `x-codeium-csrf-token` header
 
 **Automatic extraction**: Windsurf makes automatic language server requests on startup (e.g., `GetUnleashData`). By waiting for these automatic requests, the CSRF token can be extracted without requiring user interaction. This method is safe and does not cause Windsurf to hang.
-
-#### Runtime Object Inspection
-
-The Runtime domain can evaluate JavaScript to search for the CSRF token in the window object:
-
-1. Connect to CDP WebSocket
-2. Enable Runtime domain
-3. Use `Runtime.evaluate` to search window object
-4. Look for UUID patterns in object properties
-
-**Limitations**: Deep object traversal can cause Windsurf to hang or become unresponsive. The CSRF token is not stored in localStorage, sessionStorage, cookies, or easily accessible window properties.
 
 ### CSRF Token Location
 
@@ -302,40 +346,6 @@ From beautified extension code analysis:
 - Also set via `I.windsurfLanguageServer.setCsrfToken(token)`
 - Not accessible via standard browser storage APIs
 - Only appears in HTTP request headers to the language server
-
-### Hostname Subdomain
-
-The language server uses a dynamic subdomain prefix (e.g., `x.localhost`, `t.localhost`) that changes frequently:
-- **Not in extension code**: The extension sets the address as `127.0.0.1:${port}` without a subdomain
-- **Generated by language server binary**: The subdomain is likely added by the language server binary or a network layer
-- **Changes frequently**: Subdomain changes multiple times per second, not just on restart
-- **Random pattern**: Subdomain assignment is completely random - not related to:
-  - Command name/endpoint
-  - Time
-  - Sequential order
-  - Any observable factor
-- **No 127.0.0.1 fallback**: Never use 127.0.0.1 - it does not work with the language server
-
-**Subdomain Analysis Results:**
-- Captured 36 requests in 30 seconds
-- 12 unique subdomains: a, g, j, k, l, o, p, q, s, u, v, z
-- Same endpoint (e.g., StreamCascadeReactiveUpdates) uses different subdomains (a, l, p, z)
-- Subdomains are NOT consecutive alphabetically
-- Subdomains change even within the same second
-- No correlation between subdomain and endpoint name
-
-**Current Approach: Subdomain Cycling**
-Since the subdomain is completely random and changes frequently, the ingestor:
-1. **Does not use CDP extraction** - subdomain extraction is useless since it changes so quickly
-2. **Cycles through all subdomains [a-z]** on every API call
-3. **Tries each subdomain** until one responds successfully
-4. **Resumes cycling** if connection fails (subdomain changes frequently)
-5. **Never uses 127.0.0.1** - this is not a valid language server address
-
-This approach is reliable because:
-- It always finds a working subdomain (one of the 26 will work)
-- It handles the rapid subdomain changes automatically
-- It doesn't rely on CDP which adds complexity without benefit
 
 ### Example Scripts
 
@@ -361,7 +371,6 @@ See `llm_archive/windsurf_protocol/` for CDP extraction scripts:
 
 ## Future Research
 
-1. Investigate if Field 5 (metadata) can be obtained via alternative API endpoints
-2. Monitor for protobuf schema changes in Windsurf updates
-3. Add full-text search support for JSON data fields
-4. Implement incremental sync to only process new/changed .pb files
+1. Monitor for protobuf schema changes in Windsurf updates
+2. Add full-text search support for JSON data fields
+3. Investigate if trajectory_id can be matched to cascade_id for per-thread smart sync

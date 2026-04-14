@@ -40,17 +40,17 @@ class DeepseekIngestor(BaseIngestor):
 
     async def init(self, **kwargs) -> None:
         from llm_archive.auth.playwright import auth_path
-        logger.info("checking auth state")
+        logger.info("Checking auth state")
         if not auth_path(self.source_id).exists() or kwargs.get("reauth"):
-            logger.info("auth missing or reauth requested — starting browser login")
+            logger.info("Auth missing or reauth requested, starting browser login")
             await _login()
-            logger.info("login completed and auth state saved")
+            logger.info("Login completed and auth state saved")
         self._token = None
 
-    async def threads(self, since: int | None = None, existing_thread_ids: set[str] | None = None):
-        logger.info("acquiring auth token")
+    async def threads(self, since: int | None = None, existing_thread_ids: set[str] | None = None, on_total = None):
+        logger.debug("Acquiring auth token")
         token = await self._get_token()
-        logger.info("token acquired")
+        logger.debug("Token acquired")
         headers = {
             **BROWSER_HEADERS,
             "authorization": f"Bearer {token}",
@@ -61,7 +61,9 @@ class DeepseekIngestor(BaseIngestor):
 
         async with httpx.AsyncClient(timeout=30, headers=headers) as client:
             sessions = await self._fetch_sessions(client)
-            logger.info(f"found {len(sessions)} conversations")
+            logger.debug(f"Found {len(sessions)} conversations")
+            if on_total:
+                on_total(len(sessions))
             for sess in sessions:
                 chat_id = sess.get("id")
                 if not chat_id:
@@ -69,21 +71,15 @@ class DeepseekIngestor(BaseIngestor):
                 thread_id = f"deepseek:{chat_id}"
                 updated_at = _parse_ts(sess.get("updated_at"))
                 
-                # Smart sync: if conversation already exists, check if it's been updated
+                # Smart sync: skip conversations already in the DB
                 if thread_id in existing_thread_ids:
-                    # If existing_thread_ids is a dict with timestamps, compare them
                     if isinstance(existing_thread_ids, dict):
                         db_updated_at = existing_thread_ids.get(thread_id)
-                        # Only stop if DB timestamp is same or newer than API timestamp
                         if db_updated_at and db_updated_at >= updated_at:
-                            logger.info("no new conversations remaining")
-                            break
-                        # Otherwise, fetch the updated conversation
-                        logger.info(f"conversation {chat_id} was updated, re-fetching")
+                            continue
+                        logger.info(f"Conversation {chat_id} was updated, re-fetching")
                     else:
-                        # Old behavior: just check if exists
-                        logger.info(f"conversation {chat_id} already in database, stopping sync")
-                        break
+                        continue
                 
                 if since and updated_at and updated_at < since:
                     continue
@@ -91,24 +87,8 @@ class DeepseekIngestor(BaseIngestor):
                 if thread:
                     yield thread
 
-    async def count_threads(self, since: int | None = None) -> int:
-        token = await self._get_token()
-        headers = {
-            **BROWSER_HEADERS,
-            "authorization": f"Bearer {token}",
-        }
-        async with httpx.AsyncClient(timeout=30, headers=headers) as client:
-            sessions = await self._fetch_sessions(client)
-        if since is None:
-            return len(sessions)
-        return sum(
-            1
-            for sess in sessions
-            if not (since and _parse_ts(sess.get("updated_at")) and _parse_ts(sess.get("updated_at")) < since)
-        )
-
     async def _fetch_sessions(self, client: httpx.AsyncClient) -> list[dict]:
-        logger.debug("fetching conversation list")
+        logger.debug("Fetching conversation list")
         sessions: list[dict] = []
         seen: set[str] = set()
         cursor: float | None = None
@@ -119,7 +99,7 @@ class DeepseekIngestor(BaseIngestor):
                 params["lte_cursor.updated_at"] = str(cursor)
             resp = await client.get(f"{API_BASE}/chat_session/fetch_page", params=params)
             if resp.status_code == 401:
-                logger.warning("conversation list returned 401 — reauth required")
+                logger.warning("Conversation list returned 401, reauth required")
                 await self._reauth()
                 return await self._fetch_sessions(client)
             resp.raise_for_status()
@@ -149,8 +129,8 @@ class DeepseekIngestor(BaseIngestor):
             cursor = next_cursor
 
         if not sessions:
-            logger.warning("no conversations returned by API")
-        logger.debug(f"fetched {len(sessions)} conversations")
+            logger.warning("No conversations returned by API")
+        logger.debug(f"Fetched {len(sessions)} conversations")
         return sessions
 
     async def _fetch_thread(self, client: httpx.AsyncClient, sess: dict) -> IngestedThread | None:
@@ -158,10 +138,10 @@ class DeepseekIngestor(BaseIngestor):
         if not sess_id:
             return None
 
-        logger.debug(f"fetching conversation {sess_id}")
+        logger.debug(f"Fetching conversation {sess_id}")
         resp = await client.get(f"{API_BASE}/chat/history_messages", params={"chat_session_id": sess_id})
         if resp.status_code == 401:
-            logger.warning(f"conversation {sess_id} returned 401 — reauth required")
+            logger.warning(f"Conversation {sess_id} returned 401, reauth required")
             await self._reauth()
             return await self._fetch_thread(client, sess)
         resp.raise_for_status()
@@ -187,7 +167,7 @@ class DeepseekIngestor(BaseIngestor):
             ))
 
         if not messages:
-            logger.warning(f"conversation {sess_id} had no importable messages")
+            logger.warning(f"Conversation {sess_id} had no importable messages")
             return None
 
         return IngestedThread(
@@ -229,7 +209,7 @@ class DeepseekIngestor(BaseIngestor):
                             except (json.JSONDecodeError, TypeError):
                                 pass
                             self._token = token
-                            logger.debug("extracted bearer token from storage state")
+                            logger.debug("Extracted bearer token from storage state")
                             return self._token
 
         # If not found in localStorage, fall back to Chrome extraction
@@ -262,7 +242,7 @@ class DeepseekIngestor(BaseIngestor):
 
         try:
             async with async_playwright() as p:
-                logger.debug("connecting to Chrome via CDP")
+                logger.debug("Connecting to Chrome via CDP")
                 browser = await p.chromium.connect_over_cdp("http://localhost:9222")
                 ctx = browser.contexts[0]
                 import json
@@ -282,7 +262,7 @@ class DeepseekIngestor(BaseIngestor):
                 await page.goto(LOGIN_URL, wait_until="domcontentloaded")
                 self._token = await asyncio.wait_for(fut, timeout=120)
                 await browser.close()
-                logger.debug("extracted bearer token from browser session")
+                logger.debug("Extracted bearer token from browser session")
         finally:
             proc.terminate()
 
@@ -290,7 +270,7 @@ class DeepseekIngestor(BaseIngestor):
 
     async def _reauth(self) -> None:
         self._token = None
-        logger.info("reauthenticating")
+        logger.info("Reauthenticating")
         await _login()
 
 

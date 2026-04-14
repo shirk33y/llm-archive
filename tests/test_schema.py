@@ -668,213 +668,6 @@ def test_db_search_threads_prefix(tmp_path):
 
 # --- Windsurf ingestor tests ---
 
-def test_windsurf_parse_timestamp_iso():
-    from llm_archive.ingestors.windsurf import _parse_timestamp
-    ts = _parse_timestamp("2024-03-27T04:26:48.000Z")
-    assert ts is not None
-    assert ts > 1711510000000  # ms since epoch
-
-
-def test_windsurf_parse_timestamp_none():
-    from llm_archive.ingestors.windsurf import _parse_timestamp
-    assert _parse_timestamp(None) is None
-    assert _parse_timestamp("") is None
-
-
-def test_windsurf_convert_user_message():
-    from llm_archive.ingestors.windsurf import _convert_to_thread
-    conv = {
-        "trajectoryId": "test-id",
-        "turns": [
-            {"role": "user", "text": "Hello Windsurf", "at": "2024-03-27T04:26:48.000Z"}
-        ]
-    }
-    thread = _convert_to_thread(conv)
-    assert thread.id == "windsurf:test-id"
-    assert thread.source_id == "windsurf"
-    assert len(thread.messages) == 1
-    msg = thread.messages[0]
-    assert msg.role == "user"
-    assert msg.content == "Hello Windsurf"
-    assert msg.parts[0].kind == "text"
-    assert thread.title == "Hello Windsurf"
-
-
-def test_windsurf_convert_assistant_with_thinking():
-    from llm_archive.ingestors.windsurf import _convert_to_thread
-    conv = {
-        "trajectoryId": "test-id",
-        "turns": [
-            {
-                "role": "assistant",
-                "text": "The answer is 42",
-                "thinking": "Let me calculate...",
-                "at": "2024-03-27T04:27:00.000Z"
-            }
-        ]
-    }
-    thread = _convert_to_thread(conv)
-    msg = thread.messages[0]
-    assert msg.role == "assistant"
-    assert "Let me calculate" in msg.content
-    assert "The answer is 42" in msg.content
-    assert len(msg.parts) == 2
-    assert msg.parts[0].kind == "thinking"
-    assert msg.parts[0].visible is False
-    assert msg.parts[1].kind == "text"
-
-
-def test_windsurf_convert_command():
-    from llm_archive.ingestors.windsurf import _convert_to_thread
-    conv = {
-        "trajectoryId": "test-id",
-        "turns": [
-            {
-                "role": "tool",
-                "command": "ls",
-                "args": ["-la"],
-                "stdout": "total 10",
-                "exitCode": 0,
-                "at": "2024-03-27T04:27:30.000Z"
-            }
-        ]
-    }
-    thread = _convert_to_thread(conv)
-    msg = thread.messages[0]
-    assert msg.role == "tool"
-    assert "ls -la" in msg.content
-    assert "total 10" in msg.content
-    assert msg.parts[0].kind == "tool_call"
-    assert msg.parts[0].data["command"] == "ls -la"
-
-
-def test_windsurf_convert_write_file():
-    from llm_archive.ingestors.windsurf import _convert_to_thread
-    conv = {
-        "trajectoryId": "test-id",
-        "turns": [
-            {
-                "role": "tool",
-                "tool": "write_file",
-                "path": "/tmp/test.txt",
-                "content": "hello world",
-                "at": "2024-03-27T04:28:00.000Z"
-            }
-        ]
-    }
-    thread = _convert_to_thread(conv)
-    msg = thread.messages[0]
-    assert msg.role == "tool"
-    assert "/tmp/test.txt" in msg.content
-    assert msg.parts[0].kind == "tool_call"
-    assert msg.parts[0].data["path"] == "/tmp/test.txt"
-
-
-def test_windsurf_convert_read_file():
-    from llm_archive.ingestors.windsurf import _convert_to_thread
-    conv = {
-        "trajectoryId": "test-id",
-        "turns": [
-            {
-                "role": "tool",
-                "tool": "read_file",
-                "path": "/etc/hosts",
-                "at": "2024-03-27T04:28:30.000Z"
-            }
-        ]
-    }
-    thread = _convert_to_thread(conv)
-    msg = thread.messages[0]
-    assert "Read file" in msg.content
-    assert msg.parts[0].data["path"] == "/etc/hosts"
-
-
-def test_windsurf_convert_todo_list():
-    from llm_archive.ingestors.windsurf import _convert_to_thread
-    conv = {
-        "trajectoryId": "test-id",
-        "turns": [
-            {
-                "role": "tool",
-                "tool": "todo_list",
-                "todos": [{"content": "Implement feature"}, {"content": "Write tests"}],
-                "at": "2024-03-27T04:29:00.000Z"
-            }
-        ]
-    }
-    thread = _convert_to_thread(conv)
-    msg = thread.messages[0]
-    assert msg.role == "tool"
-    assert "TODO" in msg.content
-    assert "Implement feature" in msg.content
-    # Data contains raw todo objects with content field
-    assert msg.parts[0].data["todos"] == [{"content": "Implement feature"}, {"content": "Write tests"}]
-
-
-def test_windsurf_convert_checkpoint():
-    from llm_archive.ingestors.windsurf import _convert_to_thread
-    conv = {
-        "trajectoryId": "test-id",
-        "turns": [
-            {
-                "role": "checkpoint",
-                "intent": "Fix the bug in auth module",
-                "at": "2024-03-27T04:30:00.000Z"
-            }
-        ]
-    }
-    thread = _convert_to_thread(conv)
-    msg = thread.messages[0]
-    assert msg.role == "system"
-    assert "Fix the bug" in msg.content
-    assert msg.parts[0].kind == "system"
-    assert msg.parts[0].visible is False
-
-
-@pytest.mark.asyncio
-async def test_windsurf_count_threads():
-    # Windsurf count_threads now uses Language Server API by default
-    # This test is skipped since it requires a running Windsurf instance
-    pytest.skip("Requires running Windsurf with Language Server API")
-
-
-def test_windsurf_full_conversation():
-    from llm_archive.ingestors.windsurf import _convert_to_thread
-    conv = {
-        "trajectoryId": "conv-123",
-        "turns": [
-            {"role": "user", "text": "Create a Python script", "at": "2024-03-27T10:00:00Z"},
-            {
-                "role": "assistant",
-                "text": "I'll create a script for you",
-                "thinking": "User wants a Python script. I'll create a simple hello world.",
-                "at": "2024-03-27T10:00:05Z"
-            },
-            {
-                "role": "tool",
-                "tool": "write_file",
-                "path": "hello.py",
-                "content": "print('hello')",
-                "at": "2024-03-27T10:00:10Z"
-            },
-            {
-                "role": "tool",
-                "command": "python",
-                "args": ["hello.py"],
-                "stdout": "hello\n",
-                "exitCode": 0,
-                "at": "2024-03-27T10:00:15Z"
-            },
-        ]
-    }
-    thread = _convert_to_thread(conv)
-    assert len(thread.messages) == 4
-    assert thread.messages[0].role == "user"
-    assert thread.messages[1].role == "assistant"
-    assert thread.messages[2].role == "tool"
-    assert thread.messages[3].role == "tool"
-
-
 def test_search_text_includes_data_field(con):
     """Test that search_text includes data field content for searchability."""
     from llm_archive.schema import IngestedMessage, IngestedPart, IngestedThread
@@ -973,3 +766,221 @@ def test_search_orders_by_rank(con):
     # Both sources should appear in results
     sources = [r["source_id"] for r in results]
     assert "source_a" in sources or "source_b" in sources
+
+
+# --- Claude ingestor regression tests ---
+
+def test_claude_flatten_text_content():
+    from llm_archive.ingestors.claude import _flatten_claude_content
+    assert _flatten_claude_content("hello") == "hello"
+
+def test_claude_flatten_list_content():
+    from llm_archive.ingestors.claude import _flatten_claude_content
+    content = [
+        {"type": "text", "text": "hello"},
+        {"type": "tool_use", "name": "bash"},
+        {"type": "tool_result", "content": "output"},
+    ]
+    result = _flatten_claude_content(content)
+    assert "hello" in result
+    assert "[Tool: bash]" in result
+    assert "[Tool result]" in result
+
+def test_claude_parse_timestamp():
+    from llm_archive.ingestors.claude import _parse_claude_ts
+    ts = _parse_claude_ts("2024-03-27T04:26:48.000Z")
+    assert ts is not None
+    assert ts > 1711510000000
+
+def test_claude_parse_timestamp_none():
+    from llm_archive.ingestors.claude import _parse_claude_ts
+    assert _parse_claude_ts(None) is None
+    assert _parse_claude_ts("") is None
+
+
+@pytest.mark.asyncio
+async def test_claude_smart_sync_continues_past_existing():
+    """Regression: smart sync must continue past already-synced conversations, not break."""
+    from llm_archive.ingestors.claude import ClaudeIngestor
+    from unittest.mock import patch, AsyncMock, MagicMock
+
+    ingestor = ClaudeIngestor()
+
+    # Conversations sorted by updated_at desc (most recent first)
+    convs = [
+        {"uuid": "conv-1", "updated_at": "2024-03-27T10:00:00Z", "created_at": "2024-03-27T10:00:00Z", "name": "Recent"},
+        {"uuid": "conv-2", "updated_at": "2024-03-26T10:00:00Z", "created_at": "2024-03-26T10:00:00Z", "name": "Older"},
+        {"uuid": "conv-3", "updated_at": "2024-03-25T10:00:00Z", "created_at": "2024-03-25T10:00:00Z", "name": "Oldest"},
+    ]
+
+    # conv-1 is already in DB with same timestamp — should be skipped
+    # conv-2 and conv-3 should still be yielded
+    existing = {"claude:conv-1": 1711533600000}  # matches 2024-03-27T10:00:00Z
+
+    thread_old = IngestedThread(
+        id="claude:conv-2", source_id="claude", title="Older",
+        created_at=1711447200000, updated_at=1711447200000, messages=[],
+    )
+    thread_oldest = IngestedThread(
+        id="claude:conv-3", source_id="claude", title="Oldest",
+        created_at=1711360800000, updated_at=1711360800000, messages=[],
+    )
+
+    with patch.object(ClaudeIngestor, '_get_org_id', new_callable=AsyncMock, return_value="org-1"):
+        with patch.object(ClaudeIngestor, '_get', new_callable=AsyncMock, return_value=convs):
+            with patch.object(ClaudeIngestor, '_fetch_thread', new_callable=AsyncMock, side_effect=[thread_old, thread_oldest]):
+                threads = []
+                async for t in ingestor.threads(existing_thread_ids=existing):
+                    threads.append(t)
+
+    assert len(threads) == 2
+    assert threads[0].id == "claude:conv-2"
+    assert threads[1].id == "claude:conv-3"
+
+
+@pytest.mark.asyncio
+async def test_claude_smart_sync_re_fetches_updated():
+    """Smart sync should re-fetch conversations whose updated_at is newer than DB."""
+    from llm_archive.ingestors.claude import ClaudeIngestor
+    from unittest.mock import patch, AsyncMock
+
+    ingestor = ClaudeIngestor()
+
+    convs = [
+        {"uuid": "conv-1", "updated_at": "2024-03-28T10:00:00Z", "created_at": "2024-03-27T10:00:00Z", "name": "Updated"},
+    ]
+
+    # DB has older timestamp — conversation was updated, should be re-fetched
+    existing = {"claude:conv-1": 1711447200000}  # 2024-03-26 — older than API
+
+    thread = IngestedThread(
+        id="claude:conv-1", source_id="claude", title="Updated",
+        created_at=1711533600000, updated_at=1711620000000, messages=[],
+    )
+
+    with patch.object(ClaudeIngestor, '_get_org_id', new_callable=AsyncMock, return_value="org-1"):
+        with patch.object(ClaudeIngestor, '_get', new_callable=AsyncMock, return_value=convs):
+            with patch.object(ClaudeIngestor, '_fetch_thread', new_callable=AsyncMock, return_value=thread):
+                threads = []
+                async for t in ingestor.threads(existing_thread_ids=existing):
+                    threads.append(t)
+
+    assert len(threads) == 1
+    assert threads[0].id == "claude:conv-1"
+
+
+@pytest.mark.asyncio
+async def test_claude_on_total_callback():
+    """Test on_total callback reports conversation count during threads() iteration."""
+    from llm_archive.ingestors.claude import ClaudeIngestor
+    from unittest.mock import patch, AsyncMock
+
+    ingestor = ClaudeIngestor()
+
+    convs = [{"uuid": f"conv-{i}", "updated_at": "2024-03-27T10:00:00Z", "created_at": "2024-03-27T10:00:00Z"} for i in range(75)]
+
+    reported_total = None
+    def on_total(count):
+        nonlocal reported_total
+        reported_total = count
+
+    with patch.object(ClaudeIngestor, '_get_org_id', new_callable=AsyncMock, return_value="org-1"):
+        with patch.object(ClaudeIngestor, '_get', new_callable=AsyncMock, return_value=convs):
+            with patch.object(ClaudeIngestor, '_fetch_thread', new_callable=AsyncMock, return_value=None):
+                async for _ in ingestor.threads(on_total=on_total):
+                    pass
+
+    assert reported_total == 75
+
+
+@pytest.mark.asyncio
+async def test_claude_v2_dict_response():
+    """Regression: v2 API returns {"data": [...], "has_more": bool} dict format."""
+    from llm_archive.ingestors.claude import ClaudeIngestor
+    from unittest.mock import patch, AsyncMock
+
+    ingestor = ClaudeIngestor()
+
+    convs = [{"uuid": f"conv-{i}", "updated_at": "2024-03-27T10:00:00Z", "created_at": "2024-03-27T10:00:00Z"} for i in range(75)]
+
+    reported_total = None
+    def on_total(count):
+        nonlocal reported_total
+        reported_total = count
+
+    # v2 returns dict with "data" and "has_more"
+    v2_response = {"data": convs, "has_more": False}
+
+    with patch.object(ClaudeIngestor, '_get_org_id', new_callable=AsyncMock, return_value="org-1"):
+        with patch.object(ClaudeIngestor, '_get', new_callable=AsyncMock, return_value=v2_response):
+            with patch.object(ClaudeIngestor, '_fetch_thread', new_callable=AsyncMock, return_value=None):
+                async for _ in ingestor.threads(on_total=on_total):
+                    pass
+
+    assert reported_total == 75
+
+
+@pytest.mark.asyncio
+async def test_claude_v2_paginated():
+    """Regression: v2 pagination via has_more=True triggers additional requests."""
+    from llm_archive.ingestors.claude import ClaudeIngestor
+    from unittest.mock import patch, AsyncMock
+
+    ingestor = ClaudeIngestor()
+
+    page1 = [{"uuid": f"conv-{i}", "updated_at": "2024-03-27T10:00:00Z", "created_at": "2024-03-27T10:00:00Z"} for i in range(3)]
+    page2 = [{"uuid": f"conv-{i}", "updated_at": "2024-03-26T10:00:00Z", "created_at": "2024-03-26T10:00:00Z"} for i in range(3, 5)]
+
+    reported_total = None
+    def on_total(count):
+        nonlocal reported_total
+        reported_total = count
+
+    with patch.object(ClaudeIngestor, '_get_org_id', new_callable=AsyncMock, return_value="org-1"):
+        with patch.object(ClaudeIngestor, '_get', new_callable=AsyncMock, side_effect=[
+            {"data": page1, "has_more": True},
+            {"data": page2, "has_more": False},
+        ]):
+            with patch.object(ClaudeIngestor, '_fetch_thread', new_callable=AsyncMock, return_value=None):
+                async for _ in ingestor.threads(on_total=on_total):
+                    pass
+
+    assert reported_total == 5
+
+
+@pytest.mark.asyncio
+async def test_deepseek_smart_sync_continues_past_existing():
+    """Regression: deepseek smart sync must continue past already-synced conversations, not break."""
+    from llm_archive.ingestors.deepseek import DeepseekIngestor
+    from unittest.mock import patch, AsyncMock
+
+    ingestor = DeepseekIngestor()
+
+    sessions = [
+        {"id": "sess-1", "updated_at": 5},
+        {"id": "sess-2", "updated_at": 4},
+        {"id": "sess-3", "updated_at": 3},
+    ]
+
+    # sess-1 already in DB — should be skipped, sess-2 and sess-3 still yielded
+    existing = {"deepseek:sess-1": 5000}
+
+    thread2 = IngestedThread(
+        id="deepseek:sess-2", source_id="deepseek", title="Sess 2",
+        created_at=4000, updated_at=4000, messages=[],
+    )
+    thread3 = IngestedThread(
+        id="deepseek:sess-3", source_id="deepseek", title="Sess 3",
+        created_at=3000, updated_at=3000, messages=[],
+    )
+
+    with patch.object(DeepseekIngestor, '_get_token', new_callable=AsyncMock, return_value="tok"):
+        with patch.object(DeepseekIngestor, '_fetch_sessions', new_callable=AsyncMock, return_value=sessions):
+            with patch.object(DeepseekIngestor, '_fetch_thread', new_callable=AsyncMock, side_effect=[thread2, thread3]):
+                threads = []
+                async for t in ingestor.threads(existing_thread_ids=existing):
+                    threads.append(t)
+
+    assert len(threads) == 2
+    assert threads[0].id == "deepseek:sess-2"
+    assert threads[1].id == "deepseek:sess-3"

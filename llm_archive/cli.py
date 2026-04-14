@@ -81,7 +81,7 @@ async def _do_ingest(con, ingestor, since: int | None, force: bool = False):
     written = 0
     skipped = 0
     errors = 0
-    total = await _ingest_total(ingestor, None)  # Get total count without since filter
+    total = None
 
     # Fetch existing thread IDs and updated_at for smart sync (disabled when force=True)
     existing_threads = {}
@@ -97,13 +97,42 @@ async def _do_ingest(con, ingestor, since: int | None, force: bool = False):
         console=progress_console,
         transient=True,
     ) as progress:
-        task = progress.add_task(f"  {ingestor.source_id}", total=total)
+        # Start with indeterminate bar for immediate visual feedback
+        task = progress.add_task(f"  {ingestor.source_id}", total=None)
+
+        # Try fast count_threads (e.g. windsurf just counts .pb files)
+        fast_total = await _ingest_total(ingestor, None)
+        if fast_total is not None:
+            total = fast_total
+            progress.update(task, total=total)
+
+        def _on_total(count: int):
+            nonlocal total
+            total = count
+            progress.update(task, total=total)
+
+        def _on_fetch_start(label: str):
+            progress.update(task, description=f"  {ingestor.source_id} — {label}")
+
+        def _on_fetch_done():
+            progress.update(task, description=f"  {ingestor.source_id} — [green]{written}[/green] new, [grey37]{skipped}[/grey37] up to date")
+
         try:
-            # Check if ingestor supports existing_thread_ids parameter
+            # Check if ingestor supports callback parameters
             import inspect
             sig = inspect.signature(ingestor.threads)
+            kwargs = {}
             if "existing_thread_ids" in sig.parameters:
-                async for thread in ingestor.threads(since=None, existing_thread_ids=existing_threads):
+                kwargs["existing_thread_ids"] = existing_threads
+            if "on_fetch_start" in sig.parameters:
+                kwargs["on_fetch_start"] = _on_fetch_start
+            if "on_fetch_done" in sig.parameters:
+                kwargs["on_fetch_done"] = _on_fetch_done
+            if "on_total" in sig.parameters and total is None:
+                kwargs["on_total"] = _on_total
+
+            if kwargs:
+                async for thread in ingestor.threads(since=None, **kwargs):
                     # Force update if thread exists and has newer updated_at
                     thread_force = force
                     if not force and thread.id in existing_threads:
@@ -117,8 +146,9 @@ async def _do_ingest(con, ingestor, since: int | None, force: bool = False):
                         skipped += 1
                     progress.update(
                         task,
-                        advance=1 if total is not None else 0,
-                        description=f"  {ingestor.source_id} — {written} new, {skipped} skipped",
+                        advance=1,
+                        total=total,
+                        description=f"  {ingestor.source_id} — [green]{written}[/green] new, [grey37]{skipped}[/grey37] up to date",
                     )
             else:
                 async for thread in ingestor.threads(since=None):
@@ -129,8 +159,9 @@ async def _do_ingest(con, ingestor, since: int | None, force: bool = False):
                         skipped += 1
                     progress.update(
                         task,
-                        advance=1 if total is not None else 0,
-                        description=f"  {ingestor.source_id} — {written} new, {skipped} skipped",
+                        advance=1,
+                        total=total,
+                        description=f"  {ingestor.source_id} — [green]{written}[/green] new, [grey37]{skipped}[/grey37] up to date",
                     )
         except NotImplementedError as e:
             console.print(f"  [yellow]Not implemented:[/yellow] {e}")
@@ -146,9 +177,11 @@ async def _do_ingest(con, ingestor, since: int | None, force: bool = False):
     if total is not None:
         skipped = total - written - errors
 
-    status = f"[green]{written} new[/green], {skipped} skipped"
+    status = f"[green]{written}[/green] new, [grey37]{skipped}[/grey37] up to date"
     if errors:
-        status += f", [red]{errors} errors[/red]"
+        status += f", [red]{errors}[/red] errors"
+    if total is not None:
+        status += f", {total} total"
     console.print(f"  {ingestor.source_id}: {status}")
     return errors == 0
 

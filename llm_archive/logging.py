@@ -14,9 +14,9 @@ _console: Console | None = None
 # Custom formatter to show just the message without component prefix
 class ComponentFormatter(logging.Formatter):
     def format(self, record):
-        # Return just the message, no component prefix
+        # Return just the message with consistent 2-space indent
         message = super().format(record)
-        return message
+        return f"  {message}"
 
 # Configure root logger
 root_logger = logging.getLogger()

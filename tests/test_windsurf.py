@@ -113,16 +113,16 @@ def test_serialize_step_empty():
 
 def test_language_server_client_init():
     """Test LanguageServerClient initialization."""
-    ls = LanguageServerClient(port=12345)
-    assert ls.base == "http://localhost:12345"
-    assert ls.port == 12345
+    ls = LanguageServerClient()
+    assert ls._port is None
+    assert ls._working_port is None
 
 
 def test_language_server_client_custom_port():
     """Test LanguageServerClient with custom port."""
     ls = LanguageServerClient(port=12345)
-    assert ls.base == "http://localhost:12345"
-    assert ls.port == 12345
+    assert ls._port == 12345
+    assert ls._working_port is None
 
 
 def test_encode_get_cascade_request():
@@ -512,7 +512,6 @@ def test_detect_ls_port_with_windsurf_process():
     from llm_archive.ingestors.windsurf import _detect_ls_port
     from unittest.mock import patch
 
-    # Mock process with Windsurf-specific flags
     mock_process = MockProcess(
         name='language_server_linux_x64',
         pid=12345,
@@ -524,13 +523,11 @@ def test_detect_ls_port_with_windsurf_process():
 
     with patch('llm_archive.ingestors.windsurf.psutil') as mock_psutil:
         mock_psutil.process_iter.return_value = [mock_process]
-        
-        try:
-            port = _detect_ls_port()
-            assert port == 12345
-        except RuntimeError:
-            # If psutil is not available, this is expected
-            pass
+        mock_psutil.NoSuchProcess = Exception
+        mock_psutil.AccessDenied = Exception
+        mock_psutil.ZombieProcess = Exception
+        port = _detect_ls_port()
+        assert port == 12345
 
 
 def test_detect_ls_port_without_windsurf_flags():
@@ -538,7 +535,6 @@ def test_detect_ls_port_without_windsurf_flags():
     from llm_archive.ingestors.windsurf import _detect_ls_port
     from unittest.mock import patch
 
-    # Mock process without Windsurf-specific flags
     mock_process = MockProcess(
         name='language_server',
         pid=12345,
@@ -550,12 +546,11 @@ def test_detect_ls_port_without_windsurf_flags():
 
     with patch('llm_archive.ingestors.windsurf.psutil') as mock_psutil:
         mock_psutil.process_iter.return_value = [mock_process]
-        
-        try:
+        mock_psutil.NoSuchProcess = Exception
+        mock_psutil.AccessDenied = Exception
+        mock_psutil.ZombieProcess = Exception
+        with pytest.raises(RuntimeError, match="Could not detect Windsurf language server port"):
             _detect_ls_port()
-            assert False, "Should raise RuntimeError"
-        except RuntimeError as e:
-            assert "Could not detect Windsurf language server port" in str(e)
 
 
 def test_detect_ls_port_with_windsurf_cwd():
@@ -563,7 +558,6 @@ def test_detect_ls_port_with_windsurf_cwd():
     from llm_archive.ingestors.windsurf import _detect_ls_port
     from unittest.mock import patch
 
-    # Mock process with Windsurf working directory but no specific flags
     mock_process = MockProcess(
         name='language_server',
         pid=12345,
@@ -575,10 +569,360 @@ def test_detect_ls_port_with_windsurf_cwd():
 
     with patch('llm_archive.ingestors.windsurf.psutil') as mock_psutil:
         mock_psutil.process_iter.return_value = [mock_process]
-        
-        try:
-            port = _detect_ls_port()
-            assert port == 12345
-        except RuntimeError:
-            # If psutil is not available, this is expected
-            pass
+        mock_psutil.NoSuchProcess = Exception
+        mock_psutil.AccessDenied = Exception
+        mock_psutil.ZombieProcess = Exception
+        port = _detect_ls_port()
+        assert port == 12345
+
+
+# --- _find_ls_ports (multi-port detection) ---
+
+def test_find_ls_ports_returns_all_listen_ports():
+    """Test _find_ls_ports returns all LISTEN ports from the LS process."""
+    from unittest.mock import patch
+
+    mock_process = MockProcess(
+        name='language_server_linux_x64',
+        pid=12345,
+        cmdline=['language_server_linux_x64', '--enable_lsp'],
+        exe='/path/to/language_server_linux_x64',
+        cwd='/home/user/.codeium/windsurf',
+        connections=[
+            MockConnection('LISTEN', type('Addr', (), {'port': 12345})),
+            MockConnection('LISTEN', type('Addr', (), {'port': 12346})),
+            MockConnection('ESTABLISHED', type('Addr', (), {'port': 12345})),
+        ]
+    )
+
+    ls = LanguageServerClient()
+    with patch('llm_archive.ingestors.windsurf.psutil') as mock_psutil:
+        mock_psutil.process_iter.return_value = [mock_process]
+        mock_psutil.NoSuchProcess = Exception
+        mock_psutil.AccessDenied = Exception
+        mock_psutil.ZombieProcess = Exception
+        ports = ls._find_ls_ports()
+        assert 12345 in ports
+        assert 12346 in ports
+        assert len(ports) == 2  # ESTABLISHED should be excluded
+
+
+def test_find_ls_ports_no_process():
+    """Test _find_ls_ports returns empty list when no LS process found."""
+    from unittest.mock import patch
+
+    ls = LanguageServerClient()
+    with patch('llm_archive.ingestors.windsurf.psutil') as mock_psutil:
+        mock_psutil.process_iter.return_value = []
+        mock_psutil.NoSuchProcess = Exception
+        mock_psutil.AccessDenied = Exception
+        mock_psutil.ZombieProcess = Exception
+        ports = ls._find_ls_ports()
+        assert ports == []
+
+
+# --- _probe_api_port ---
+
+def test_probe_api_port_identifies_api_port():
+    """Test _probe_api_port identifies the API port from HTTP error response."""
+    from unittest.mock import patch
+    import urllib.error
+
+    ls = LanguageServerClient()
+    ports = [12345, 12346]
+
+    def mock_urlopen(req, timeout=None):
+        if ':12345' in req.full_url:
+            raise urllib.error.HTTPError(req.full_url, 500, "Internal", {}, None)
+        raise Exception("timeout")
+
+    with patch('llm_archive.ingestors.windsurf.urllib.request.urlopen', side_effect=mock_urlopen):
+        with patch('llm_archive.ingestors.windsurf._load_csrf_token', return_value=("token", "a.localhost")):
+            result = ls._probe_api_port(ports)
+            assert result == 12345
+
+
+def test_probe_api_port_returns_none_if_all_silent():
+    """Test _probe_api_port returns None when no port responds."""
+    from unittest.mock import patch
+
+    ls = LanguageServerClient()
+    ports = [12345, 12346]
+
+    with patch('llm_archive.ingestors.windsurf.urllib.request.urlopen', side_effect=Exception("timeout")):
+        with patch('llm_archive.ingestors.windsurf._load_csrf_token', return_value=("token", "a.localhost")):
+            result = ls._probe_api_port(ports)
+            assert result is None
+
+
+# --- _decode_metadata_timestamp ---
+
+def test_decode_metadata_timestamp_with_seconds_and_nanos():
+    """Test timestamp decoding from protobuf Timestamp message (seconds + nanos)."""
+    ls = LanguageServerClient()
+    # Build a CortexStepMetadata with field 1 = Timestamp(seconds=1712860000, nanos=500000000)
+    ts_inner = encode_varint((1 << 3) | 0) + encode_varint(1712860000)  # seconds
+    ts_inner += encode_varint((2 << 3) | 0) + encode_varint(500000000)  # nanos
+    # Wrap as field 1 (length-delimited)
+    metadata = encode_varint((1 << 3) | 2) + encode_varint(len(ts_inner)) + ts_inner
+
+    result = ls._decode_metadata_timestamp(metadata)
+    assert result is not None
+    expected_ms = int(1712860000 * 1000 + 500000000 / 1000000)
+    assert result == expected_ms
+
+
+def test_decode_metadata_timestamp_empty():
+    """Test timestamp decoding with empty data returns None."""
+    ls = LanguageServerClient()
+    assert ls._decode_metadata_timestamp(b"") is None
+    assert ls._decode_metadata_timestamp(None) is None
+
+
+def test_decode_metadata_timestamp_seconds_only():
+    """Test timestamp decoding when only seconds field is present."""
+    ls = LanguageServerClient()
+    ts_inner = encode_varint((1 << 3) | 0) + encode_varint(1712860000)
+    metadata = encode_varint((1 << 3) | 2) + encode_varint(len(ts_inner)) + ts_inner
+
+    result = ls._decode_metadata_timestamp(metadata)
+    assert result == 1712860000 * 1000
+
+
+# --- _decode_step with metadata timestamp ---
+
+def test_decode_step_with_metadata_timestamp():
+    """Test that _decode_step extracts timestamp from field 5 (metadata)."""
+    ls = LanguageServerClient()
+    ts_inner = encode_varint((1 << 3) | 0) + encode_varint(1712860000)
+    metadata = encode_varint((1 << 3) | 2) + encode_varint(len(ts_inner)) + ts_inner
+
+    data = encode_varint((1 << 3) | 0) + encode_varint(14)  # type = 14
+    data += encode_varint((5 << 3) | 2) + encode_varint(len(metadata)) + metadata
+
+    step = ls._decode_step(data)
+    assert step["type"] == 14
+    assert step["timestamp_ms"] == 1712860000 * 1000
+
+
+# --- _convert_to_thread ---
+
+def test_convert_to_thread_uses_last_timestamp_for_updated_at():
+    """Test that _convert_to_thread sets updated_at to the last message's timestamp."""
+    from llm_archive.ingestors.windsurf import WindsurfIngestor
+
+    ingestor = WindsurfIngestor()
+    trajectory = {
+        "trajectory_id": "test-traj",
+        "step_count": 3,
+        "steps": [
+            {"type": 14, "status": None, "data": {"user_input": "hello"}, "timestamp_ms": 1000},
+            {"type": 15, "status": None, "data": {"planner_response": "world"}, "timestamp_ms": 2000},
+            {"type": 14, "status": None, "data": {"user_input": "bye"}, "timestamp_ms": 3000},
+        ]
+    }
+
+    thread = ingestor._convert_to_thread(trajectory, "test-cascade-id")
+    assert thread.created_at == 1000
+    assert thread.updated_at == 3000
+    assert len(thread.messages) == 3
+
+
+def test_convert_to_thread_title_from_first_user_message():
+    """Test that thread title is derived from the first user message."""
+    from llm_archive.ingestors.windsurf import WindsurfIngestor
+
+    ingestor = WindsurfIngestor()
+    trajectory = {
+        "trajectory_id": "test-traj",
+        "step_count": 2,
+        "steps": [
+            {"type": 14, "status": None, "data": {"user_input": "How do I fix this bug?"}, "timestamp_ms": 1000},
+            {"type": 15, "status": None, "data": {"planner_response": "Try this..."}, "timestamp_ms": 2000},
+        ]
+    }
+
+    thread = ingestor._convert_to_thread(trajectory, "test-cascade-id")
+    assert thread.title == "How do I fix this bug?"
+
+
+def test_convert_to_thread_title_truncated():
+    """Test that long titles are truncated at 80 chars."""
+    from llm_archive.ingestors.windsurf import WindsurfIngestor
+
+    ingestor = WindsurfIngestor()
+    long_input = "A" * 200
+    trajectory = {
+        "trajectory_id": "test-traj",
+        "step_count": 1,
+        "steps": [
+            {"type": 14, "status": None, "data": {"user_input": long_input}, "timestamp_ms": 1000},
+        ]
+    }
+
+    thread = ingestor._convert_to_thread(trajectory, "test-cascade-id")
+    assert thread.title == long_input[:80]
+
+
+def test_convert_to_thread_empty_trajectory():
+    """Test _convert_to_thread with empty steps."""
+    from llm_archive.ingestors.windsurf import WindsurfIngestor
+
+    ingestor = WindsurfIngestor()
+    trajectory = {
+        "trajectory_id": "test-traj",
+        "step_count": 0,
+        "steps": []
+    }
+
+    thread = ingestor._convert_to_thread(trajectory, "test-cascade-id")
+    assert thread.created_at is None
+    assert thread.updated_at is None
+    assert len(thread.messages) == 0
+
+
+# --- Smart sync ---
+
+@pytest.mark.asyncio
+async def test_smart_sync_skips_unchanged_conversations():
+    """Test that smart sync skips conversations whose .pb mtime hasn't changed."""
+    from llm_archive.ingestors.windsurf import WindsurfIngestor
+    from unittest.mock import patch, AsyncMock, MagicMock
+    import time
+
+    ingestor = WindsurfIngestor()
+    recent_ms = int(time.time() * 1000)
+    existing = {"windsurf:ls:some-id": recent_ms}
+
+    mock_pb = MagicMock()
+    mock_pb.exists.return_value = True
+    mock_pb.stat.return_value.st_mtime = (recent_ms - 100000) / 1000
+    mock_pb.__truediv__ = lambda s, k: mock_pb
+
+    with patch.object(LanguageServerClient, 'get_all_cascade_ids', return_value=["cascade-1"]):
+        with patch.object(LanguageServerClient, 'get_trajectory', new_callable=AsyncMock) as mock_traj:
+            # Patch the cascade_dir Path object directly
+            with patch('llm_archive.ingestors.windsurf.Path.home') as mock_home:
+                mock_cascade_dir = MagicMock()
+                mock_cascade_dir.__truediv__ = lambda s, k: mock_pb
+                mock_home.return_value = mock_cascade_dir
+
+                threads = []
+                async for t in ingestor.threads(existing_thread_ids=existing):
+                    threads.append(t)
+
+                mock_traj.assert_not_called()
+                assert len(threads) == 0
+
+
+@pytest.mark.asyncio
+async def test_smart_sync_fetches_changed_conversations():
+    """Test that smart sync fetches conversations whose .pb mtime is newer."""
+    from llm_archive.ingestors.windsurf import WindsurfIngestor
+    from unittest.mock import patch, AsyncMock, MagicMock
+    import time
+
+    ingestor = WindsurfIngestor()
+    old_ms = int(time.time() * 1000) - 100000
+    existing = {"windsurf:ls:some-id": old_ms}
+
+    trajectory = {
+        "trajectory_id": "traj-1",
+        "step_count": 1,
+        "steps": [
+            {"type": 14, "status": None, "data": {"user_input": "hello"}, "timestamp_ms": 1000},
+        ]
+    }
+
+    mock_pb = MagicMock()
+    mock_pb.exists.return_value = True
+    mock_pb.stat.return_value.st_mtime = time.time()
+    mock_pb.__truediv__ = lambda s, k: mock_pb
+
+    with patch.object(LanguageServerClient, 'get_all_cascade_ids', return_value=["cascade-1"]):
+        with patch.object(LanguageServerClient, 'get_trajectory', new_callable=AsyncMock, return_value=trajectory):
+            with patch.object(LanguageServerClient, '_find_ls_ports', return_value=[12345]):
+                with patch.object(LanguageServerClient, '_probe_api_port', return_value=12345):
+                    with patch('llm_archive.ingestors.windsurf.Path.home') as mock_home:
+                        mock_cascade_dir = MagicMock()
+                        mock_cascade_dir.__truediv__ = lambda s, k: mock_pb
+                        mock_home.return_value = mock_cascade_dir
+
+                        threads = []
+                        async for t in ingestor.threads(existing_thread_ids=existing):
+                            threads.append(t)
+
+                        assert len(threads) == 1
+
+
+# --- on_fetch_start / on_fetch_done callbacks ---
+
+@pytest.mark.asyncio
+async def test_fetch_callbacks_invoked():
+    """Test that on_fetch_start and on_fetch_done are called during sync."""
+    from llm_archive.ingestors.windsurf import WindsurfIngestor
+    from unittest.mock import patch, AsyncMock, MagicMock
+
+    ingestor = WindsurfIngestor()
+
+    trajectory = {
+        "trajectory_id": "traj-1",
+        "step_count": 1,
+        "steps": [
+            {"type": 14, "status": None, "data": {"user_input": "hello"}, "timestamp_ms": 1000},
+        ]
+    }
+
+    events = []
+
+    with patch.object(LanguageServerClient, 'get_all_cascade_ids', return_value=["cascade-1"]):
+        with patch.object(LanguageServerClient, 'get_trajectory', new_callable=AsyncMock, return_value=trajectory):
+            with patch.object(LanguageServerClient, '_find_ls_ports', return_value=[12345]):
+                with patch.object(LanguageServerClient, '_probe_api_port', return_value=12345):
+                    with patch('llm_archive.ingestors.windsurf.Path') as mock_path_cls:
+                        mock_pb = MagicMock()
+                        mock_pb.exists.return_value = True
+                        mock_pb.stat.return_value.st_mtime = 0
+                        mock_pb.__truediv__ = lambda s, k: mock_pb
+                        mock_dir = MagicMock()
+                        mock_dir.__truediv__ = lambda s, k: mock_pb
+                        mock_path_cls.home.return_value = mock_dir
+
+                        async for _ in ingestor.threads(
+                            existing_thread_ids={},
+                            on_fetch_start=lambda label: events.append(("start", label)),
+                            on_fetch_done=lambda: events.append(("done",)),
+                        ):
+                            pass
+
+                        assert any(e[0] == "start" for e in events)
+                        assert any(e[0] == "done" for e in events)
+
+
+# --- CSRF token save/load ---
+
+def test_csrf_token_save_load_roundtrip(tmp_path):
+    """Test CSRF token save and load roundtrip."""
+    from llm_archive.ingestors.windsurf import _save_csrf_token, _load_csrf_token
+    from unittest.mock import patch
+
+    auth_path = tmp_path / "windsurf.json"
+
+    with patch('llm_archive.ingestors.windsurf._csrf_token_path', return_value=auth_path):
+        _save_csrf_token("test-token-123", "a.localhost")
+        token, hostname = _load_csrf_token()
+        assert token == "test-token-123"
+        assert hostname == "a.localhost"
+
+
+def test_csrf_token_load_missing():
+    """Test CSRF token load returns None when file doesn't exist."""
+    from llm_archive.ingestors.windsurf import _load_csrf_token
+    from unittest.mock import patch
+    from pathlib import Path
+
+    nonexistent = Path("/nonexistent/path/windsurf.json")
+    with patch('llm_archive.ingestors.windsurf._csrf_token_path', return_value=nonexistent):
+        token, hostname = _load_csrf_token()
+        assert token is None
+        assert hostname is None

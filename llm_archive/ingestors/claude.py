@@ -81,7 +81,7 @@ class ClaudeIngestor(BaseIngestor):
             self._org_id = data["uuid"]
         return self._org_id
 
-    async def threads(self, since: int | None = None, existing_thread_ids: set[str] | None = None) -> AsyncIterator[IngestedThread]:
+    async def threads(self, since: int | None = None, existing_thread_ids: set[str] | None = None, on_total = None) -> AsyncIterator[IngestedThread]:
         if existing_thread_ids is None:
             existing_thread_ids = set()
 
@@ -92,33 +92,42 @@ class ClaudeIngestor(BaseIngestor):
                 await self._reauth()
                 org_id = await self._get_org_id(client)
 
-            offset = 0
-            limit = 50
+            # Use v2 endpoint with eventual consistency for fast single-request fetch
             all_conversations: list[dict] = []
+            offset = 0
+            limit = 1000
             while True:
                 try:
                     data = await self._get(
                         client,
-                        f"{API_BASE}/organizations/{org_id}/chat_conversations",
-                        params={"limit": limit, "offset": offset},
+                        f"{API_BASE}/organizations/{org_id}/chat_conversations_v2",
+                        params={"limit": limit, "offset": offset, "consistency": "eventual"},
                     )
                 except PermissionError:
                     await self._reauth()
                     data = await self._get(
                         client,
-                        f"{API_BASE}/organizations/{org_id}/chat_conversations",
-                        params={"limit": limit, "offset": offset},
+                        f"{API_BASE}/organizations/{org_id}/chat_conversations_v2",
+                        params={"limit": limit, "offset": offset, "consistency": "eventual"},
                     )
 
-                conversations = data if isinstance(data, list) else data.get("conversations", [])
-                if not conversations:
+                if isinstance(data, dict):
+                    conversations = data.get("data", [])
+                    has_more = data.get("has_more", False)
+                elif isinstance(data, list):
+                    conversations = data
+                    has_more = len(conversations) == limit
+                else:
                     break
 
                 all_conversations.extend(conversations)
 
-                if len(conversations) < limit:
+                if not has_more:
                     break
-                offset += limit
+                offset += len(conversations)
+
+            if on_total:
+                on_total(len(all_conversations))
 
             # Sort by updated_at descending to ensure smart sync works correctly
             all_conversations.sort(key=lambda c: _parse_claude_ts(c.get("updated_at")) or 0, reverse=True)
@@ -130,21 +139,15 @@ class ClaudeIngestor(BaseIngestor):
                 thread_id = f"claude:{conv_id}"
                 updated_at = _parse_claude_ts(conv.get("updated_at"))
                 
-                # Smart sync: if conversation already exists, check if it's been updated
+                # Smart sync: skip conversations already in the DB
                 if thread_id in existing_thread_ids:
-                    # If existing_thread_ids is a dict with timestamps, compare them
                     if isinstance(existing_thread_ids, dict):
                         db_updated_at = existing_thread_ids.get(thread_id)
-                        # Only stop if DB timestamp is same or newer than API timestamp
                         if db_updated_at and db_updated_at >= updated_at:
-                            logger.info("no new conversations remaining")
-                            break
-                        # Otherwise, fetch the updated conversation
-                        logger.info(f"conversation {conv_id} was updated, re-fetching")
+                            continue
+                        logger.info(f"Conversation {conv_id} was updated, re-fetching")
                     else:
-                        # Old behavior: just check if exists
-                        logger.info(f"conversation {conv_id} already in database, stopping sync")
-                    break
+                        continue
                 
                 if since and updated_at and updated_at < since:
                     continue
@@ -214,7 +217,7 @@ class ClaudeIngestor(BaseIngestor):
 
     async def _reauth(self) -> None:
         from llm_archive.auth.playwright import login_headful
-        logger.warning("Session expired — re-authenticating...")
+        logger.warning("Session expired, re-authenticating")
         await login_headful("claude", LOGIN_URL)
         self._cookies = {}
 

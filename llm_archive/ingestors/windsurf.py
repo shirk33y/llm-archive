@@ -67,7 +67,7 @@ async def _extract_csrf_token_via_cdp(cdp_port: int = 9222, timeout: int = 30) -
                 return None, None
             
             ws_url = page_target['webSocketDebuggerUrl']
-            logger.info(f"Connecting to CDP WebSocket")
+            logger.info("Connecting to CDP WebSocket")
     except Exception as e:
         logger.error(f"Error getting CDP targets: {e}")
         return None, None
@@ -79,7 +79,7 @@ async def _extract_csrf_token_via_cdp(cdp_port: int = 9222, timeout: int = 30) -
             "params": {}
         }))
         
-        logger.info(f"Listening for automatic language server requests (timeout: {timeout}s)...")
+        logger.info(f"Listening for language server requests (timeout: {timeout}s)...")
         
         csrf_token = None
         hostname = None
@@ -96,17 +96,17 @@ async def _extract_csrf_token_via_cdp(cdp_port: int = 9222, timeout: int = 30) -
                     headers = request_data.get('headers', {})
                     
                     if 'language_server' in url.lower():
-                        logger.info(f"Intercepted request: {url}")
+                        logger.debug(f"Intercepted request: {url}")
                         # Extract hostname from URL (e.g., http://t.localhost:42361 -> t.localhost)
                         from urllib.parse import urlparse
                         parsed = urlparse(url)
                         hostname = parsed.hostname
-                        logger.info(f"Extracted hostname: {hostname}")
+                        logger.debug(f"Extracted hostname: {hostname}")
                         
                         for key, value in headers.items():
                             if 'csrf' in key.lower():
                                 csrf_token = value
-                                logger.info(f"Found CSRF token: {csrf_token}")
+                                logger.info("CSRF token extracted via CDP")
                                 _save_csrf_token(csrf_token, hostname)
                                 return csrf_token, hostname
             
@@ -268,23 +268,67 @@ class LanguageServerClient:
     
     def __init__(self, port: int | None = None):
         self._port = port
-        self._base = None
         self._hostname = None
+        self._working_port: int | None = None
     
-    @property
-    def port(self) -> int:
-        if self._port is None:
-            self._port = _detect_ls_port()
-        return self._port
+    def _find_ls_ports(self) -> list[int]:
+        """Find all LISTEN ports from the language server process."""
+        ports = []
+        if not psutil:
+            raise RuntimeError("psutil required to detect language server ports")
+        for proc in psutil.process_iter(['pid', 'name', 'cmdline', 'exe', 'cwd']):
+            try:
+                name = proc.info.get('name', '')
+                exe = proc.info.get('exe', '')
+                cmdline = proc.info.get('cmdline', [])
+                cwd = proc.info.get('cwd', '')
+                is_language_server = 'language_server' in name.lower() or (exe and 'language_server' in exe.lower())
+                has_windsurf_flags = False
+                if cmdline:
+                    cmdline_str = ' '.join(cmdline).lower()
+                    has_windsurf_flags = any(flag in cmdline_str for flag in [
+                        '--windsurf_version',
+                        '--codeium_dir'
+                    ])
+                has_windsurf_cwd = False
+                if cwd:
+                    cwd_lower = cwd.lower()
+                    has_windsurf_cwd = 'windsurf' in cwd_lower or 'codeium' in cwd_lower
+                if is_language_server and (has_windsurf_flags or has_windsurf_cwd):
+                    for conn in proc.net_connections(kind='inet'):
+                        if conn.status == 'LISTEN' and conn.laddr:
+                            ports.append(conn.laddr.port)
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+        return sorted(set(ports))
     
-    @property
-    def base(self) -> str:
-        if self._base is None:
-            # Use random subdomain - will be probed until one works
-            import random
-            subdomain = chr(random.randint(97, 122))  # a-z
-            self._base = f"http://{subdomain}.localhost:{self.port}"
-        return self._base
+    def _probe_api_port(self, ports: list[int]) -> int | None:
+        """Probe ports to find which one serves the language server API.
+        
+        The LS listens on 2 ports: one for the API (responds with CSRF error),
+        and one for something else (silent/hangs). We probe each with a short
+        timeout to find the API port.
+        """
+        csrf_token, _ = _load_csrf_token()
+        for port in ports:
+            try:
+                url = f"http://a.localhost:{port}/exa.language_server_pb.LanguageServerService/GetCascadeTrajectory"
+                headers = {
+                    "x-codeium-csrf-token": csrf_token or "probe",
+                    "connect-protocol-version": "1",
+                    "content-type": "application/proto",
+                }
+                req = urllib.request.Request(url, data=b"", headers=headers)
+                with urllib.request.urlopen(req, timeout=2) as resp:
+                    logger.debug(f"Port {port} is API port (status {resp.status})")
+                    return port
+            except urllib.error.HTTPError as e:
+                logger.debug(f"Port {port} is API port (HTTP {e.code})")
+                return port
+            except Exception:
+                logger.debug(f"Port {port} not responding, skipping")
+                continue
+        return None
     
     def _get_csrf_token(self) -> str:
         """Get CSRF token from file."""
@@ -297,68 +341,91 @@ class LanguageServerClient:
             "and run the extract_csrf_safe.py script to extract the token."
         )
     
+    async def _refresh_csrf_token(self) -> str | None:
+        """Auto-refresh CSRF token via CDP when the current one is stale."""
+        logger.info("CSRF token stale, refreshing via CDP...")
+        try:
+            token, hostname = await _extract_csrf_token_via_cdp(timeout=15)
+            if token:
+                logger.info("CSRF token refreshed via CDP")
+                return token
+        except Exception as e:
+            logger.warning(f"CSRF refresh failed: {e}")
+        return None
+    
     async def get_trajectory(self, cascade_id: str) -> dict | None:
-        """Get trajectory data for a cascade_id with port and subdomain cycling"""
-        import random
-        import string
+        """Get trajectory data for a cascade_id.
         
-        # Get all listening ports from language server
-        ports = []
-        if psutil:
-            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-                if 'language_server' in proc.info['name']:
-                    try:
-                        connections = proc.connections()
-                        for conn in connections:
-                            if conn.status == 'LISTEN' and conn.laddr:
-                                ports.append(conn.laddr.port)
-                    except (psutil.NoSuchProcess, psutil.AccessDenied):
-                        pass
+        The subdomain in the URL (e.g. 'a.localhost') doesn't matter - any letter works.
+        The two real failure modes are: 1) wrong port (LS listens on 2, only 1 is API),
+        2) stale CSRF token (LS restart invalidates it).
+        """
+        # Discover and cache the API port
+        if not self._working_port:
+            all_ports = self._find_ls_ports()
+            if not all_ports:
+                raise RuntimeError("No language server ports found. Ensure Windsurf is running.")
+            api_port = self._probe_api_port(all_ports)
+            if api_port:
+                self._working_port = api_port
+                logger.debug(f"API port: {api_port}")
+            else:
+                raise RuntimeError("Could not identify API port from language server")
         
-        if not ports:
-            raise RuntimeError("No language server ports found. Ensure Windsurf is running.")
+        csrf_token = self._get_csrf_token()
         
-        # Cycle through all port × subdomain combinations
-        subdomains = list(string.ascii_lowercase)
-        random.shuffle(subdomains)
-        
-        for port in ports:
-            for subdomain in subdomains:
-                try:
-                    url = f"http://{subdomain}.localhost:{port}/exa.language_server_pb.LanguageServerService/GetCascadeTrajectory"
+        # Try request, auto-refresh CSRF on 401
+        for attempt in range(2):
+            url = f"http://a.localhost:{self._working_port}/exa.language_server_pb.LanguageServerService/GetCascadeTrajectory"
+            headers = {
+                "x-codeium-csrf-token": csrf_token,
+                "connect-protocol-version": "1",
+                "content-type": "application/proto",
+                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Windsurf/1.110.1 Chrome/142.0.7444.265 Electron/39.6.0 Safari/537.36"
+            }
+            protobuf_message = encode_get_cascade_request(cascade_id)
+            
+            try:
+                req = urllib.request.Request(url, data=protobuf_message, headers=headers)
+                with urllib.request.urlopen(req, timeout=60) as response:
+                    if response.status != 200:
+                        logger.debug(f"HTTP {response.status} for {cascade_id[:8]}")
+                        return None
                     
-                    headers = {
-                        "x-codeium-csrf-token": self._get_csrf_token(),
-                        "connect-protocol-version": "1",
-                        "content-type": "application/proto",
-                        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Windsurf/1.110.1 Chrome/142.0.7444.265 Electron/39.6.0 Safari/537.36"
-                    }
+                    content = response.read()
+                    if response.headers.get('Content-Encoding') == 'gzip':
+                        content = gzip.decompress(content)
                     
-                    protobuf_message = encode_get_cascade_request(cascade_id)
-                    
-                    req = urllib.request.Request(url, data=protobuf_message, headers=headers)
-                    with urllib.request.urlopen(req, timeout=5) as response:
-                        if response.status != 200:
-                            continue
-                        
-                        content = response.read()
-                        
-                        # Decompress if gzipped
-                        if response.headers.get('Content-Encoding') == 'gzip':
-                            content = gzip.decompress(content)
-                        
-                        # Decode the trajectory
-                        result = self._decode_trajectory(content)
-                        
-                        logger.info(f"Working: {subdomain}.localhost:{port}")
-                        
-                        return result
-                
-                except Exception as e:
-                    logger.debug(f"{subdomain}.localhost:{port} failed: {e}")
-                    continue
+                    result = self._decode_trajectory(content)
+                    logger.debug(f"Fetched {cascade_id[:8]} from port {self._working_port}")
+                    return result
+            
+            except urllib.error.HTTPError as e:
+                if e.code == 401 and attempt == 0:
+                    logger.info("CSRF token stale, refreshing via CDP...")
+                    new_token = await self._refresh_csrf_token()
+                    if new_token:
+                        csrf_token = new_token
+                        continue
+                    logger.warning("CSRF refresh failed")
+                logger.debug(f"HTTP {e.code} for {cascade_id[:8]}")
+                return None
+            
+            except Exception as e:
+                # Port may have changed (LS restart) - re-probe
+                logger.info("Connection failed, re-probing ports...")
+                self._working_port = None
+                all_ports = self._find_ls_ports()
+                if all_ports:
+                    api_port = self._probe_api_port(all_ports)
+                    if api_port:
+                        self._working_port = api_port
+                        logger.debug(f"New API port: {api_port}")
+                        continue
+                logger.error(f"Failed to fetch {cascade_id[:8]}: {e}")
+                return None
         
-        logger.error("All port × subdomain combinations failed")
+        logger.error(f"Failed to fetch {cascade_id[:8]}")
         return None
     
     def _decode_trajectory(self, data: bytes) -> dict:
@@ -900,35 +967,71 @@ class WindsurfIngestor(BaseIngestor):
         except Exception:
             return 0
 
-    async def threads(self, since: int | None = None) -> AsyncIterator[IngestedThread]:
+    async def threads(self, since: int | None = None, existing_thread_ids: dict[str, int] | None = None, on_fetch_start = None, on_fetch_done = None) -> AsyncIterator[IngestedThread]:
         # Use language server API for historical .pb files by default
-        async for thread in self.threads_from_language_server(since=since):
+        async for thread in self.threads_from_language_server(since=since, existing_thread_ids=existing_thread_ids, on_fetch_start=on_fetch_start, on_fetch_done=on_fetch_done):
             yield thread
 
-    async def threads_from_language_server(self, since: int | None = None) -> AsyncIterator[IngestedThread]:
-        """Fetch historical conversations from language server API"""
+    async def threads_from_language_server(self, since: int | None = None, existing_thread_ids: dict[str, int] | None = None, on_fetch_start = None, on_fetch_done = None) -> AsyncIterator[IngestedThread]:
+        """Fetch historical conversations from language server API
+        
+        Smart sync: if existing_thread_ids is provided, skip conversations whose
+        .pb file hasn't been modified since the last sync. Compares .pb mtime
+        against the newest updated_at in existing_thread_ids (as a proxy for
+        last sync time), since trajectory_id from the API differs from the
+        .pb filename.
+        """
         ls = LanguageServerClient()
+        cascade_dir = Path.home() / ".codeium/windsurf/cascade"
         cascade_ids = ls.get_all_cascade_ids()
         
-        logger.info(f"Found {len(cascade_ids)} cascade files")
+        logger.debug(f"Found {len(cascade_ids)} cascade files")
+        
+        # Smart sync: skip .pb files not modified since last sync
+        up_to_date = set()
+        if existing_thread_ids:
+            last_sync_ms = max(existing_thread_ids.values()) if existing_thread_ids else 0
+            for cascade_id in cascade_ids:
+                pb_path = cascade_dir / f"{cascade_id}.pb"
+                if pb_path.exists():
+                    pb_mtime_ms = int(pb_path.stat().st_mtime * 1000)
+                    if pb_mtime_ms <= last_sync_ms:
+                        up_to_date.add(cascade_id)
+        
+        if up_to_date:
+            logger.debug(f"Skipping {len(up_to_date)} unchanged conversations")
         
         for cascade_id in cascade_ids:
-            logger.debug(f"Fetching conversation for {cascade_id}")
+            if cascade_id in up_to_date:
+                continue
+            
+            if on_fetch_start:
+                on_fetch_start(f"fetching {cascade_id[:8]}...")
+            logger.debug(f"Fetching {cascade_id[:8]}")
             trajectory = await ls.get_trajectory(cascade_id)
             
             if not trajectory:
-                logger.warning(f"Failed to fetch {cascade_id}")
+                if on_fetch_done:
+                    on_fetch_done()
+                logger.warning(f"Failed to fetch {cascade_id[:8]}")
                 continue
-            
-            logger.debug(f"Got conversation with {trajectory['step_count']} steps")
             
             # Convert decoded steps to messages
             thread = self._convert_to_thread(trajectory, cascade_id)
             
+            # Update sub-progress with conversation title
+            if on_fetch_start:
+                title = thread.title[:40] + "..." if len(thread.title) > 40 else thread.title
+                on_fetch_start(f"decoding {title}")
+            
             if since and thread.updated_at and thread.updated_at < since:
+                if on_fetch_done:
+                    on_fetch_done()
                 continue
             
             yield thread
+            if on_fetch_done:
+                on_fetch_done()
     
     def _convert_to_thread(self, trajectory: dict, cascade_id: str) -> IngestedThread:
         """Convert decoded trajectory to IngestedThread"""
@@ -1330,14 +1433,15 @@ class WindsurfIngestor(BaseIngestor):
             if first_user:
                 title = first_user.content[:80].split("\n")[0].strip()
         
-        # Use first message's timestamp for thread
+        # Use first message timestamp for created_at, last for updated_at
         first_timestamp = messages[0].created_at if messages else None
+        last_timestamp = messages[-1].created_at if messages else None
         
         return IngestedThread(
             id=f"windsurf:ls:{traj_id}",
             source_id="windsurf",
             title=title,
             created_at=first_timestamp,
-            updated_at=first_timestamp,
+            updated_at=last_timestamp,
             messages=messages,
         )
