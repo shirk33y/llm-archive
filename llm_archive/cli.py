@@ -270,26 +270,21 @@ def search(phrase: str, db_path: str | None, limit: int, threads_only: bool):
         formatted_rows = []
         for i, row in enumerate(rows):
             if i:
-                formatted_rows.append(("", "", ""))
+                formatted_rows.append(None)
             title = row["title"] or "untitled"
             short_id = f"t{db.to_base53(row['thread_rowid'])}"
             rel_time = _relative_time(row["last_match_at"])
-            formatted_rows.append((short_id, rel_time, title))
+            formatted_rows.append({"id": short_id, "time": rel_time, "source": row["source_id"], "text": title, "match_count": row["match_count"]})
         
-        max_id_width = max((len(r[0]) for r in formatted_rows if r[0]), default=0)
-        max_time_width = max((len(r[1]) for r in formatted_rows if r[1]), default=0)
+        max_id_width = max((len(r["id"]) for r in formatted_rows if r is not None), default=0)
+        max_time_width = max((len(r["time"]) for r in formatted_rows if r is not None), default=0)
         
         for row in formatted_rows:
-            if not row[0]:
+            if row is None:
                 lines.append("")
             else:
-                short_id, rel_time, text = row
-                lines.append(_search_result_line(short_id, rel_time, text, max_id_width, max_time_width))
-                if short_id.startswith('t'):
-                    for r in rows:
-                        if f"t{db.to_base53(r['thread_rowid'])}" == short_id:
-                            lines.append(f"  {r['match_count']} matching messages")
-                            break
+                lines.append(_search_thread_line(row["id"], row["time"], row["source"], row["text"], max_id_width, max_time_width))
+                lines.append(f"  {row['match_count']} matching messages")
         _print_lines(lines)
         return
     last = None
@@ -299,28 +294,26 @@ def search(phrase: str, db_path: str | None, limit: int, threads_only: bool):
         key = (row["source_id"], row["thread_id"], title)
         if key != last:
             if last is not None:
-                formatted_rows.append(("", "", ""))
+                formatted_rows.append(None)
             short_id = f"t{db.to_base53(row['thread_rowid'])}"
             rel_time = _relative_time(row["created_at"])
-            formatted_rows.append((short_id, rel_time, title))
+            formatted_rows.append({"type": "thread", "id": short_id, "time": rel_time, "source": row["source_id"], "text": title})
             last = key
         short_id = f"m{db.to_base53(row['message_rowid'])}"
         rel_time = _relative_time(row["created_at"])
         snippet = _snippet(row["content_clean"], phrase)
-        formatted_rows.append((short_id, rel_time, snippet, phrase))
+        formatted_rows.append({"type": "message", "id": short_id, "time": rel_time, "role": row["role"], "text": snippet, "phrase": phrase})
     
-    max_id_width = max((len(r[0]) for r in formatted_rows if r[0]), default=0)
-    max_time_width = max((len(r[1]) for r in formatted_rows if r[1]), default=0)
+    max_id_width = max((len(r["id"]) for r in formatted_rows if r is not None), default=0)
+    max_time_width = max((len(r["time"]) for r in formatted_rows if r is not None), default=0)
     
     for row in formatted_rows:
-        if not row[0]:
+        if row is None:
             lines.append("")
-        elif len(row) == 4:
-            short_id, rel_time, snippet, phrase = row
-            lines.append(_search_result_line_highlighted(short_id, rel_time, snippet, phrase, max_id_width, max_time_width))
+        elif row["type"] == "thread":
+            lines.append(_search_thread_line(row["id"], row["time"], row["source"], row["text"], max_id_width, max_time_width))
         else:
-            short_id, rel_time, text = row
-            lines.append(_search_result_line(short_id, rel_time, text, max_id_width, max_time_width))
+            lines.append(_search_message_line(row["id"], row["time"], row["role"], row["text"], row["phrase"], max_id_width, max_time_width))
     _print_lines(lines)
 
 
@@ -413,23 +406,29 @@ def _relative_time(ms: int) -> str:
     return f"{int(delta_s)}s"
 
 
-def _search_result_line(short_id: str, rel_time: str, text: str, id_width: int = 0, time_width: int = 0) -> Text:
-    """Format search result line with dynamic column widths."""
+def _search_thread_line(short_id: str, rel_time: str, source: str, text: str, id_width: int = 0, time_width: int = 0) -> Text:
+    """Format thread title line with provider name."""
     line = Text()
-    line.append(short_id.ljust(id_width), style="bold cyan")
+    line.append(short_id.ljust(id_width), style="grey37")
     line.append(" ", style="")
     line.append(rel_time.ljust(time_width), style="yellow")
     line.append(" ", style="")
-    line.append(_truncate(text, 100), style="")
+    line.append(source, style="orange1")
+    line.append(" ", style="")
+    line.append(_truncate(text, 100), style="bold")
     return line
 
 
-def _search_result_line_highlighted(short_id: str, rel_time: str, text: str, phrase: str, id_width: int = 0, time_width: int = 0) -> Text:
-    """Format search result line with highlighted search phrase and dynamic column widths."""
+def _search_message_line(short_id: str, rel_time: str, role: str, text: str, phrase: str, id_width: int = 0, time_width: int = 0) -> Text:
+    """Format message line with role and highlighted search phrase."""
     line = Text()
-    line.append(short_id.ljust(id_width), style="bold cyan")
+    line.append("  ", style="")
+    line.append(short_id.ljust(id_width), style="grey37")
     line.append(" ", style="")
     line.append(rel_time.ljust(time_width), style="yellow")
+    line.append(" ", style="")
+    role_style = "dodger_blue1" if role == "user" else "green1"
+    line.append(role, style=role_style)
     line.append(" ", style="")
     
     parts = [part for part in re.findall(r"\S+", phrase) if part]
