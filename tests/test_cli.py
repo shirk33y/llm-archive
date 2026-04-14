@@ -534,3 +534,64 @@ def test_print_output_skips_pager_for_short_output(monkeypatch):
 
 def test_msg_marker_formats_seconds():
     assert cli._msg_marker(1000) == "1970-01-01 00:00:01"
+
+
+def test_search_sorts_newest_thread_first(tmp_path):
+    con = cli.db.connect(tmp_path / "archive.db")
+    # Old thread
+    cli.db.save_thread(
+        con,
+        IngestedThread(
+            id="claude:old",
+            source_id="claude",
+            title="Old thread",
+            created_at=1000,
+            updated_at=1000,
+            messages=[
+                IngestedMessage(id="claude:m_old", thread_id="claude:old", role="user", content="findme old", created_at=1000),
+            ],
+        ),
+    )
+    # New thread
+    cli.db.save_thread(
+        con,
+        IngestedThread(
+            id="claude:new",
+            source_id="claude",
+            title="New thread",
+            created_at=2000,
+            updated_at=2000,
+            messages=[
+                IngestedMessage(id="claude:m_new", thread_id="claude:new", role="user", content="findme new", created_at=2000),
+            ],
+        ),
+    )
+    result = CliRunner().invoke(cli.main, ["search", "findme", "--db-path", str(tmp_path / "archive.db")])
+    assert result.exit_code == 0
+    # New thread title should appear before old thread title
+    new_pos = result.output.find("New thread")
+    old_pos = result.output.find("Old thread")
+    assert new_pos < old_pos, f"New thread should appear before old thread"
+
+
+def test_search_sorts_newest_messages_within_thread_first(tmp_path):
+    con = cli.db.connect(tmp_path / "archive.db")
+    cli.db.save_thread(
+        con,
+        IngestedThread(
+            id="claude:t1",
+            source_id="claude",
+            title="Thread",
+            created_at=1000,
+            updated_at=3000,
+            messages=[
+                IngestedMessage(id="claude:m1", thread_id="claude:t1", role="user", content="findme early", created_at=1000),
+                IngestedMessage(id="claude:m2", thread_id="claude:t1", role="assistant", content="findme late", created_at=3000),
+            ],
+        ),
+    )
+    result = CliRunner().invoke(cli.main, ["search", "findme", "--db-path", str(tmp_path / "archive.db")])
+    assert result.exit_code == 0
+    late_pos = result.output.find("findme late")
+    early_pos = result.output.find("findme early")
+    assert late_pos < early_pos, f"Later message should appear before earlier message within same thread"
