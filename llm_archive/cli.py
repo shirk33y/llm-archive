@@ -427,7 +427,7 @@ def _search_message_line(short_id: str, rel_time: str, role: str, text: str, phr
     line.append(" ", style="")
     line.append(rel_time.ljust(time_width), style="dim yellow")
     line.append(" ", style="")
-    role_style = "dodger_blue1" if role == "user" else "green1"
+    role_style = {"user": "dodger_blue1", "assistant": "green1", "tool": "dark_orange"}.get(role, "grey37")
     line.append(role, style=role_style)
     line.append("  ", style="")
     
