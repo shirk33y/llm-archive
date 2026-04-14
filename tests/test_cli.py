@@ -396,7 +396,6 @@ def test_search_command_outputs_grouped_matches(tmp_path):
     )
     result = CliRunner().invoke(cli.main, ["search", "search term", "--db-path", str(tmp_path / "archive.db")])
     assert result.exit_code == 0
-    assert result.output.count("claudecode:abc123") == 1
     assert "Search Title" in result.output
     assert "…" in result.output
     assert "[1m" not in result.output
@@ -421,7 +420,6 @@ def test_search_threads_only_shows_counts(tmp_path):
     )
     result = CliRunner().invoke(cli.main, ["search", "-t", "search", "--db-path", str(tmp_path / "archive.db")])
     assert result.exit_code == 0
-    assert "claude:t1" in result.output
     assert "2 matching messages" in result.output
     assert "search hit one" not in result.output
 

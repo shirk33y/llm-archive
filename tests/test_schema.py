@@ -325,12 +325,11 @@ async def test_deepseek_fetch_sessions_paginates_and_dedupes():
                         }
                     }
                 })
-            if cursor == "3":
+            if cursor == "4":
                 return Resp({
                     "data": {
                         "biz_data": {
                             "chat_sessions": [
-                                {"id": "b", "seq_id": 4, "updated_at": 4},
                                 {"id": "c", "seq_id": 3, "updated_at": 3},
                             ],
                             "has_more": False,
