@@ -256,7 +256,7 @@ def sources():
 @main.command()
 @click.argument("phrase")
 @click.option("--db-path", default=None, help="Override database path")
-@click.option("--limit", default=50, show_default=True, help="Maximum matches to show")
+@click.option("--limit", default=200, show_default=True, help="Maximum matches to show")
 @click.option("-t", "threads_only", is_flag=True, help="Only show matching threads and match counts")
 def search(phrase: str, db_path: str | None, limit: int, threads_only: bool):
     """Search all indexed messages across providers."""

@@ -333,6 +333,8 @@ def source_stats(con: sqlite3.Connection) -> list[dict]:
 
 
 def search_messages(con: sqlite3.Connection, phrase: str, limit: int = 50) -> list[dict]:
+    # First find matching message IDs (limit applies to distinct messages)
+    # Then join parts for content — avoids LIMIT cutting off mid-message
     rows = con.execute(
         """
         SELECT
@@ -347,13 +349,19 @@ def search_messages(con: sqlite3.Connection, phrase: str, limit: int = 50) -> li
             p.ord AS ord,
             t.rowid AS thread_rowid,
             m.rowid AS message_rowid
-        FROM message_parts_fts
-        JOIN message_parts p ON p.message_id = message_parts_fts.message_id AND p.ord = message_parts_fts.ord
-        JOIN messages m ON m.id = p.message_id
+        FROM (
+            SELECT DISTINCT m.id
+            FROM message_parts_fts
+            JOIN messages m ON m.id = message_parts_fts.message_id
+            JOIN threads t ON t.id = m.thread_id
+            WHERE message_parts_fts MATCH ?
+            ORDER BY t.updated_at DESC, m.created_at DESC
+            LIMIT ?
+        ) matched
+        JOIN messages m ON m.id = matched.id
         JOIN threads t ON t.id = m.thread_id
-        WHERE message_parts_fts MATCH ?
+        JOIN message_parts p ON p.message_id = m.id
         ORDER BY t.updated_at DESC, m.created_at DESC, m.id, p.ord
-        LIMIT ?
         """,
         (_fts_query(phrase), limit),
     ).fetchall()
