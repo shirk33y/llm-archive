@@ -411,11 +411,11 @@ def _search_thread_line(short_id: str, rel_time: str, source: str, text: str, id
     line = Text()
     line.append(short_id.ljust(id_width), style="grey37")
     line.append(" ", style="")
-    line.append(rel_time.ljust(time_width), style="yellow")
+    line.append(rel_time.ljust(time_width), style="dim yellow")
     line.append(" ", style="")
     line.append(source, style="orange1")
-    line.append(" ", style="")
-    line.append(_truncate(text, 100), style="bold")
+    line.append("  ", style="")
+    line.append(_truncate(text, 100), style="bold white")
     return line
 
 
@@ -425,11 +425,11 @@ def _search_message_line(short_id: str, rel_time: str, role: str, text: str, phr
     line.append("  ", style="")
     line.append(short_id.ljust(id_width), style="grey37")
     line.append(" ", style="")
-    line.append(rel_time.ljust(time_width), style="yellow")
+    line.append(rel_time.ljust(time_width), style="dim yellow")
     line.append(" ", style="")
     role_style = "dodger_blue1" if role == "user" else "green1"
     line.append(role, style=role_style)
-    line.append(" ", style="")
+    line.append("  ", style="")
     
     parts = [part for part in re.findall(r"\S+", phrase) if part]
     if not parts:
