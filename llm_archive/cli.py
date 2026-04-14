@@ -287,7 +287,16 @@ def search(phrase: str, db_path: str | None, limit: int, threads_only: bool):
                 lines.append(f"  {row['match_count']} matching messages")
         _print_lines(lines)
         return
+    # Pre-build: for each message, find a part that contains the search phrase
+    phrase_lower = phrase.lower()
+    best_part = {}
+    for row in rows:
+        mid = row["message_id"]
+        if mid not in best_part or phrase_lower in row["content_clean"].lower():
+            best_part[mid] = row["content_clean"]
+
     last = None
+    seen_msgs = set()
     formatted_rows = []
     for row in rows:
         title = row["title"] or "untitled"
@@ -299,9 +308,14 @@ def search(phrase: str, db_path: str | None, limit: int, threads_only: bool):
             rel_time = _relative_time(row["created_at"])
             formatted_rows.append({"type": "thread", "id": short_id, "time": rel_time, "source": row["source_id"], "text": title})
             last = key
+            seen_msgs = set()
+        msg_key = row["message_id"]
+        if msg_key in seen_msgs:
+            continue
+        seen_msgs.add(msg_key)
         short_id = f"m{db.to_base53(row['message_rowid'])}"
         rel_time = _relative_time(row["created_at"])
-        snippet = _snippet(row["content_clean"], phrase)
+        snippet = _snippet(best_part.get(msg_key, row["content_clean"]), phrase)
         formatted_rows.append({"type": "message", "id": short_id, "time": rel_time, "role": row["role"], "text": snippet, "phrase": phrase})
     
     max_id_width = max((len(r["id"]) for r in formatted_rows if r is not None), default=0)
