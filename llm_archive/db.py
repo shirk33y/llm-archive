@@ -111,6 +111,8 @@ CREATE TABLE IF NOT EXISTS message_raw (
 CREATE INDEX IF NOT EXISTS idx_messages_thread  ON messages(thread_id);
 CREATE INDEX IF NOT EXISTS idx_threads_source   ON threads(source_id);
 CREATE INDEX IF NOT EXISTS idx_threads_updated  ON threads(source_id, updated_at);
+CREATE INDEX IF NOT EXISTS idx_threads_updated_at ON threads(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_messages_created  ON messages(thread_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_message_parts_message ON message_parts(message_id, ord);
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     id UNINDEXED,

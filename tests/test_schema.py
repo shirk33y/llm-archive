@@ -712,15 +712,15 @@ def test_search_text_includes_data_field(con):
     assert "file1.txt" in search_text or "file2.txt" in search_text
 
 
-def test_search_orders_by_rank(con):
-    """Test that search results are ordered by rank (relevance) not source_id."""
+def test_search_orders_by_updated_at_desc(con):
+    """Test that search results are ordered by thread updated_at DESC (newest first)."""
     from llm_archive.schema import IngestedMessage, IngestedPart, IngestedThread
     
-    # Create threads from different sources with same search term
+    # Old thread
     thread1 = IngestedThread(
         id="test:1",
         source_id="source_a",
-        title="Test thread A",
+        title="Old thread",
         created_at=1000,
         updated_at=1000,
         messages=[
@@ -736,10 +736,11 @@ def test_search_orders_by_rank(con):
         ],
     )
     
+    # New thread
     thread2 = IngestedThread(
         id="test:2",
         source_id="source_b",
-        title="Test thread B",
+        title="New thread",
         created_at=2000,
         updated_at=2000,
         messages=[
@@ -758,13 +759,14 @@ def test_search_orders_by_rank(con):
     db.save_thread(con, thread1)
     db.save_thread(con, thread2)
     
-    # Search for "hello"
     results = db.search_messages(con, "hello", limit=10)
     
-    # Results should be ordered by rank, not grouped by source_id
-    # Both sources should appear in results
-    sources = [r["source_id"] for r in results]
-    assert "source_a" in sources or "source_b" in sources
+    # Newest thread should appear first
+    thread_ids = [r["thread_id"] for r in results]
+    assert thread_ids[0] == "test:2"
+    # Both threads should appear
+    assert "test:1" in thread_ids
+    assert "test:2" in thread_ids
 
 
 # --- Claude ingestor regression tests ---
@@ -983,3 +985,81 @@ async def test_deepseek_smart_sync_continues_past_existing():
     assert len(threads) == 2
     assert threads[0].id == "deepseek:sess-2"
     assert threads[1].id == "deepseek:sess-3"
+
+
+# --- Search query optimization tests ---
+
+
+def test_search_messages_returns_distinct_messages(con):
+    """Regression: search_messages limit applies to distinct messages, not FTS parts."""
+    from llm_archive.schema import IngestedMessage, IngestedPart, IngestedThread
+
+    # Message with multiple parts — should count as 1 message, not N parts
+    thread = IngestedThread(
+        id="test:multi",
+        source_id="test",
+        title="Multi-part",
+        created_at=1000,
+        updated_at=1000,
+        messages=[
+            IngestedMessage(
+                id="test:multi:1",
+                thread_id="test:multi",
+                role="assistant",
+                content="alpha beta gamma",
+                created_at=1000,
+                metadata={},
+                parts=[
+                    IngestedPart(kind="text", text="alpha"),
+                    IngestedPart(kind="text", text="beta"),
+                    IngestedPart(kind="text", text="gamma"),
+                ],
+            ),
+        ],
+    )
+    db.save_thread(con, thread)
+
+    results = db.search_messages(con, "alpha", limit=10)
+    msg_ids = [r["message_id"] for r in results]
+    # Should return all 3 parts for the 1 message, not 1 part per message
+    assert "test:multi:1" in msg_ids
+    # All 3 parts should be present
+    ords = [r["ord"] for r in results if r["message_id"] == "test:multi:1"]
+    assert len(ords) == 3
+
+
+def test_search_threads_sorts_newest_first(tmp_path):
+    """Regression: search_threads sorts by last_match_at DESC (newest first)."""
+    con = db.connect(tmp_path / "archive.db")
+    # Old thread
+    db.save_thread(con, IngestedThread(
+        id="test:old", source_id="test", title="Old", created_at=1000, updated_at=1000,
+        messages=[IngestedMessage(id="test:m1", thread_id="test:old", role="user", content="findme", created_at=1000)],
+    ))
+    # New thread
+    db.save_thread(con, IngestedThread(
+        id="test:new", source_id="test", title="New", created_at=2000, updated_at=2000,
+        messages=[IngestedMessage(id="test:m2", thread_id="test:new", role="user", content="findme", created_at=2000)],
+    ))
+    results = db.search_threads(con, "findme", limit=10)
+    assert len(results) == 2
+    assert results[0]["thread_id"] == "test:new"
+    assert results[1]["thread_id"] == "test:old"
+
+
+def test_search_messages_newest_message_first_within_thread(con):
+    """Regression: within a thread, newest messages appear first."""
+    from llm_archive.schema import IngestedMessage, IngestedPart, IngestedThread
+
+    db.save_thread(con, IngestedThread(
+        id="test:sort", source_id="test", title="Sort", created_at=1000, updated_at=3000,
+        messages=[
+            IngestedMessage(id="test:early", thread_id="test:sort", role="user", content="findme early", created_at=1000),
+            IngestedMessage(id="test:late", thread_id="test:sort", role="assistant", content="findme late", created_at=3000),
+        ],
+    ))
+    results = db.search_messages(con, "findme", limit=10)
+    msg_ids = [r["message_id"] for r in results]
+    late_idx = msg_ids.index("test:late")
+    early_idx = msg_ids.index("test:early")
+    assert late_idx < early_idx
