@@ -352,7 +352,7 @@ def search_messages(con: sqlite3.Connection, phrase: str, limit: int = 50) -> li
         JOIN messages m ON m.id = p.message_id
         JOIN threads t ON t.id = m.thread_id
         WHERE message_parts_fts MATCH ?
-        ORDER BY rank, t.source_id, t.id, m.created_at DESC, m.id, p.ord
+        ORDER BY t.updated_at DESC, m.created_at DESC, m.id, p.ord
         LIMIT ?
         """,
         (_fts_query(phrase), limit),
@@ -376,7 +376,7 @@ def search_threads(con: sqlite3.Connection, phrase: str, limit: int = 50) -> lis
         JOIN threads t ON t.id = m.thread_id
         WHERE message_parts_fts MATCH ?
         GROUP BY t.id, t.source_id, t.title
-        ORDER BY match_count DESC, last_match_at DESC
+        ORDER BY last_match_at DESC
         LIMIT ?
         """,
         (_fts_query(phrase), limit),
