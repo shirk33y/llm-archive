@@ -324,39 +324,7 @@ def show(thread: str, db_path: str | None):
     """Show a full conversation by ID (short ID like 't5' or full UUID)."""
     con = db.connect(Path(db_path) if db_path else db.DB_PATH)
     
-    # Handle short IDs (t5, m42, etc.)
-    if thread.startswith('t') and len(thread) > 1:
-        try:
-            rowid = db.from_base53(thread[1:])
-            row = con.execute(
-                "SELECT id, source_id, title, created_at, updated_at FROM threads WHERE rowid=?",
-                (rowid,)
-            ).fetchone()
-            if row:
-                row = dict(row)
-                messages = [dict(m) for m in con.execute(
-                    "SELECT id, role, created_at FROM messages WHERE thread_id=? ORDER BY created_at, id",
-                    (row["id"],)
-                ).fetchall()]
-                parts = {}
-                for p in con.execute(
-                    "SELECT message_id, ord, kind, text, data, visible, searchable FROM message_parts "
-                    "WHERE message_id IN (SELECT id FROM messages WHERE thread_id=?) "
-                    "ORDER BY message_id, ord",
-                    (row["id"],)
-                ).fetchall():
-                    p = dict(p)
-                    parts.setdefault(p["message_id"], []).append(p)
-                for msg in messages:
-                    msg["parts"] = parts.get(msg["id"], [])
-                row = {"thread": row, "messages": messages}
-            else:
-                row = None
-        except (ValueError, IndexError):
-            row = None
-    else:
-        # Try as full UUID
-        row = db.get_thread(con, thread)
+    row = db.resolve_short_id(con, thread) or db.get_thread(con, thread)
     
     if row is None:
         console.print(f"Thread not found: {thread}")

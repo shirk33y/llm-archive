@@ -513,6 +513,36 @@ def test_show_command_renders_normalized_parts(tmp_path):
     assert "ok" in result.output
 
 
+def test_show_command_message_short_id(tmp_path):
+    """show mX resolves to single message within its parent thread."""
+    con = cli.db.connect(tmp_path / "archive.db")
+    cli.db.save_thread(
+        con,
+        IngestedThread(
+            id="claude:t1",
+            source_id="claude",
+            title="My Thread",
+            created_at=1000,
+            updated_at=3000,
+            messages=[
+                IngestedMessage(id="claude:m1", thread_id="claude:t1", role="user", content="first message", created_at=1000),
+                IngestedMessage(id="claude:m2", thread_id="claude:t1", role="assistant", content="second message", created_at=2000),
+                IngestedMessage(id="claude:m3", thread_id="claude:t1", role="user", content="third message", created_at=3000),
+            ],
+        ),
+    )
+    # Find the short ID for m2
+    msg_row = con.execute("SELECT rowid FROM messages WHERE id='claude:m2'").fetchone()
+    short_id = f"m{cli.db.to_base53(msg_row[0])}"
+    result = CliRunner().invoke(cli.main, ["show", short_id, "--db-path", str(tmp_path / "archive.db")])
+    assert result.exit_code == 0
+    assert "My Thread" in result.output
+    assert "second message" in result.output
+    # Should NOT contain other messages from the thread
+    assert "first message" not in result.output
+    assert "third message" not in result.output
+
+
 def test_print_output_skips_pager_for_short_output(monkeypatch):
     calls = []
 

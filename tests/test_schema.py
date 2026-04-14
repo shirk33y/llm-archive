@@ -1063,3 +1063,74 @@ def test_search_messages_newest_message_first_within_thread(con):
     late_idx = msg_ids.index("test:late")
     early_idx = msg_ids.index("test:early")
     assert late_idx < early_idx
+
+
+# --- Short ID resolution tests ---
+
+
+def test_resolve_short_id_thread(tmp_path):
+    """resolve_short_id with t-prefix returns thread with all messages."""
+    con = db.connect(tmp_path / "archive.db")
+    db.save_thread(con, IngestedThread(
+        id="test:t1", source_id="test", title="Thread", created_at=1000, updated_at=1000,
+        messages=[
+            IngestedMessage(id="test:m1", thread_id="test:t1", role="user", content="hello", created_at=1000),
+            IngestedMessage(id="test:m2", thread_id="test:t1", role="assistant", content="world", created_at=2000),
+        ],
+    ))
+    rowid = con.execute("SELECT rowid FROM threads WHERE id='test:t1'").fetchone()[0]
+    short_id = f"t{db.to_base53(rowid)}"
+    result = db.resolve_short_id(con, short_id)
+    assert result is not None
+    assert result["thread"]["id"] == "test:t1"
+    assert len(result["messages"]) == 2
+
+
+def test_resolve_short_id_message(tmp_path):
+    """resolve_short_id with m-prefix returns single message with thread info."""
+    con = db.connect(tmp_path / "archive.db")
+    db.save_thread(con, IngestedThread(
+        id="test:t1", source_id="test", title="Thread", created_at=1000, updated_at=3000,
+        messages=[
+            IngestedMessage(id="test:m1", thread_id="test:t1", role="user", content="first", created_at=1000),
+            IngestedMessage(id="test:m2", thread_id="test:t1", role="assistant", content="second", created_at=2000),
+        ],
+    ))
+    rowid = con.execute("SELECT rowid FROM messages WHERE id='test:m2'").fetchone()[0]
+    short_id = f"m{db.to_base53(rowid)}"
+    result = db.resolve_short_id(con, short_id)
+    assert result is not None
+    assert result["thread"]["id"] == "test:t1"
+    assert len(result["messages"]) == 1
+    assert result["messages"][0]["id"] == "test:m2"
+
+
+def test_resolve_short_id_invalid(tmp_path):
+    """resolve_short_id returns None for invalid/unknown IDs."""
+    con = db.connect(tmp_path / "archive.db")
+    assert db.resolve_short_id(con, "tZZZ") is None
+    assert db.resolve_short_id(con, "mZZZ") is None
+    assert db.resolve_short_id(con, "x123") is None
+
+
+def test_get_message(tmp_path):
+    """get_message fetches single message with thread context."""
+    con = db.connect(tmp_path / "archive.db")
+    db.save_thread(con, IngestedThread(
+        id="test:t1", source_id="test", title="Thread", created_at=1000, updated_at=1000,
+        messages=[
+            IngestedMessage(id="test:m1", thread_id="test:t1", role="user", content="hello", created_at=1000),
+            IngestedMessage(id="test:m2", thread_id="test:t1", role="assistant", content="world", created_at=2000),
+        ],
+    ))
+    result = db.get_message(con, "test:m2")
+    assert result is not None
+    assert result["thread"]["id"] == "test:t1"
+    assert len(result["messages"]) == 1
+    assert result["messages"][0]["id"] == "test:m2"
+    assert result["messages"][0]["parts"] is not None
+
+
+def test_get_message_not_found(tmp_path):
+    con = db.connect(tmp_path / "archive.db")
+    assert db.get_message(con, "nonexistent") is None

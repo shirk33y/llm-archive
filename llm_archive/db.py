@@ -401,25 +401,90 @@ def get_thread(con: sqlite3.Connection, thread_id: str) -> dict | None:
     ).fetchone()
     if not thread:
         return None
+    return _fetch_thread_data(con, dict(thread))
+
+
+def get_message(con: sqlite3.Connection, message_id: str) -> dict | None:
+    """Fetch a single message with its parent thread info and parts."""
+    msg = con.execute(
+        "SELECT id, thread_id, role, created_at FROM messages WHERE id=?",
+        (message_id,),
+    ).fetchone()
+    if not msg:
+        return None
+    thread = con.execute(
+        "SELECT id, source_id, title, created_at, updated_at FROM threads WHERE id=?",
+        (msg["thread_id"],),
+    ).fetchone()
+    if not thread:
+        return None
+    messages = [_attach_parts(con, dict(msg))]
+    return {"thread": dict(thread), "messages": messages}
+
+
+def resolve_short_id(con: sqlite3.Connection, short_id: str) -> dict | None:
+    """Resolve a short ID like 't5' or 'm42' to thread+messages data."""
+    if short_id.startswith('t') and len(short_id) > 1:
+        try:
+            rowid = from_base53(short_id[1:])
+        except (ValueError, IndexError):
+            return None
+        row = con.execute(
+            "SELECT id, source_id, title, created_at, updated_at FROM threads WHERE rowid=?",
+            (rowid,)
+        ).fetchone()
+        return _fetch_thread_data(con, dict(row)) if row else None
+    if short_id.startswith('m') and len(short_id) > 1:
+        try:
+            rowid = from_base53(short_id[1:])
+        except (ValueError, IndexError):
+            return None
+        msg = con.execute(
+            "SELECT id, thread_id, role, created_at FROM messages WHERE rowid=?",
+            (rowid,)
+        ).fetchone()
+        if not msg:
+            return None
+        thread = con.execute(
+            "SELECT id, source_id, title, created_at, updated_at FROM threads WHERE id=?",
+            (msg["thread_id"],)
+        ).fetchone()
+        if not thread:
+            return None
+        messages = [_attach_parts(con, dict(msg))]
+        return {"thread": dict(thread), "messages": messages}
+    return None
+
+
+def _attach_parts(con: sqlite3.Connection, msg: dict) -> dict:
+    """Attach parts to a message dict."""
+    parts = [dict(r) for r in con.execute(
+        "SELECT message_id, ord, kind, text, data, visible, searchable FROM message_parts "
+        "WHERE message_id=? ORDER BY ord",
+        (msg["id"],)
+    ).fetchall()]
+    msg["parts"] = parts
+    return msg
+
+
+def _fetch_thread_data(con: sqlite3.Connection, thread: dict) -> dict:
+    """Fetch messages with parts for a thread dict."""
     messages = [dict(row) for row in con.execute(
         "SELECT id, role, created_at FROM messages WHERE thread_id=? ORDER BY created_at, id",
-        (thread_id,),
+        (thread["id"],)
     ).fetchall()]
     parts = {}
     rows = con.execute(
         "SELECT message_parts.message_id, ord, kind, text, data, visible, searchable FROM message_parts "
         "JOIN messages ON messages.id = message_parts.message_id "
         "WHERE messages.thread_id=? ORDER BY messages.created_at, messages.id, ord",
-        (thread_id,),
+        (thread["id"],)
     ).fetchall()
     for row in rows:
         parts.setdefault(row["message_id"], []).append(dict(row))
     for msg in messages:
         msg["parts"] = parts.get(msg["id"], [])
-    return {
-        "thread": dict(thread),
-        "messages": messages,
-    }
+    return {"thread": thread, "messages": messages}
 
 
 def _fts_query(phrase: str) -> str:
