@@ -394,6 +394,25 @@ def search_threads(con: sqlite3.Connection, phrase: str, limit: int = 50) -> lis
     return [dict(r) for r in rows]
 
 
+def list_threads(con: sqlite3.Connection, limit: int = 1000) -> list[dict]:
+    """Return all threads sorted by newest first."""
+    rows = con.execute(
+        """
+        SELECT
+            source_id,
+            id AS thread_id,
+            title,
+            updated_at,
+            rowid AS thread_rowid
+        FROM threads
+        ORDER BY updated_at DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def get_thread(con: sqlite3.Connection, thread_id: str) -> dict | None:
     thread = con.execute(
         "SELECT id, source_id, title, created_at, updated_at FROM threads WHERE id=?",

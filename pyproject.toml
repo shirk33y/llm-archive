@@ -23,6 +23,7 @@ dependencies = [
     "protobuf>=7.34.1",
     "psutil>=5.9",
     "websockets>=16.0",
+    "textual>=0.50",
 ]
 
 

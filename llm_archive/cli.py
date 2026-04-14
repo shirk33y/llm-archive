@@ -598,3 +598,11 @@ def _print_lines(lines: list[Text | str | Markdown]) -> None:
                 console.print(line)
             else:
                 console.print(line, markup=False, highlight=False)
+
+
+@main.command()
+@click.option("--db-path", default=None, help="Override database path")
+def tui(db_path: str | None):
+    """Interactive TUI for browsing conversations."""
+    from llm_archive.tui import run
+    run(Path(db_path) if db_path else None)
