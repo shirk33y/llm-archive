@@ -2,6 +2,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import socket
 import sqlite3
 from pathlib import Path
 
@@ -20,7 +21,7 @@ def to_base53(num: int) -> str:
     while num:
         digits.append(BASE53[num % 53])
         num //= 53
-    return ''.join(reversed(digits))
+    return "".join(reversed(digits))
 
 
 def from_base53(s: str) -> int:
@@ -30,18 +31,19 @@ def from_base53(s: str) -> int:
         result = result * 53 + BASE53.index(char)
     return result
 
+
 # Tags injected by Claude Code IDE/system that pollute user message content.
 # Extend this list as new injection patterns are discovered.
 _INJECTION_TAGS = re.compile(
-    r'<(?:'
-    r'ide_opened_file'
-    r'|local-command-caveat'
-    r'|command-name'
-    r'|command-message'
-    r'|command-args'
-    r'|system-reminder'
-    r'|user-prompt-submit-hook'
-    r')[\s\S]*?</[^>]+>',
+    r"<(?:"
+    r"ide_opened_file"
+    r"|local-command-caveat"
+    r"|command-name"
+    r"|command-message"
+    r"|command-args"
+    r"|system-reminder"
+    r"|user-prompt-submit-hook"
+    r")[\s\S]*?</[^>]+>",
     re.DOTALL,
 )
 
@@ -54,8 +56,9 @@ def clean_content(text: str) -> str:
     """
     if not text:
         return text
-    cleaned = _INJECTION_TAGS.sub('', text)
-    return re.sub(r'\s+', ' ', cleaned).strip()
+    cleaned = _INJECTION_TAGS.sub("", text)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
 
 DDL = """
 PRAGMA journal_mode=WAL;
@@ -161,7 +164,6 @@ def _thread_sha1(thread: IngestedThread) -> str:
 
 
 def upsert_source(con: sqlite3.Connection, source_id: str, config: dict) -> None:
-    import socket
     hostname = socket.gethostname()
     con.execute(
         "INSERT INTO sources(id, config, hostname) VALUES(?,?,?) "
@@ -193,16 +195,17 @@ def save_thread(con: sqlite3.Connection, thread: IngestedThread, force: bool = F
         return False
 
     # Ensure source row exists (FK constraint)
-    con.execute(
-        "INSERT OR IGNORE INTO sources(id) VALUES(?)", (thread.source_id,)
-    )
+    con.execute("INSERT OR IGNORE INTO sources(id) VALUES(?)", (thread.source_id,))
 
     con.execute(
         "INSERT OR REPLACE INTO threads(id, source_id, title, created_at, updated_at, sha1) "
         "VALUES(?,?,?,?,?,?)",
         (thread.id, thread.source_id, thread.title, thread.created_at, thread.updated_at, sha1),
     )
-    ids = [row[0] for row in con.execute("SELECT id FROM messages WHERE thread_id=?", (thread.id,)).fetchall()]
+    ids = [
+        row[0]
+        for row in con.execute("SELECT id FROM messages WHERE thread_id=?", (thread.id,)).fetchall()
+    ]
     if ids:
         marks = ",".join("?" for _ in ids)
         con.execute(f"DELETE FROM message_parts_fts WHERE message_id IN ({marks})", ids)
@@ -215,8 +218,15 @@ def save_thread(con: sqlite3.Connection, thread: IngestedThread, force: bool = F
         con.execute(
             "INSERT OR REPLACE INTO messages(id, thread_id, role, content, content_clean, created_at, metadata) "
             "VALUES(?,?,?,?,?,?,?)",
-            (msg.id, msg.thread_id, msg.role, msg.content, clean,
-             msg.created_at, json.dumps(msg.metadata) if msg.metadata else None),
+            (
+                msg.id,
+                msg.thread_id,
+                msg.role,
+                msg.content,
+                clean,
+                msg.created_at,
+                json.dumps(msg.metadata) if msg.metadata else None,
+            ),
         )
         con.execute(
             "INSERT INTO messages_fts(id, thread_id, content_clean) VALUES(?,?,?)",
@@ -443,30 +453,29 @@ def get_message(con: sqlite3.Connection, message_id: str) -> dict | None:
 
 def resolve_short_id(con: sqlite3.Connection, short_id: str) -> dict | None:
     """Resolve a short ID like 't5' or 'm42' to thread+messages data."""
-    if short_id.startswith('t') and len(short_id) > 1:
+    if short_id.startswith("t") and len(short_id) > 1:
         try:
             rowid = from_base53(short_id[1:])
         except (ValueError, IndexError):
             return None
         row = con.execute(
             "SELECT id, source_id, title, created_at, updated_at FROM threads WHERE rowid=?",
-            (rowid,)
+            (rowid,),
         ).fetchone()
         return _fetch_thread_data(con, dict(row)) if row else None
-    if short_id.startswith('m') and len(short_id) > 1:
+    if short_id.startswith("m") and len(short_id) > 1:
         try:
             rowid = from_base53(short_id[1:])
         except (ValueError, IndexError):
             return None
         msg = con.execute(
-            "SELECT id, thread_id, role, created_at FROM messages WHERE rowid=?",
-            (rowid,)
+            "SELECT id, thread_id, role, created_at FROM messages WHERE rowid=?", (rowid,)
         ).fetchone()
         if not msg:
             return None
         thread = con.execute(
             "SELECT id, source_id, title, created_at, updated_at FROM threads WHERE id=?",
-            (msg["thread_id"],)
+            (msg["thread_id"],),
         ).fetchone()
         if not thread:
             return None
@@ -477,27 +486,33 @@ def resolve_short_id(con: sqlite3.Connection, short_id: str) -> dict | None:
 
 def _attach_parts(con: sqlite3.Connection, msg: dict) -> dict:
     """Attach parts to a message dict."""
-    parts = [dict(r) for r in con.execute(
-        "SELECT message_id, ord, kind, text, data, visible, searchable FROM message_parts "
-        "WHERE message_id=? ORDER BY ord",
-        (msg["id"],)
-    ).fetchall()]
+    parts = [
+        dict(r)
+        for r in con.execute(
+            "SELECT message_id, ord, kind, text, data, visible, searchable FROM message_parts "
+            "WHERE message_id=? ORDER BY ord",
+            (msg["id"],),
+        ).fetchall()
+    ]
     msg["parts"] = parts
     return msg
 
 
 def _fetch_thread_data(con: sqlite3.Connection, thread: dict) -> dict:
     """Fetch messages with parts for a thread dict."""
-    messages = [dict(row) for row in con.execute(
-        "SELECT id, role, created_at FROM messages WHERE thread_id=? ORDER BY created_at, id",
-        (thread["id"],)
-    ).fetchall()]
+    messages = [
+        dict(row)
+        for row in con.execute(
+            "SELECT id, role, created_at FROM messages WHERE thread_id=? ORDER BY created_at, id",
+            (thread["id"],),
+        ).fetchall()
+    ]
     parts = {}
     rows = con.execute(
         "SELECT message_parts.message_id, ord, kind, text, data, visible, searchable FROM message_parts "
         "JOIN messages ON messages.id = message_parts.message_id "
         "WHERE messages.thread_id=? ORDER BY messages.created_at, messages.id, ord",
-        (thread["id"],)
+        (thread["id"],),
     ).fetchall()
     for row in rows:
         parts.setdefault(row["message_id"], []).append(dict(row))
@@ -512,7 +527,7 @@ def _fts_query(phrase: str) -> str:
         return '""'
     # Add * suffix for prefix matching, join with AND for multi-word
     # Note: FTS5 prefix terms must NOT be quoted to work
-    terms = [f'{word.replace(chr(34), "")}*' for word in words]
+    terms = [f"{word.replace(chr(34), '')}*" for word in words]
     if len(terms) == 1:
         return terms[0]
     return " AND ".join(terms)

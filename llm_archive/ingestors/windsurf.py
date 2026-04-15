@@ -4,14 +4,12 @@ import gzip
 import json
 import re
 import struct
-import subprocess
-import sys
 import urllib.request
 from pathlib import Path
 from typing import AsyncIterator
 
 from llm_archive.ingestors.base import BaseIngestor
-from llm_archive.logging import get_logger, retry_async
+from llm_archive.logging import get_logger
 from llm_archive.schema import IngestedMessage, IngestedPart, IngestedThread
 
 logger = get_logger("windsurf")

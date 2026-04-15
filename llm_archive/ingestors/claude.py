@@ -1,6 +1,5 @@
 from __future__ import annotations
 import asyncio
-import time
 from typing import AsyncIterator
 
 import httpx
@@ -225,7 +224,7 @@ class ClaudeIngestor(BaseIngestor):
 def _parse_claude_ts(ts: str | None) -> int | None:
     if not ts:
         return None
-    from datetime import datetime, timezone
+    from datetime import datetime
     try:
         dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
         return int(dt.timestamp() * 1000)

@@ -2,14 +2,13 @@ from __future__ import annotations
 import asyncio
 import json
 import subprocess
-import tempfile
 import time
 from pathlib import Path
 
 import httpx
 
 from llm_archive.ingestors.base import BaseIngestor
-from llm_archive.logging import get_logger, retry_async
+from llm_archive.logging import get_logger
 from llm_archive.schema import IngestedMessage, IngestedThread
 
 logger = get_logger("deepseek")
@@ -237,7 +236,6 @@ class DeepseekIngestor(BaseIngestor):
             f"--user-data-dir={chrome_profile}",
         ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-        import time
         time.sleep(2)
 
         try:
