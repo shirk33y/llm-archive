@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from llm_archive.ingestors.base import BaseIngestor
+from llm_archive.ingestors.chatgpt import ChatGPTIngestor
 from llm_archive.ingestors.claude import ClaudeIngestor
 from llm_archive.ingestors.claudecode import ClaudeCodeIngestor
 from llm_archive.ingestors.deepseek import DeepseekIngestor
@@ -13,6 +14,7 @@ INGESTORS: dict[str, type[BaseIngestor]] = {
     "windsurf": WindsurfIngestor,
     "claude": ClaudeIngestor,
     "deepseek": DeepseekIngestor,
+    "chatgpt": ChatGPTIngestor,
 }
 
 

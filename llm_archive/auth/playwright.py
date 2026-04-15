@@ -1,8 +1,6 @@
 from __future__ import annotations
 import asyncio
 import json
-import subprocess
-import time
 from pathlib import Path
 from typing import Callable, Awaitable
 
@@ -40,60 +38,153 @@ async def login_with_detection(
     url: str,
     detect_login: Callable[[any, any], Awaitable[bool]],
     output_path: Path,
-    timeout: int = 300
+    timeout: int = 300,
 ) -> dict:
     """Generic login function that uses a callback to detect login completion."""
     from playwright.async_api import async_playwright
 
     AUTH_DIR.mkdir(parents=True, exist_ok=True)
 
-    logger.info(f"{source_id.capitalize()} login required. Please press ENTER to open browser and login.")
+    logger.info(
+        f"{source_id.capitalize()} login required. Please press ENTER to open browser and login."
+    )
     input()
 
-    chrome = _find_chrome()
-    chrome_args = chrome if isinstance(chrome, list) else [chrome]
-    chrome_profile = _find_chrome_profile()
-    proc = subprocess.Popen([
-        *chrome_args,
-        "--remote-debugging-port=9222",
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--password-store=basic",
-        "--ozone-platform=x11",
-        "--log-level=3",
-        f"--user-data-dir={chrome_profile}",
-    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    import subprocess
+    import urllib.request
 
-    time.sleep(2)
+    # Check if Chrome is already running with CDP
+    existing_port = None
+    for port in [9333, 9444, 9555]:
+        try:
+            resp = urllib.request.urlopen(f"http://localhost:{port}/json/version", timeout=1)
+            if resp.status == 200:
+                existing_port = port
+                logger.info(f"Found existing Chrome with CDP on port {port}")
+                break
+        except Exception:
+            continue
+
+    proc = None
+    if existing_port:
+        cdp_port = existing_port
+    else:
+        # Start new Chrome with isolated temp profile
+        import tempfile
+
+        chrome_profile = Path(tempfile.mkdtemp(prefix="chatgpt-chrome-"))
+        cdp_port = 9333
+
+        chrome_cmd = _find_chrome()
+        if isinstance(chrome_cmd, list):
+            chrome_args = chrome_cmd + [
+                f"--remote-debugging-port={cdp_port}",
+                f"--user-data-dir={chrome_profile}",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-gpu",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-setuid-sandbox",
+                "https://chatgpt.com",
+            ]
+        else:
+            chrome_args = [
+                chrome_cmd,
+                f"--remote-debugging-port={cdp_port}",
+                f"--user-data-dir={chrome_profile}",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-gpu",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-setuid-sandbox",
+                "https://chatgpt.com",
+            ]
+
+        logger.info("Starting Chrome...")
+        proc = subprocess.Popen(chrome_args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        # Wait for CDP to be ready
+        for _ in range(30):
+            import time
+
+            time.sleep(1)
+            try:
+                resp = urllib.request.urlopen(
+                    f"http://localhost:{cdp_port}/json/version", timeout=1
+                )
+                if resp.status == 200:
+                    logger.info("Chrome ready with CDP")
+                    break
+            except Exception:
+                continue
+        else:
+            proc.terminate()
+            raise RuntimeError("Chrome failed to start with CDP")
 
     try:
         async with async_playwright() as p:
-            logger.info(f"connecting to Chrome DevTools")
-            logger.info("Waiting for login...")
-            browser = await p.chromium.connect_over_cdp("http://localhost:9222")
+            logger.info("Connecting to Chrome via CDP...")
+            browser = await p.chromium.connect_over_cdp(f"http://localhost:{cdp_port}")
             ctx = browser.contexts[0]
             pages = ctx.pages
             page = pages[0] if pages else await ctx.new_page()
 
-            await page.goto(url, wait_until="domcontentloaded")
+            if page.url == "about:blank":
+                logger.info("Navigating to ChatGPT...")
+                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
 
             login_detected = await asyncio.wait_for(detect_login(ctx, page), timeout=timeout)
             if not login_detected:
                 raise TimeoutError("Timed out waiting for login")
 
-            logger.info(f"login detected — saving session")
-            state = await ctx.storage_state(path=str(output_path))
+            logger.info("login detected — extracting cookies...")
+
+            # Extract cookies directly from the page context
+            cookies = await ctx.cookies()
+
+            # Also get access token from ChatGPT's session endpoint
+            token_data = await page.evaluate("""async () => {
+                try {
+                    const resp = await fetch('/api/auth/session', {credentials: 'include'});
+                    const data = await resp.json();
+                    return {ok: resp.ok, accessToken: data.accessToken || null, user: data.user || null};
+                } catch(e) {
+                    return {ok: false, error: e.message};
+                }
+            }""")
+            logger.info(f"Session data: {token_data}")
+
+            state = {
+                "cookies": cookies,
+                "origins": [],
+                "access_token": token_data.get("accessToken")
+                if token_data and token_data.get("ok")
+                else None,
+                "user": token_data.get("user") if token_data and token_data.get("ok") else None,
+            }
+
+            import json
+
+            output_path.write_text(json.dumps(state, indent=2))
+            logger.info(
+                f"Saved {len(cookies)} cookies, access_token: {'yes' if state['access_token'] else 'NO'}"
+            )
+
             await browser.close()
             logger.info("closing browser")
     finally:
-        proc.terminate()
-        proc.wait()
+        if proc:
+            proc.terminate()
+            proc.wait()
 
     return state
 
 
 def _find_chrome_profile() -> Path:
-    """Return path to existing Chrome/Chromium user profile directory."""
+    """Return path to existing Chrome/Chromium profile for login."""
+    # Check for existing profiles (flatpak Chrome stores here)
     candidates = [
         Path.home() / ".var/app/com.google.Chrome/config/google-chrome",
         Path.home() / ".var/app/org.chromium.Chromium/config/chromium",
@@ -103,12 +194,16 @@ def _find_chrome_profile() -> Path:
     for p in candidates:
         if p.exists():
             return p
-    # Fallback: fresh profile in our auth dir
-    return AUTH_DIR / "chrome-profile"
+    # Fallback: fresh profile in auth dir
+    profile = AUTH_DIR / "chrome-login-profile"
+    profile.mkdir(parents=True, exist_ok=True)
+    return profile
 
 
 def _find_chrome() -> str | list:
+    """Find Chrome or Chromium binary."""
     import shutil
+
     candidates = [
         "google-chrome",
         "google-chrome-stable",
@@ -123,14 +218,14 @@ def _find_chrome() -> str | list:
         if shutil.which(c):
             return c
 
-    # Flatpak wrappers — return as list so Popen handles args correctly
+    # Flatpak Chrome
+    import subprocess
+
     if shutil.which("flatpak"):
         for app_id in ("com.google.Chrome", "org.chromium.Chromium"):
-            result = subprocess.run(
-                ["flatpak", "info", app_id], capture_output=True
-            )
+            result = subprocess.run(["flatpak", "info", app_id], capture_output=True)
             if result.returncode == 0:
-                return ["flatpak", "run", app_id]
+                return ["flatpak", "run", "--share=network", app_id]
 
     raise RuntimeError(
         "Could not find Chrome or Chromium. Install one and try again.\n"

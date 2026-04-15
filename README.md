@@ -9,9 +9,11 @@ A CLI tool that dumps and syncs AI conversations from multiple sources into a lo
 | `claudecode` | ✅ working | local JSONL (`~/.claude/projects/`) |
 | `opencode` | ✅ working | local SQLite (`~/.local/share/opencode/opencode.db`) |
 | `claude` | ✅ working | claude.ai REST API + Playwright auth |
-| `deepseek` | ✅ working | deepseek.com REST API + Playwright auth |
+| `deepseek` | ✅ working | deepseek.com REST API + CDP auth |
 | `windsurf` | ✅ working | local Language Server API (auto-detected port) |
-| ChatGPT | 🔜 planned | REST API |
+| `chatgpt` | ✅ working | chatgpt.com REST API + CDP auth |
+
+**Note on web-based ingestors:** Headless browsers (Playwright/Selenium) trigger Cloudflare CAPTCHA loops. Web-based sources (claude, deepseek, chatgpt) require a Chrome browser with remote debugging enabled and an active session. See [CDP setup](#cdp-setup) below.
 
 ## Installation
 
@@ -34,8 +36,27 @@ uv run llm-archive sync windsurf      # sync windsurf (requires Windsurf running
 
 The `sync` command performs first-time setup automatically when needed:
 - Local sources (claudecode, opencode): No setup required
-- API sources (claude, deepseek): Opens browser for first-time auth, then stores token
+- Web sources (claude, deepseek, chatgpt): See CDP setup below
 - windsurf: Requires Windsurf to be running with Language Server active
+
+### CDP setup
+
+Web-based ingestors require a Chrome/Chromium browser with remote debugging enabled:
+
+```sh
+# Start Chrome with CDP (pick a free port)
+google-chrome --remote-debugging-port=9222
+
+# Or use flatpak:
+flatpak run com.google.Chrome --remote-debugging-port=9222
+```
+
+**Important:** Use your normal browser profile so you're already logged in. Headless mode won't work due to Cloudflare CAPTCHA.
+
+For CDP port conflicts, use a different port:
+```sh
+google-chrome --remote-debugging-port=9333
+```
 
 ### Force full resync
 
