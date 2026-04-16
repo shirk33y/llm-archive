@@ -2,12 +2,8 @@
 ChatGPT web ingestor.
 
 Authentication: Uses Chrome CDP to fetch fresh access_token from browser session.
-Headless browsers trigger Cloudflare CAPTCHA, so we connect to an existing Chrome
-instance via remote debugging port (9333 by default, 9222 is used by Windsurf).
-
-Important: Chrome flatpak ignores CDP flags when using the default profile.
-For flatpak Chrome, use an isolated temp profile:
-    flatpak run com.google.Chrome --remote-debugging-port=9333 --user-dir=/tmp/chatgpt-chrome
+Connects to existing Chrome instance via remote debugging port (9333 by default).
+If no Chrome with CDP is found, automatically launches Chrome with proper flags.
 
 Rate limiting: The /conversation/{id} endpoint triggers 429 after ~2 rapid requests.
 Adaptive MessageRateLimiter:
@@ -23,7 +19,11 @@ API: Uses Bearer token auth from /api/auth/session, not cookie-based auth
 
 from __future__ import annotations
 import asyncio
+import shutil
+import subprocess
+import tempfile
 from datetime import datetime
+from pathlib import Path
 from typing import AsyncIterator
 
 import httpx
@@ -37,6 +37,74 @@ logger = get_logger("chatgpt")
 
 LOGIN_URL = "https://chatgpt.com"
 API_BASE = "https://chatgpt.com/backend-api"
+CDP_PORT = 9333
+
+
+def _find_chrome_binary() -> list[str]:
+    """Find Chrome/Chromium binary. Returns command as list for subprocess."""
+    candidates = [
+        "google-chrome",
+        "google-chrome-stable",
+        "chromium",
+        "chromium-browser",
+        "/usr/bin/google-chrome",
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+        "/snap/bin/chromium",
+    ]
+    for c in candidates:
+        if shutil.which(c):
+            return [c]
+
+    if shutil.which("flatpak"):
+        for app_id in ("com.google.Chrome", "org.chromium.Chromium"):
+            result = subprocess.run(["flatpak", "info", app_id], capture_output=True)
+            if result.returncode == 0:
+                return ["flatpak", "run", "--share=network", "--filesystem=/tmp", app_id]
+
+    raise RuntimeError(
+        "Could not find Chrome or Chromium. Install one and try again.\n"
+        "e.g. flatpak install flathub org.chromium.Chromium"
+    )
+
+
+def _launch_chrome_with_cdp() -> tuple[subprocess.Popen, int]:
+    """Launch Chrome with CDP debugging enabled. Returns (process, port)."""
+    chrome_cmd = _find_chrome_binary()
+
+    user_data_dir = Path(tempfile.mkdtemp(prefix="llm-archive-chrome-"))
+
+    proc = subprocess.Popen(
+        [
+            *chrome_cmd,
+            f"--remote-debugging-port={CDP_PORT}",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--password-store=basic",
+            "--ozone-platform=x11",
+            f"--user-data-dir={user_data_dir}",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+    import time
+
+    time.sleep(2)
+
+    return proc, CDP_PORT
+
+
+def _cleanup_chrome_proc(proc: subprocess.Popen | None, user_data_dir: Path | None) -> None:
+    """Clean up Chrome process and temp profile."""
+    if proc:
+        proc.terminate()
+        proc.wait(timeout=5)
+    if user_data_dir and user_data_dir.exists():
+        import shutil
+
+        shutil.rmtree(user_data_dir, ignore_errors=True)
+
 
 BROWSER_HEADERS = {
     "user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
@@ -169,12 +237,18 @@ class ChatGPTIngestor(BaseIngestor):
         return resp
 
     async def _get_token_via_cdp(self) -> tuple[str, dict[str, str]]:
-        """Get access token and cookies by connecting to Chrome via CDP."""
+        """Get access token and cookies by connecting to Chrome via CDP.
+
+        If no Chrome with CDP is found, automatically launches Chrome with proper flags.
+        """
         import urllib.request
         from playwright.async_api import async_playwright
 
+        chrome_proc = None
+        user_data_dir = None
         cdp_port = None
-        for port in [9333, 9444, 9555]:
+
+        for port in [CDP_PORT, 9444, 9555]:
             try:
                 resp = urllib.request.urlopen(f"http://localhost:{port}/json/version", timeout=1)
                 if resp.status == 200:
@@ -184,44 +258,53 @@ class ChatGPTIngestor(BaseIngestor):
                 continue
 
         if not cdp_port:
-            raise RuntimeError(
-                "Chrome with CDP not found. Run Chrome with --remote-debugging-port=9333"
+            logger.info("No Chrome with CDP found, launching Chrome...")
+            chrome_proc, cdp_port = _launch_chrome_with_cdp()
+            user_data_dir = (
+                Path(chrome_proc.args[-1].split("=")[1])
+                if "--user-data-dir=" in " ".join(chrome_proc.args)
+                else None
             )
 
-        async with async_playwright() as p:
-            browser = await p.chromium.connect_over_cdp(f"http://localhost:{cdp_port}")
-            ctx = browser.contexts[0]
+        try:
+            async with async_playwright() as p:
+                browser = await p.chromium.connect_over_cdp(f"http://localhost:{cdp_port}")
+                ctx = browser.contexts[0]
 
-            page = None
-            for pg in ctx.pages:
-                if "chatgpt.com" in pg.url:
-                    page = pg
-                    break
-            if not page and ctx.pages:
-                page = ctx.pages[0]
+                page = None
+                for pg in ctx.pages:
+                    if "chatgpt.com" in pg.url:
+                        page = pg
+                        break
+                if not page and ctx.pages:
+                    page = ctx.pages[0]
 
-            if not page:
+                if not page:
+                    await browser.close()
+                    raise RuntimeError(
+                        "No ChatGPT page found. Make sure you're logged in at chatgpt.com"
+                    )
+
+                cookies = await ctx.cookies()
+                cookie_dict = {c["name"]: c["value"] for c in cookies}
+
+                result = await page.evaluate("""async () => {
+                    const resp = await fetch('/api/auth/session', {credentials: 'include'});
+                    if (resp.ok) {
+                        const data = await resp.json();
+                        return data.accessToken || null;
+                    }
+                    return null;
+                }""")
+
                 await browser.close()
-                raise RuntimeError("No ChatGPT page found")
 
-            cookies = await ctx.cookies()
-            cookie_dict = {c["name"]: c["value"] for c in cookies}
+                if not result:
+                    raise RuntimeError("Failed to get access token from ChatGPT")
 
-            result = await page.evaluate("""async () => {
-                const resp = await fetch('/api/auth/session', {credentials: 'include'});
-                if (resp.ok) {
-                    const data = await resp.json();
-                    return data.accessToken || null;
-                }
-                return null;
-            }""")
-
-            await browser.close()
-
-            if not result:
-                raise RuntimeError("Failed to get access token from ChatGPT")
-
-            return result, cookie_dict
+                return result, cookie_dict
+        finally:
+            _cleanup_chrome_proc(chrome_proc, user_data_dir)
 
     async def _request_with_message_with_retry(
         self,
