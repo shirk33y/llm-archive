@@ -1,11 +1,14 @@
 from __future__ import annotations
 import asyncio
 import json
+import os
 import re
 import shutil
 import sys
 import time
 from pathlib import Path
+
+os.environ.setdefault("NODE_OPTIONS", "--no-deprecation-warning")
 
 import click
 from rich.console import Console
@@ -45,7 +48,9 @@ def sync(source: str | None, path: str | None, db_path: str | None, force: bool)
     _run(_sync(source, db_path, path, force))
 
 
-async def _sync(source: str | None, db_path_str: str | None, path: str | None = None, force: bool = False):
+async def _sync(
+    source: str | None, db_path_str: str | None, path: str | None = None, force: bool = False
+):
     con = db.connect(Path(db_path_str) if db_path_str else db.DB_PATH)
     sources = [source] if source else list(INGESTORS)
 
@@ -58,7 +63,7 @@ async def _sync(source: str | None, db_path_str: str | None, path: str | None = 
             ingestor.path = Path(path)
         db.upsert_source(con, src, {"path": path} if path and src == source else {})
         console.print(f"[bold]Syncing:[/bold] {src}")
-        
+
         try:
             if since is None:
                 await ingestor.init(path=path if src == source else None)
@@ -86,7 +91,9 @@ async def _do_ingest(con, ingestor, since: int | None, force: bool = False):
     # Fetch existing thread IDs and updated_at for smart sync (disabled when force=True)
     existing_threads = {}
     if not force:
-        rows = con.execute("SELECT id, updated_at FROM threads WHERE source_id=?", (ingestor.source_id,)).fetchall()
+        rows = con.execute(
+            "SELECT id, updated_at FROM threads WHERE source_id=?", (ingestor.source_id,)
+        ).fetchall()
         existing_threads = {row["id"]: row["updated_at"] for row in rows}
 
     with Progress(
@@ -115,11 +122,15 @@ async def _do_ingest(con, ingestor, since: int | None, force: bool = False):
             progress.update(task, description=f"  {ingestor.source_id} — {label}")
 
         def _on_fetch_done():
-            progress.update(task, description=f"  {ingestor.source_id} — [green]{written}[/green] new, [grey37]{skipped}[/grey37] up to date")
+            progress.update(
+                task,
+                description=f"  {ingestor.source_id} — [green]{written}[/green] new, [grey37]{skipped}[/grey37] up to date",
+            )
 
         try:
             # Check if ingestor supports callback parameters
             import inspect
+
             sig = inspect.signature(ingestor.threads)
             kwargs = {}
             if "existing_thread_ids" in sig.parameters:
@@ -219,7 +230,9 @@ def status(db_path: str | None):
         last = row["last_sync"]
         last_str = _fmt_ts(last) if last else "[dim]never[/dim]"
         host = row["hostname"] or "[dim]—[/dim]"
-        table.add_row(row["id"], host, str(row["thread_count"]), str(row["message_count"]), last_str)
+        table.add_row(
+            row["id"], host, str(row["thread_count"]), str(row["message_count"]), last_str
+        )
 
     console.print(table)
 
@@ -257,11 +270,17 @@ def sources():
 @click.argument("phrase")
 @click.option("--db-path", default=None, help="Override database path")
 @click.option("--limit", default=200, show_default=True, help="Maximum matches to show")
-@click.option("-t", "threads_only", is_flag=True, help="Only show matching threads and match counts")
+@click.option(
+    "-t", "threads_only", is_flag=True, help="Only show matching threads and match counts"
+)
 def search(phrase: str, db_path: str | None, limit: int, threads_only: bool):
     """Search all indexed messages across providers."""
     con = db.connect(Path(db_path) if db_path else db.DB_PATH)
-    rows = db.search_threads(con, phrase, limit=limit) if threads_only else db.search_messages(con, phrase, limit=limit)
+    rows = (
+        db.search_threads(con, phrase, limit=limit)
+        if threads_only
+        else db.search_messages(con, phrase, limit=limit)
+    )
     if not rows:
         console.print("No matches.")
         return
@@ -274,16 +293,33 @@ def search(phrase: str, db_path: str | None, limit: int, threads_only: bool):
             title = row["title"] or "untitled"
             short_id = f"t{db.to_base53(row['thread_rowid'])}"
             rel_time = _relative_time(row["last_match_at"])
-            formatted_rows.append({"id": short_id, "time": rel_time, "source": row["source_id"], "text": title, "match_count": row["match_count"]})
-        
+            formatted_rows.append(
+                {
+                    "id": short_id,
+                    "time": rel_time,
+                    "source": row["source_id"],
+                    "text": title,
+                    "match_count": row["match_count"],
+                }
+            )
+
         max_id_width = max((len(r["id"]) for r in formatted_rows if r is not None), default=0)
         max_time_width = max((len(r["time"]) for r in formatted_rows if r is not None), default=0)
-        
+
         for row in formatted_rows:
             if row is None:
                 lines.append("")
             else:
-                lines.append(_search_thread_line(row["id"], row["time"], row["source"], row["text"], max_id_width, max_time_width))
+                lines.append(
+                    _search_thread_line(
+                        row["id"],
+                        row["time"],
+                        row["source"],
+                        row["text"],
+                        max_id_width,
+                        max_time_width,
+                    )
+                )
                 lines.append(f"  {row['match_count']} matching messages")
         _print_lines(lines)
         return
@@ -306,7 +342,15 @@ def search(phrase: str, db_path: str | None, limit: int, threads_only: bool):
                 formatted_rows.append(None)
             short_id = f"t{db.to_base53(row['thread_rowid'])}"
             rel_time = _relative_time(row["created_at"])
-            formatted_rows.append({"type": "thread", "id": short_id, "time": rel_time, "source": row["source_id"], "text": title})
+            formatted_rows.append(
+                {
+                    "type": "thread",
+                    "id": short_id,
+                    "time": rel_time,
+                    "source": row["source_id"],
+                    "text": title,
+                }
+            )
             last = key
             seen_msgs = set()
         msg_key = row["message_id"]
@@ -316,18 +360,41 @@ def search(phrase: str, db_path: str | None, limit: int, threads_only: bool):
         short_id = f"m{db.to_base53(row['message_rowid'])}"
         rel_time = _relative_time(row["created_at"])
         snippet = _snippet(best_part.get(msg_key, row["content_clean"]), phrase)
-        formatted_rows.append({"type": "message", "id": short_id, "time": rel_time, "role": row["role"], "text": snippet, "phrase": phrase})
-    
+        formatted_rows.append(
+            {
+                "type": "message",
+                "id": short_id,
+                "time": rel_time,
+                "role": row["role"],
+                "text": snippet,
+                "phrase": phrase,
+            }
+        )
+
     max_id_width = max((len(r["id"]) for r in formatted_rows if r is not None), default=0)
     max_time_width = max((len(r["time"]) for r in formatted_rows if r is not None), default=0)
-    
+
     for row in formatted_rows:
         if row is None:
             lines.append("")
         elif row["type"] == "thread":
-            lines.append(_search_thread_line(row["id"], row["time"], row["source"], row["text"], max_id_width, max_time_width))
+            lines.append(
+                _search_thread_line(
+                    row["id"], row["time"], row["source"], row["text"], max_id_width, max_time_width
+                )
+            )
         else:
-            lines.append(_search_message_line(row["id"], row["time"], row["role"], row["text"], row["phrase"], max_id_width, max_time_width))
+            lines.append(
+                _search_message_line(
+                    row["id"],
+                    row["time"],
+                    row["role"],
+                    row["text"],
+                    row["phrase"],
+                    max_id_width,
+                    max_time_width,
+                )
+            )
     _print_lines(lines)
 
 
@@ -337,9 +404,9 @@ def search(phrase: str, db_path: str | None, limit: int, threads_only: bool):
 def show(thread: str, db_path: str | None):
     """Show a full conversation by ID (short ID like 't5' or full UUID)."""
     con = db.connect(Path(db_path) if db_path else db.DB_PATH)
-    
+
     row = db.resolve_short_id(con, thread) or db.get_thread(con, thread)
-    
+
     if row is None:
         console.print(f"Thread not found: {thread}")
         raise SystemExit(1)
@@ -367,6 +434,7 @@ def show(thread: str, db_path: str | None):
 def _relative_time(ms: int) -> str:
     """Format timestamp as relative time (e.g., '1d', '32m', '2y')."""
     from datetime import datetime, timezone
+
     if not ms:
         return ""
     now = datetime.now(tz=timezone.utc).timestamp() * 1000
@@ -376,7 +444,7 @@ def _relative_time(ms: int) -> str:
     delta_h = delta_m / 60
     delta_d = delta_h / 24
     delta_y = delta_d / 365.25
-    
+
     if delta_y >= 1:
         return f"{int(delta_y)}y"
     if delta_d >= 1:
@@ -388,7 +456,9 @@ def _relative_time(ms: int) -> str:
     return f"{int(delta_s)}s"
 
 
-def _search_thread_line(short_id: str, rel_time: str, source: str, text: str, id_width: int = 0, time_width: int = 0) -> Text:
+def _search_thread_line(
+    short_id: str, rel_time: str, source: str, text: str, id_width: int = 0, time_width: int = 0
+) -> Text:
     """Format thread title line with provider name."""
     line = Text()
     line.append(short_id.ljust(id_width), style="grey37")
@@ -401,7 +471,15 @@ def _search_thread_line(short_id: str, rel_time: str, source: str, text: str, id
     return line
 
 
-def _search_message_line(short_id: str, rel_time: str, role: str, text: str, phrase: str, id_width: int = 0, time_width: int = 0) -> Text:
+def _search_message_line(
+    short_id: str,
+    rel_time: str,
+    role: str,
+    text: str,
+    phrase: str,
+    id_width: int = 0,
+    time_width: int = 0,
+) -> Text:
     """Format message line with role and highlighted search phrase."""
     line = Text()
     line.append("  ", style="")
@@ -409,15 +487,17 @@ def _search_message_line(short_id: str, rel_time: str, role: str, text: str, phr
     line.append(" ", style="")
     line.append(rel_time.ljust(time_width), style="dim yellow")
     line.append(" ", style="")
-    role_style = {"user": "dodger_blue1", "assistant": "green1", "tool": "dark_orange"}.get(role, "grey37")
+    role_style = {"user": "dodger_blue1", "assistant": "green1", "tool": "dark_orange"}.get(
+        role, "grey37"
+    )
     line.append(role, style=role_style)
     line.append("  ", style="")
-    
+
     parts = [part for part in re.findall(r"\S+", phrase) if part]
     if not parts:
         line.append(_truncate(text, 100), style="")
         return line
-    
+
     truncated = _truncate(text, 100)
     text_escaped = escape(truncated)
     for part in parts:
@@ -428,19 +508,21 @@ def _search_message_line(short_id: str, rel_time: str, role: str, text: str, phr
             text_escaped,
             flags=re.IGNORECASE,
         )
-    
+
     line.append_text(Text.from_markup(text_escaped))
     return line
 
 
 def _fmt_ts(ms: int) -> str:
     from datetime import datetime, timezone
+
     dt = datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
     return dt.strftime("%Y-%m-%d %H:%M UTC")
 
 
 def _msg_marker(ms: int) -> str:
     from datetime import datetime, timezone
+
     dt = datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
     return dt.strftime("%Y-%m-%d %H:%M:%S")
 
@@ -482,8 +564,8 @@ def _truncate(text: str, limit: int = 200) -> str:
 
 
 def _snippet(text: str, phrase: str, limit: int = 200) -> str:
-    text = text.replace('\n', ' ').replace('\r', ' ')
-    text = re.sub(r'\s+', ' ', text).strip()
+    text = text.replace("\n", " ").replace("\r", " ")
+    text = re.sub(r"\s+", " ", text).strip()
     if len(text) <= limit:
         return text
     words = [part for part in re.findall(r"\S+", phrase) if part]
@@ -605,4 +687,5 @@ def _print_lines(lines: list[Text | str | Markdown]) -> None:
 def tui(db_path: str | None):
     """Interactive TUI for browsing conversations."""
     from llm_archive.tui import run
+
     run(Path(db_path) if db_path else None)

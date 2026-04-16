@@ -55,7 +55,7 @@ class RateLimiter:
         self._fail_factor = 1.0
         self._success_factor = 1.0
         self._consecutive_429s = 0
-        self._last_request_time = 0.0
+        self._last_request_time = 0.0  # 0 means "no previous request"
         self._just_had_429 = False
 
     @property
@@ -116,12 +116,15 @@ class RateLimiter:
 
     def get_delay(self) -> float:
         """Get the delay needed before next request (no side effects)."""
+        if self._last_request_time == 0:
+            return 0.0  # First request, no delay
+
         elapsed = time.time() - self._last_request_time
-        base_delay = max(self._delay - elapsed, 0.0)
 
         if self._just_had_429:
-            return max(base_delay, self._min_delay_after_429)
+            return self._min_delay_after_429
 
+        base_delay = max(self._delay - elapsed, 0.0)
         random_extra = random.uniform(0, 0.5) if base_delay > 0 else 0.0
         return base_delay + random_extra
 
