@@ -228,14 +228,15 @@ class ChatGPTIngestor(BaseIngestor):
                 await asyncio.sleep(delay)
 
             try:
+                req_start = datetime.now()
                 resp = await client.get(url, headers=headers)
-                request_time = datetime.now().strftime("%H:%M:%S")
+                req_duration = (datetime.now() - req_start).total_seconds()
                 self._message_limiter.update_request_time()
 
                 if resp.status_code == 429:
                     wait_time = self._message_limiter.record_429()
                     logger.warning(
-                        f"[{request_time}] Rate limited! 429 #{self._message_limiter.consecutive_429s}, fetched {total_fetched}, waiting {wait_time:.0f}s"
+                        f"Rate limited! 429 #{self._message_limiter.consecutive_429s}, fetched {total_fetched}, req {req_duration:.1f}s, waiting {wait_time:.0f}s"
                     )
                     await asyncio.sleep(wait_time)
                     continue
