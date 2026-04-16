@@ -7,6 +7,7 @@ Inspired by rust adaptive-backoff and AWS jitter algorithms.
 Features:
 - On 429: exponential backoff with configurable factor
 - On success: gradual decrease toward initial_delay
+- Full jitter (AWS recommended) to avoid thundering herd and detection
 - Configurable delays and caps
 - Generic enough to work with any web ingestor (httpx, playwright, etc.)
 """
@@ -29,6 +30,10 @@ class RateLimiter:
     - On failure (429): multiply delay by backoff_factor, accumulate fail_factor
     - On success: decrease delay toward initial_delay using success_factor
     - Delay converges smoothly to optimal rate
+
+    Uses "Full Jitter" for retries (AWS recommended) to avoid:
+    - Thundering herd (multiple clients retrying at same time)
+    - Detection as automated (predictable timing patterns)
     """
 
     def __init__(
@@ -36,7 +41,7 @@ class RateLimiter:
         initial_delay: float = 5.0,
         max_delay: float = 60.0,
         backoff_factor: float = 2.0,
-        jitter: float = 0.1,
+        jitter: float = 0.3,
     ):
         self._initial_delay = initial_delay
         self._max_delay = max_delay
@@ -60,16 +65,16 @@ class RateLimiter:
     def record_429(self) -> float:
         """Call after receiving a 429 rate limit response.
 
-        Returns the delay to wait before retrying (with optional jitter).
+        Returns the delay to wait before retrying (with full jitter).
         """
         self._consecutive_429s += 1
         self._fail_factor += 1.0
 
         self._delay = min(self._delay * self._backoff_factor, self._max_delay)
-        self._delay = self._add_jitter(self._delay)
+        wait_time = self._full_jitter(self._delay)
 
-        logger.warning(f"Rate limited! 429 #{self._consecutive_429s}, delay: {self._delay:.1f}s")
-        return self._delay
+        logger.warning(f"Rate limited! 429 #{self._consecutive_429s}, waiting: {wait_time:.1f}s")
+        return wait_time
 
     def record_success(self) -> None:
         """Call after a successful request."""
@@ -87,17 +92,33 @@ class RateLimiter:
             if self._success_factor % 5 < 1:
                 logger.debug(f"Delay decreased to {self._delay:.1f}s")
 
-    def _add_jitter(self, delay: float) -> float:
-        """Add jitter to avoid thundering herd."""
-        if self._jitter > 0:
-            jitter_range = delay * self._jitter
-            return delay + random.uniform(-jitter_range, jitter_range)
-        return delay
+    def _full_jitter(self, delay: float) -> float:
+        """Full jitter: random value between 0 and delay.
+
+        AWS recommends this over symmetric jitter because:
+        1. Reduces collision between retrying clients
+        2. Creates unpredictable timing patterns (harder to detect as bot)
+        """
+        if self._jitter <= 0:
+            return delay
+        return random.uniform(0, delay * self._jitter)
+
+    def _symmetric_jitter(self, delay: float) -> float:
+        """Symmetric jitter: delay ± jitter_range.
+
+        Less aggressive than full jitter.
+        """
+        if self._jitter <= 0:
+            return delay
+        jitter_range = delay * self._jitter
+        return delay + random.uniform(-jitter_range, jitter_range)
 
     def get_delay(self) -> float:
         """Get the delay needed before next request (no side effects)."""
         elapsed = time.time() - self._last_request_time
-        return max(self._delay - elapsed, 0.0)
+        base_delay = max(self._delay - elapsed, 0.0)
+        random_extra = random.uniform(0, 0.5) if base_delay > 0 else 0.0
+        return base_delay + random_extra
 
     async def wait(self) -> float:
         """Async wait for the required delay.
@@ -149,7 +170,10 @@ class RateLimiter:
 
                 if response.status_code == 429:
                     retry_after = response.headers.get("Retry-After")
-                    wait_time = float(retry_after) if retry_after else self.record_429()
+                    if retry_after:
+                        wait_time = float(retry_after)
+                    else:
+                        wait_time = self.record_429()
                     logger.info(f"Retrying in {wait_time:.1f}s...")
                     await asyncio.sleep(wait_time)
                     continue
@@ -169,17 +193,23 @@ class RateLimiter:
 class MessageRateLimiter(RateLimiter):
     """Rate limiter tuned for ChatGPT message fetching.
 
-    Defaults are conservative because ChatGPT has aggressive rate limits.
+    ChatGPT has aggressive rate limits that trigger after ~2 rapid requests.
+    Conservative defaults help avoid triggering limits.
+
+    Features:
+    - Higher initial_delay (5s) to avoid rapid-fire detection
+    - Higher jitter to avoid timing pattern detection
+    - Longer max_delay to handle long rate limit windows
     """
 
     def __init__(
         self,
         initial_delay: float = 5.0,
-        max_delay: float = 60.0,
+        max_delay: float = 120.0,
     ):
         super().__init__(
             initial_delay=initial_delay,
             max_delay=max_delay,
             backoff_factor=2.0,
-            jitter=0.1,
+            jitter=0.4,
         )

@@ -1461,11 +1461,11 @@ def test_message_rate_limiter_get_and_apply_delay():
     limiter.update_last_request_time()
 
     delay = limiter.get_and_apply_delay()
-    assert 1.9 <= delay <= 2.0
+    assert 1.9 <= delay <= 2.5  # May include random_extra
 
     time.sleep(1.95)
     delay = limiter.get_and_apply_delay()
-    assert 0.0 <= delay <= 0.1
+    assert 0.0 <= delay <= 0.6  # May include random_extra
 
 
 @pytest.mark.asyncio

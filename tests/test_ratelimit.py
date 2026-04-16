@@ -152,7 +152,7 @@ class TestRateLimiterTiming:
         limiter.update_last_request_time()
 
         delay = limiter.get_and_apply_delay()
-        assert 1.9 <= delay <= 2.0
+        assert 1.9 <= delay <= 2.5  # May include random_extra
 
     def test_no_delay_after_waiting(self):
         from llm_archive.ratelimit import RateLimiter
