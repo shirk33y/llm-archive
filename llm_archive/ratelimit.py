@@ -78,7 +78,6 @@ class RateLimiter:
         self._delay = min(self._delay * self._backoff_factor, self._max_delay)
         wait_time = self._full_jitter(self._delay)
 
-        logger.warning(f"Rate limited! 429 #{self._consecutive_429s}, waiting: {wait_time:.1f}s")
         return wait_time
 
     def record_success(self) -> None:
@@ -165,7 +164,6 @@ class RateLimiter:
                         wait_time = float(retry_after)
                     else:
                         wait_time = self.record_429()
-                    logger.info(f"Retrying in {wait_time:.1f}s...")
                     await asyncio.sleep(wait_time)
                     continue
 
