@@ -60,6 +60,15 @@ class ChatGPTIngestor(BaseIngestor):
         if not auth_path(self.source_id).exists() or kwargs.get("reauth"):
             await _login()
 
+    def _build_headers(self, token: str, cookies: dict[str, str]) -> dict[str, str]:
+        """Build request headers with browser-like headers."""
+        headers = dict(BROWSER_HEADERS)
+        headers["authorization"] = f"Bearer {token}"
+        headers["cookie"] = "; ".join(f"{k}={v}" for k, v in cookies.items())
+        if "oai-did" in cookies:
+            headers["oai-device-id"] = cookies["oai-did"]
+        return headers
+
     async def threads(
         self,
         since: int | None = None,
@@ -71,7 +80,8 @@ class ChatGPTIngestor(BaseIngestor):
         if existing_thread_ids is None:
             existing_thread_ids = set()
 
-        token = await self._get_token_via_cdp()
+        token, cookies = await self._get_token_via_cdp()
+        headers = self._build_headers(token, cookies)
 
         async with httpx.AsyncClient(timeout=60, headers=BROWSER_HEADERS) as client:
             offset = 0
@@ -81,7 +91,7 @@ class ChatGPTIngestor(BaseIngestor):
 
             while True:
                 # Fetch next chunk of conversations (no rate limit)
-                resp = await self._fetch_conversations(client, token, offset, limit)
+                resp = await self._fetch_conversations(client, headers, offset, limit)
 
                 data = resp.json()
                 items = data.get("items", [])
@@ -125,7 +135,7 @@ class ChatGPTIngestor(BaseIngestor):
                     thread = await self._fetch_thread(
                         client,
                         conv,
-                        token,
+                        headers,
                         on_conversation_progress=on_conversation_progress,
                         total_fetched=total_fetched,
                     )
@@ -141,10 +151,9 @@ class ChatGPTIngestor(BaseIngestor):
                     break
 
     async def _fetch_conversations(
-        self, client: httpx.AsyncClient, token: str, offset: int, limit: int
+        self, client: httpx.AsyncClient, headers: dict, offset: int, limit: int
     ) -> httpx.Response:
         """Fetch a page of conversations (not rate limited)."""
-        headers = {"authorization": f"Bearer {token}"}
         resp = await client.get(
             f"{API_BASE}/conversations",
             params={"offset": offset, "limit": limit},
@@ -159,8 +168,8 @@ class ChatGPTIngestor(BaseIngestor):
         resp.raise_for_status()
         return resp
 
-    async def _get_token_via_cdp(self) -> str:
-        """Get access token by connecting to Chrome via CDP and extracting from browser."""
+    async def _get_token_via_cdp(self) -> tuple[str, dict[str, str]]:
+        """Get access token and cookies by connecting to Chrome via CDP."""
         import urllib.request
         from playwright.async_api import async_playwright
 
@@ -195,6 +204,9 @@ class ChatGPTIngestor(BaseIngestor):
                 await browser.close()
                 raise RuntimeError("No ChatGPT page found")
 
+            cookies = await ctx.cookies()
+            cookie_dict = {c["name"]: c["value"] for c in cookies}
+
             result = await page.evaluate("""async () => {
                 const resp = await fetch('/api/auth/session', {credentials: 'include'});
                 if (resp.ok) {
@@ -209,7 +221,7 @@ class ChatGPTIngestor(BaseIngestor):
             if not result:
                 raise RuntimeError("Failed to get access token from ChatGPT")
 
-            return result
+            return result, cookie_dict
 
     async def _request_with_message_with_retry(
         self,
@@ -264,15 +276,13 @@ class ChatGPTIngestor(BaseIngestor):
         self,
         client: httpx.AsyncClient,
         conv: dict,
-        token: str,
+        headers: dict,
         on_conversation_progress=None,
         total_fetched: int = 0,
     ) -> IngestedThread | None:
         conv_id = conv.get("id")
         if not conv_id:
             return None
-
-        headers = {"authorization": f"Bearer {token}"}
 
         resp = await self._request_with_message_with_retry(
             client,
