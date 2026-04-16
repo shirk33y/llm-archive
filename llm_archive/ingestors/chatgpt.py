@@ -284,22 +284,29 @@ class ChatGPTIngestor(BaseIngestor):
                 if "chatgpt.com" not in page.url:
                     await page.goto(LOGIN_URL, wait_until="domcontentloaded")
 
+                logger.info("Waiting for login... Please login at chatgpt.com if needed")
+                for _ in range(300):
+                    try:
+                        result = await page.evaluate("""async () => {
+                            const resp = await fetch('/api/auth/session', {credentials: 'include'});
+                            if (resp.ok) {
+                                const data = await resp.json();
+                                return data.accessToken || null;
+                            }
+                            return null;
+                        }""")
+                        if result:
+                            break
+                    except Exception:
+                        pass
+                    await asyncio.sleep(1)
+                else:
+                    raise RuntimeError("Login timeout - please login at chatgpt.com")
+
                 cookies = await ctx.cookies()
                 cookie_dict = {c["name"]: c["value"] for c in cookies}
 
-                result = await page.evaluate("""async () => {
-                    const resp = await fetch('/api/auth/session', {credentials: 'include'});
-                    if (resp.ok) {
-                        const data = await resp.json();
-                        return data.accessToken || null;
-                    }
-                    return null;
-                }""")
-
                 await browser.close()
-
-                if not result:
-                    raise RuntimeError("Failed to get access token from ChatGPT")
 
                 return result, cookie_dict
         finally:
