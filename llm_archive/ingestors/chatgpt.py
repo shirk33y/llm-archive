@@ -1,5 +1,28 @@
+"""
+ChatGPT web ingestor.
+
+Authentication: Uses Chrome CDP to fetch fresh access_token from browser session.
+Headless browsers trigger Cloudflare CAPTCHA, so we connect to an existing Chrome
+instance via remote debugging port (9333 by default, 9222 is used by Windsurf).
+
+Important: Chrome flatpak ignores CDP flags when using the default profile.
+For flatpak Chrome, use an isolated temp profile:
+    flatpak run com.google.Chrome --remote-debugging-port=9333 --user-dir=/tmp/chatgpt-chrome
+
+Rate limiting: The /conversation/{id} endpoint triggers 429 after ~2 rapid requests.
+We use a simple adaptive delay:
+- Initial delay: 3 seconds between message requests
+- On 429: double the delay (max 60s)
+- On 10 consecutive successes: decrease delay by 0.1s (min 2.5s)
+- Conversations list is not rate limited.
+
+API: Uses Bearer token auth from /api/auth/session, not cookie-based auth
+(which returns 403).
+"""
+
 from __future__ import annotations
 import asyncio
+import time
 from datetime import datetime
 from typing import AsyncIterator
 
@@ -13,7 +36,6 @@ logger = get_logger("chatgpt")
 
 LOGIN_URL = "https://chatgpt.com"
 API_BASE = "https://chatgpt.com/backend-api"
-RATE_LIMIT_DELAY = 1.0
 
 BROWSER_HEADERS = {
     "user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
@@ -22,8 +44,77 @@ BROWSER_HEADERS = {
 }
 
 
+class MessageRateLimiter:
+    """Simple rate limiter for message requests only.
+
+    Tracks consecutive successes/failures to adapt delay.
+    Does NOT track conversation requests (not rate limited).
+    """
+
+    def __init__(
+        self,
+        initial_delay: float = 5.0,
+        min_delay: float = 4.0,
+        max_delay: float = 60.0,
+    ):
+        self._delay = initial_delay
+        self._min_delay = min_delay
+        self._max_delay = max_delay
+        self._consecutive_successes = 0
+        self._consecutive_429s = 0
+        self._last_request_time = 0.0
+
+    @property
+    def current_delay(self) -> float:
+        return self._delay
+
+    def record_success(self) -> None:
+        """Record a successful message request."""
+        self._consecutive_successes += 1
+        self._consecutive_429s = 0
+
+        # Decrease delay slowly if we're doing well
+        if self._consecutive_successes >= 10:
+            self._delay = max(self._delay - 0.1, self._min_delay)
+            self._consecutive_successes = 0
+            logger.info(f"Message delay decreased to {self._delay:.1f}s")
+
+    def record_429(self) -> None:
+        """Record a 429 rate limit error."""
+        self._consecutive_429s += 1
+        self._consecutive_successes = 0
+
+        # Double delay on 429
+        old_delay = self._delay
+        self._delay = min(self._delay * 2, self._max_delay)
+
+        logger.warning(
+            f"Rate limited! 429 #{self._consecutive_429s}, "
+            f"delay: {old_delay:.1f}s -> {self._delay:.1f}s"
+        )
+
+    def get_and_apply_delay(self) -> float:
+        """Calculate and apply the delay since last request."""
+        now = time.time()
+        elapsed = now - self._last_request_time
+
+        if elapsed < self._delay:
+            wait_time = self._delay - elapsed
+            logger.debug(f"Message rate limit: waiting {wait_time:.1f}s")
+            return wait_time
+
+        return 0.0
+
+    def update_last_request_time(self) -> None:
+        """Update the timestamp of the last request."""
+        self._last_request_time = time.time()
+
+
 class ChatGPTIngestor(BaseIngestor):
     source_id = "chatgpt"
+
+    def __init__(self):
+        self._message_limiter = MessageRateLimiter()
 
     async def requires_auth(self) -> bool:
         return True
@@ -34,130 +125,238 @@ class ChatGPTIngestor(BaseIngestor):
         if not auth_path(self.source_id).exists() or kwargs.get("reauth"):
             await _login()
 
-    async def _get_cookies(self) -> dict[str, str]:
-        from llm_archive.auth.playwright import auth_path
-
-        path = auth_path(self.source_id)
-        if not path.exists():
-            raise FileNotFoundError(
-                "No auth found for 'chatgpt'. Run `llm-archive init chatgpt` first."
-            )
-
-        import json
-
-        state = json.loads(path.read_text())
-        cookies = {c["name"]: c["value"] for c in state.get("cookies", [])}
-        return cookies
-
     async def threads(
-        self, since: int | None = None, existing_thread_ids: set[str] | None = None, on_total=None
+        self,
+        since: int | None = None,
+        existing_thread_ids: set[str] | None = None,
+        on_total=None,
+        on_conversation_progress=None,
+        store_thread=None,
     ) -> AsyncIterator[IngestedThread]:
         if existing_thread_ids is None:
             existing_thread_ids = set()
 
-        cookies = await self._get_cookies()
-        client = httpx.AsyncClient(timeout=30, cookies=cookies, headers=BROWSER_HEADERS)
+        token = await self._get_token_via_cdp()
 
-        try:
-            all_conversations = await self._fetch_conversations(client)
-        except PermissionError:
-            await client.aclose()
-            await self._reauth()
-            cookies = await self._get_cookies()
-            client = httpx.AsyncClient(timeout=30, cookies=cookies, headers=BROWSER_HEADERS)
-            all_conversations = await self._fetch_conversations(client)
+        async with httpx.AsyncClient(timeout=60, headers=BROWSER_HEADERS) as client:
+            offset = 0
+            limit = 100
+            total_estimate = None
 
-        try:
-            if on_total:
-                on_total(len(all_conversations))
+            while True:
+                # Fetch next chunk of conversations (no rate limit)
+                resp = await self._fetch_conversations(client, token, offset, limit)
 
-            for conv in all_conversations:
-                conv_id = conv.get("id")
-                if not conv_id:
-                    continue
-                thread_id = f"chatgpt:{conv_id}"
-                updated_at = _parse_timestamp(conv.get("update_time") or conv.get("create_time"))
+                data = resp.json()
+                items = data.get("items", [])
 
-                if thread_id in existing_thread_ids:
-                    if isinstance(existing_thread_ids, dict):
-                        db_updated_at = existing_thread_ids.get(thread_id)
-                        if db_updated_at and db_updated_at >= updated_at:
-                            continue
-                        logger.info(f"Conversation {conv_id} was updated, re-fetching")
+                if not items:
+                    break
+
+                if total_estimate is None:
+                    remaining = data.get("remaining")
+                    if remaining is not None:
+                        total_estimate = offset + len(items) + remaining
                     else:
+                        total_estimate = offset + len(items) + (len(items) * 2)
+                    if on_total:
+                        on_total(total_estimate)
+
+                logger.info(f"Processing conversations {offset + 1}-{offset + len(items)}")
+
+                # Process each conversation in this chunk
+                for conv in items:
+                    conv_id = conv.get("id")
+                    if not conv_id:
+                        continue
+                    thread_id = f"chatgpt:{conv_id}"
+                    updated_at = _parse_timestamp(
+                        conv.get("update_time") or conv.get("create_time")
+                    )
+
+                    if thread_id in existing_thread_ids:
+                        if isinstance(existing_thread_ids, dict):
+                            db_updated_at = existing_thread_ids.get(thread_id)
+                            if db_updated_at and db_updated_at >= updated_at:
+                                continue
+                            logger.info(f"Conversation {conv_id} was updated, re-fetching")
+                        else:
+                            continue
+
+                    if since and updated_at and updated_at < since:
                         continue
 
-                if since and updated_at and updated_at < since:
+                    thread = await self._fetch_thread(
+                        client, conv, token, on_conversation_progress=on_conversation_progress
+                    )
+                    if thread:
+                        if store_thread:
+                            store_thread(thread)
+                        yield thread
+
+                offset += len(items)
+
+                if len(items) < limit:
+                    break
+
+    async def _fetch_conversations(
+        self, client: httpx.AsyncClient, token: str, offset: int, limit: int
+    ) -> httpx.Response:
+        """Fetch a page of conversations (not rate limited)."""
+        headers = {"authorization": f"Bearer {token}"}
+        resp = await client.get(
+            f"{API_BASE}/conversations",
+            params={"offset": offset, "limit": limit},
+            headers=headers,
+        )
+
+        if resp.status_code == 401:
+            raise PermissionError("401 - re-auth required")
+        if resp.status_code == 403:
+            raise PermissionError("403 - re-auth required")
+
+        resp.raise_for_status()
+        return resp
+
+    async def _get_token_via_cdp(self) -> str:
+        """Get access token by connecting to Chrome via CDP and extracting from browser."""
+        import urllib.request
+        from playwright.async_api import async_playwright
+
+        cdp_port = None
+        for port in [9333, 9444, 9555]:
+            try:
+                resp = urllib.request.urlopen(f"http://localhost:{port}/json/version", timeout=1)
+                if resp.status == 200:
+                    cdp_port = port
+                    break
+            except Exception:
+                continue
+
+        if not cdp_port:
+            raise RuntimeError(
+                "Chrome with CDP not found. Run Chrome with --remote-debugging-port=9333"
+            )
+
+        async with async_playwright() as p:
+            browser = await p.chromium.connect_over_cdp(f"http://localhost:{cdp_port}")
+            ctx = browser.contexts[0]
+
+            page = None
+            for pg in ctx.pages:
+                if "chatgpt.com" in pg.url:
+                    page = pg
+                    break
+            if not page and ctx.pages:
+                page = ctx.pages[0]
+
+            if not page:
+                await browser.close()
+                raise RuntimeError("No ChatGPT page found")
+
+            result = await page.evaluate("""async () => {
+                const resp = await fetch('/api/auth/session', {credentials: 'include'});
+                if (resp.ok) {
+                    const data = await resp.json();
+                    return data.accessToken || null;
+                }
+                return null;
+            }""")
+
+            await browser.close()
+
+            if not result:
+                raise RuntimeError("Failed to get access token from ChatGPT")
+
+            return result
+
+    async def _request_with_message_with_retry(
+        self,
+        client: httpx.AsyncClient,
+        url: str,
+        headers: dict | None = None,
+    ) -> httpx.Response:
+        """Fetch a message thread with rate limiting and retry."""
+        max_retries = 10
+
+        for attempt in range(max_retries):
+            # Apply rate limit delay before request
+            delay = self._message_limiter.get_and_apply_delay()
+            if delay > 0:
+                await asyncio.sleep(delay)
+
+            try:
+                resp = await client.get(url, headers=headers)
+                self._message_limiter.update_last_request_time()
+
+                if resp.status_code == 429:
+                    self._message_limiter.record_429()
+                    # Wait using our adaptive delay
+                    wait_time = self._message_limiter.current_delay
+                    logger.warning(f"Rate limited, waiting {wait_time:.0f}s...")
+                    await asyncio.sleep(wait_time)
                     continue
 
-                thread = await self._fetch_thread(client, conv)
-                if thread:
-                    yield thread
-        finally:
-            await client.aclose()
+                if resp.status_code >= 500:
+                    logger.warning(f"Server error {resp.status_code}, retrying in 5s...")
+                    await asyncio.sleep(5)
+                    continue
 
-    async def _fetch_conversations(self, client: httpx.AsyncClient) -> list[dict]:
-        all_conversations: list[dict] = []
-        offset = 0
-        limit = 100
+                if resp.status_code == 401 or resp.status_code == 403:
+                    raise PermissionError(f"{resp.status_code} - re-auth required")
 
-        while True:
-            resp = await client.get(
-                f"{API_BASE}/conversations", params={"offset": offset, "limit": limit}
-            )
-            if resp.status_code == 401:
-                raise PermissionError("401 - re-auth required")
-            if resp.status_code == 403:
-                raise PermissionError("403 - access denied")
-            resp.raise_for_status()
+                # Success
+                self._message_limiter.record_success()
+                return resp
 
-            data = resp.json()
-            items = data.get("items", [])
-            total = data.get("total", 0)
+            except (httpx.ConnectError, httpx.TimeoutException, OSError) as e:
+                logger.warning(f"Network error: {e}. Retrying in 5s...")
+                await asyncio.sleep(5)
+                continue
 
-            if not items:
-                break
+        raise RuntimeError(f"Failed to fetch {url} after {max_retries} retries")
 
-            all_conversations.extend(items)
-            offset += len(items)
-
-            if offset >= total:
-                break
-
-            await asyncio.sleep(RATE_LIMIT_DELAY)
-
-        all_conversations.sort(
-            key=lambda c: _parse_timestamp(c.get("update_time") or c.get("create_time")) or 0,
-            reverse=True,
-        )
-        return all_conversations
-
-    async def _fetch_thread(self, client: httpx.AsyncClient, conv: dict) -> IngestedThread | None:
+    async def _fetch_thread(
+        self, client: httpx.AsyncClient, conv: dict, token: str, on_conversation_progress=None
+    ) -> IngestedThread | None:
         conv_id = conv.get("id")
         if not conv_id:
             return None
 
-        resp = await client.get(f"{API_BASE}/conversation/{conv_id}")
-        if resp.status_code == 401:
-            raise PermissionError("401 - re-auth required")
-        if not resp.is_success:
-            return None
+        headers = {"authorization": f"Bearer {token}"}
+
+        resp = await self._request_with_message_with_retry(
+            client, f"{API_BASE}/conversation/{conv_id}", headers=headers
+        )
 
         data = resp.json()
         thread_id = f"chatgpt:{conv_id}"
         messages: list[IngestedMessage] = []
 
-        for node_id, node in data.get("mapping", {}).items():
+        mapping = data.get("mapping", {})
+        total_nodes = len(mapping)
+        processed = 0
+
+        for node_id, node in mapping.items():
             msg = node.get("message")
             if not msg:
+                processed += 1
+                if on_conversation_progress and total_nodes > 50:
+                    on_conversation_progress(processed, total_nodes)
                 continue
 
             role = msg.get("author", {}).get("role", "")
             if role not in ("user", "assistant"):
+                processed += 1
+                if on_conversation_progress and total_nodes > 50:
+                    on_conversation_progress(processed, total_nodes)
                 continue
 
             content = _extract_message_text(msg)
             if not content.strip():
+                processed += 1
+                if on_conversation_progress and total_nodes > 50:
+                    on_conversation_progress(processed, total_nodes)
                 continue
 
             ts = _parse_timestamp(msg.get("create_time"))
@@ -191,11 +390,6 @@ class ChatGPTIngestor(BaseIngestor):
             messages=messages,
         )
 
-    async def _reauth(self) -> None:
-        logger.warning("Session expired, re-authenticating")
-        await _login()
-        self._token = None
-
 
 async def _login() -> None:
     from llm_archive.auth.playwright import AUTH_DIR, auth_path, login_with_detection
@@ -204,16 +398,15 @@ async def _login() -> None:
     out = auth_path("chatgpt")
 
     async def detect_login(ctx, page):
-        """Detect ChatGPT login by checking for access token or cookies."""
+        """Detect ChatGPT login by checking for access token."""
         for i in range(300):
             url = page.url
             if "login" in url.lower():
                 if i % 10 == 0:
-                    logger.info(f"Still on login page: {url}")
+                    logger.info("Still on login page...")
                 await asyncio.sleep(1)
                 continue
 
-            # Check cookies for auth evidence
             cookies = await ctx.cookies()
             cookie_names = {c["name"] for c in cookies}
             auth_cookies = cookie_names & {
@@ -226,22 +419,21 @@ async def _login() -> None:
                 logger.info(f"Login detected via cookies: {auth_cookies}")
                 return True
 
-            # Check for access token via API
             try:
                 result = await page.evaluate("""async () => {
                     try {
                         const resp = await fetch('/api/auth/session', {credentials: 'include'});
                         const data = await resp.json();
-                        return {ok: resp.ok, status: resp.status, hasToken: !!data.accessToken, token: data.accessToken ? data.accessToken.substring(0, 20) + '...' : null};
+                        return {ok: resp.ok, hasToken: !!data.accessToken};
                     } catch(e) {
                         return {ok: false, error: e.message};
                     }
                 }""")
                 if result.get("hasToken"):
-                    logger.info(f"Login detected! Token: {result.get('token')}")
+                    logger.info("Login detected!")
                     return True
                 if i % 10 == 0:
-                    logger.info(f"Checking login... URL: {url[:60]}, resp: {result}")
+                    logger.info(f"Checking login... URL: {url[:60]}")
             except Exception as e:
                 if i % 10 == 0:
                     logger.info(f"Error: {e}")

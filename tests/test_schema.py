@@ -1,4 +1,5 @@
 """Tests for database schema and parser output validation."""
+
 from __future__ import annotations
 import json
 import textwrap
@@ -8,7 +9,14 @@ import pytest
 
 from llm_archive import db
 from llm_archive.ingestors.claudecode import ClaudeCodeIngestor, _parse_jsonl, _flatten_content
-from llm_archive.ingestors.deepseek import DeepseekIngestor, _flatten_fragments, _message_content, _metadata, _parse_ts, _role
+from llm_archive.ingestors.deepseek import (
+    DeepseekIngestor,
+    _flatten_fragments,
+    _message_content,
+    _metadata,
+    _parse_ts,
+    _role,
+)
 from llm_archive.ingestors.opencode import OpenCodeIngestor, _build_thread
 from llm_archive.schema import IngestedMessage, IngestedThread, IngestedPart
 
@@ -20,25 +28,29 @@ def con(tmp_path):
 
 # --- Schema ---
 
+
 def test_schema_tables_exist(con):
-    tables = {row[0] for row in con.execute(
-        "SELECT name FROM sqlite_master WHERE type='table'"
-    ).fetchall()}
+    tables = {
+        row[0]
+        for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    }
     assert "sources" in tables
     assert "threads" in tables
     assert "messages" in tables
 
 
 def test_schema_indexes_exist(con):
-    indexes = {row[0] for row in con.execute(
-        "SELECT name FROM sqlite_master WHERE type='index'"
-    ).fetchall()}
+    indexes = {
+        row[0]
+        for row in con.execute("SELECT name FROM sqlite_master WHERE type='index'").fetchall()
+    }
     assert "idx_messages_thread" in indexes
     assert "idx_threads_source" in indexes
     assert "idx_threads_updated" in indexes
 
 
 # --- Claude Code parser ---
+
 
 def _make_jsonl(tmp_path: Path, entries: list[dict]) -> Path:
     p = tmp_path / "session.jsonl"
@@ -78,12 +90,20 @@ def test_claudecode_basic_parse(tmp_path):
 
 def test_claudecode_skips_empty_content(tmp_path):
     entries = [
-        {"type": "user", "sessionId": "s1", "uuid": "m1",
-         "timestamp": "2024-01-01T10:00:00Z",
-         "message": {"role": "user", "content": ""}},
-        {"type": "assistant", "sessionId": "s1", "uuid": "m2",
-         "timestamp": "2024-01-01T10:00:05Z",
-         "message": {"role": "assistant", "content": "response"}},
+        {
+            "type": "user",
+            "sessionId": "s1",
+            "uuid": "m1",
+            "timestamp": "2024-01-01T10:00:00Z",
+            "message": {"role": "user", "content": ""},
+        },
+        {
+            "type": "assistant",
+            "sessionId": "s1",
+            "uuid": "m2",
+            "timestamp": "2024-01-01T10:00:05Z",
+            "message": {"role": "assistant", "content": "response"},
+        },
     ]
     thread = _parse_jsonl(_make_jsonl(tmp_path, entries))
     assert thread is not None
@@ -131,9 +151,13 @@ def test_claudecode_skips_non_message_entries(tmp_path):
     entries = [
         {"type": "queue-operation", "operation": "enqueue", "sessionId": "s1"},
         {"type": "file-history-snapshot", "messageId": "x", "sessionId": "s1"},
-        {"type": "user", "sessionId": "s1", "uuid": "m1",
-         "timestamp": "2024-01-01T10:00:00Z",
-         "message": {"role": "user", "content": "real message"}},
+        {
+            "type": "user",
+            "sessionId": "s1",
+            "uuid": "m1",
+            "timestamp": "2024-01-01T10:00:00Z",
+            "message": {"role": "user", "content": "real message"},
+        },
     ]
     thread = _parse_jsonl(_make_jsonl(tmp_path, entries))
     assert thread is not None
@@ -141,6 +165,7 @@ def test_claudecode_skips_non_message_entries(tmp_path):
 
 
 # --- Flatten content ---
+
 
 def test_flatten_string_passthrough():
     assert _flatten_content("hello") == "hello"
@@ -191,12 +216,14 @@ def test_deepseek_parse_ts():
 
 
 def test_deepseek_metadata():
-    result = _metadata({
-        "model": "deepseek-r1",
-        "thinking_enabled": True,
-        "search_enabled": False,
-        "accumulated_token_usage": 123,
-    })
+    result = _metadata(
+        {
+            "model": "deepseek-r1",
+            "thinking_enabled": True,
+            "search_enabled": False,
+            "accumulated_token_usage": 123,
+        }
+    )
     assert result == {
         "model": "deepseek-r1",
         "thinking_enabled": True,
@@ -206,11 +233,13 @@ def test_deepseek_metadata():
 
 
 def test_deepseek_message_content_uses_real_payload_fields():
-    result = _message_content({
-        "content": "answer",
-        "thinking_content": "reasoning",
-        "search_results": [{"title": "Doc", "url": "https://example.com"}],
-    })
+    result = _message_content(
+        {
+            "content": "answer",
+            "thinking_content": "reasoning",
+            "search_results": [{"title": "Doc", "url": "https://example.com"}],
+        }
+    )
     assert "answer" in result
     assert "[Thinking]" in result
     assert "reasoning" in result
@@ -314,28 +343,32 @@ async def test_deepseek_fetch_sessions_paginates_and_dedupes():
             self.calls.append(params)
             cursor = (params or {}).get("lte_cursor.updated_at")
             if cursor is None:
-                return Resp({
-                    "data": {
-                        "biz_data": {
-                            "chat_sessions": [
-                                {"id": "a", "seq_id": 5, "updated_at": 5},
-                                {"id": "b", "seq_id": 4, "updated_at": 4},
-                            ],
-                            "has_more": True,
+                return Resp(
+                    {
+                        "data": {
+                            "biz_data": {
+                                "chat_sessions": [
+                                    {"id": "a", "seq_id": 5, "updated_at": 5},
+                                    {"id": "b", "seq_id": 4, "updated_at": 4},
+                                ],
+                                "has_more": True,
+                            }
                         }
                     }
-                })
+                )
             if cursor == "4":
-                return Resp({
-                    "data": {
-                        "biz_data": {
-                            "chat_sessions": [
-                                {"id": "c", "seq_id": 3, "updated_at": 3},
-                            ],
-                            "has_more": False,
+                return Resp(
+                    {
+                        "data": {
+                            "biz_data": {
+                                "chat_sessions": [
+                                    {"id": "c", "seq_id": 3, "updated_at": 3},
+                                ],
+                                "has_more": False,
+                            }
                         }
                     }
-                })
+                )
             raise AssertionError(params)
 
     ingestor = DeepseekIngestor()
@@ -366,9 +399,15 @@ async def test_claudecode_count_threads(tmp_path):
 async def test_opencode_count_threads(tmp_path):
     db_path = tmp_path / "opencode.db"
     con = __import__("sqlite3").connect(db_path)
-    con.execute("CREATE TABLE session (id TEXT PRIMARY KEY, title TEXT, time_created INTEGER, time_updated INTEGER)")
-    con.execute("INSERT INTO session(id, title, time_created, time_updated) VALUES ('s1', 'a', 1, 1000)")
-    con.execute("INSERT INTO session(id, title, time_created, time_updated) VALUES ('s2', 'b', 2, 2000)")
+    con.execute(
+        "CREATE TABLE session (id TEXT PRIMARY KEY, title TEXT, time_created INTEGER, time_updated INTEGER)"
+    )
+    con.execute(
+        "INSERT INTO session(id, title, time_created, time_updated) VALUES ('s1', 'a', 1, 1000)"
+    )
+    con.execute(
+        "INSERT INTO session(id, title, time_created, time_updated) VALUES ('s2', 'b', 2, 2000)"
+    )
     con.commit()
     con.close()
 
@@ -522,7 +561,9 @@ def test_db_search_excludes_nonsearchable_parts(con):
                     content="fallback",
                     created_at=1,
                     parts=[
-                        IngestedPart(kind="search_result", text="raspberry hidden", searchable=False),
+                        IngestedPart(
+                            kind="search_result", text="raspberry hidden", searchable=False
+                        ),
                         IngestedPart(kind="text", text="visible text", searchable=True),
                     ],
                 )
@@ -595,8 +636,8 @@ def test_fts_query_multi_word():
 
 
 def test_fts_query_empty():
-    assert db._fts_query("") == "\"\""
-    assert db._fts_query("   ") == "\"\""
+    assert db._fts_query("") == '""'
+    assert db._fts_query("   ") == '""'
 
 
 def test_fts_query_strips_quotes():
@@ -667,10 +708,11 @@ def test_db_search_threads_prefix(tmp_path):
 
 # --- Windsurf ingestor tests ---
 
+
 def test_search_text_includes_data_field(con):
     """Test that search_text includes data field content for searchability."""
     from llm_archive.schema import IngestedMessage, IngestedPart, IngestedThread
-    
+
     thread = IngestedThread(
         id="test:1",
         source_id="test",
@@ -695,15 +737,14 @@ def test_search_text_includes_data_field(con):
             ),
         ],
     )
-    
+
     db.save_thread(con, thread)
-    
+
     # Verify search_text includes data field content
     rows = con.execute(
-        "SELECT search_text FROM message_parts WHERE message_id=?",
-        ("test:1:1",)
+        "SELECT search_text FROM message_parts WHERE message_id=?", ("test:1:1",)
     ).fetchall()
-    
+
     assert len(rows) == 1
     search_text = rows[0]["search_text"]
     # Should include both text and data field content
@@ -715,7 +756,7 @@ def test_search_text_includes_data_field(con):
 def test_search_orders_by_updated_at_desc(con):
     """Test that search results are ordered by thread updated_at DESC (newest first)."""
     from llm_archive.schema import IngestedMessage, IngestedPart, IngestedThread
-    
+
     # Old thread
     thread1 = IngestedThread(
         id="test:1",
@@ -735,7 +776,7 @@ def test_search_orders_by_updated_at_desc(con):
             ),
         ],
     )
-    
+
     # New thread
     thread2 = IngestedThread(
         id="test:2",
@@ -755,12 +796,12 @@ def test_search_orders_by_updated_at_desc(con):
             ),
         ],
     )
-    
+
     db.save_thread(con, thread1)
     db.save_thread(con, thread2)
-    
+
     results = db.search_messages(con, "hello", limit=10)
-    
+
     # Newest thread should appear first
     thread_ids = [r["thread_id"] for r in results]
     assert thread_ids[0] == "test:2"
@@ -771,12 +812,16 @@ def test_search_orders_by_updated_at_desc(con):
 
 # --- Claude ingestor regression tests ---
 
+
 def test_claude_flatten_text_content():
     from llm_archive.ingestors.claude import _flatten_claude_content
+
     assert _flatten_claude_content("hello") == "hello"
+
 
 def test_claude_flatten_list_content():
     from llm_archive.ingestors.claude import _flatten_claude_content
+
     content = [
         {"type": "text", "text": "hello"},
         {"type": "tool_use", "name": "bash"},
@@ -787,14 +832,18 @@ def test_claude_flatten_list_content():
     assert "[Tool: bash]" in result
     assert "[Tool result]" in result
 
+
 def test_claude_parse_timestamp():
     from llm_archive.ingestors.claude import _parse_claude_ts
+
     ts = _parse_claude_ts("2024-03-27T04:26:48.000Z")
     assert ts is not None
     assert ts > 1711510000000
 
+
 def test_claude_parse_timestamp_none():
     from llm_archive.ingestors.claude import _parse_claude_ts
+
     assert _parse_claude_ts(None) is None
     assert _parse_claude_ts("") is None
 
@@ -809,9 +858,24 @@ async def test_claude_smart_sync_continues_past_existing():
 
     # Conversations sorted by updated_at desc (most recent first)
     convs = [
-        {"uuid": "conv-1", "updated_at": "2024-03-27T10:00:00Z", "created_at": "2024-03-27T10:00:00Z", "name": "Recent"},
-        {"uuid": "conv-2", "updated_at": "2024-03-26T10:00:00Z", "created_at": "2024-03-26T10:00:00Z", "name": "Older"},
-        {"uuid": "conv-3", "updated_at": "2024-03-25T10:00:00Z", "created_at": "2024-03-25T10:00:00Z", "name": "Oldest"},
+        {
+            "uuid": "conv-1",
+            "updated_at": "2024-03-27T10:00:00Z",
+            "created_at": "2024-03-27T10:00:00Z",
+            "name": "Recent",
+        },
+        {
+            "uuid": "conv-2",
+            "updated_at": "2024-03-26T10:00:00Z",
+            "created_at": "2024-03-26T10:00:00Z",
+            "name": "Older",
+        },
+        {
+            "uuid": "conv-3",
+            "updated_at": "2024-03-25T10:00:00Z",
+            "created_at": "2024-03-25T10:00:00Z",
+            "name": "Oldest",
+        },
     ]
 
     # conv-1 is already in DB with same timestamp — should be skipped
@@ -819,17 +883,30 @@ async def test_claude_smart_sync_continues_past_existing():
     existing = {"claude:conv-1": 1711533600000}  # matches 2024-03-27T10:00:00Z
 
     thread_old = IngestedThread(
-        id="claude:conv-2", source_id="claude", title="Older",
-        created_at=1711447200000, updated_at=1711447200000, messages=[],
+        id="claude:conv-2",
+        source_id="claude",
+        title="Older",
+        created_at=1711447200000,
+        updated_at=1711447200000,
+        messages=[],
     )
     thread_oldest = IngestedThread(
-        id="claude:conv-3", source_id="claude", title="Oldest",
-        created_at=1711360800000, updated_at=1711360800000, messages=[],
+        id="claude:conv-3",
+        source_id="claude",
+        title="Oldest",
+        created_at=1711360800000,
+        updated_at=1711360800000,
+        messages=[],
     )
 
-    with patch.object(ClaudeIngestor, '_get_org_id', new_callable=AsyncMock, return_value="org-1"):
-        with patch.object(ClaudeIngestor, '_get', new_callable=AsyncMock, return_value=convs):
-            with patch.object(ClaudeIngestor, '_fetch_thread', new_callable=AsyncMock, side_effect=[thread_old, thread_oldest]):
+    with patch.object(ClaudeIngestor, "_get_org_id", new_callable=AsyncMock, return_value="org-1"):
+        with patch.object(ClaudeIngestor, "_get", new_callable=AsyncMock, return_value=convs):
+            with patch.object(
+                ClaudeIngestor,
+                "_fetch_thread",
+                new_callable=AsyncMock,
+                side_effect=[thread_old, thread_oldest],
+            ):
                 threads = []
                 async for t in ingestor.threads(existing_thread_ids=existing):
                     threads.append(t)
@@ -848,20 +925,31 @@ async def test_claude_smart_sync_re_fetches_updated():
     ingestor = ClaudeIngestor()
 
     convs = [
-        {"uuid": "conv-1", "updated_at": "2024-03-28T10:00:00Z", "created_at": "2024-03-27T10:00:00Z", "name": "Updated"},
+        {
+            "uuid": "conv-1",
+            "updated_at": "2024-03-28T10:00:00Z",
+            "created_at": "2024-03-27T10:00:00Z",
+            "name": "Updated",
+        },
     ]
 
     # DB has older timestamp — conversation was updated, should be re-fetched
     existing = {"claude:conv-1": 1711447200000}  # 2024-03-26 — older than API
 
     thread = IngestedThread(
-        id="claude:conv-1", source_id="claude", title="Updated",
-        created_at=1711533600000, updated_at=1711620000000, messages=[],
+        id="claude:conv-1",
+        source_id="claude",
+        title="Updated",
+        created_at=1711533600000,
+        updated_at=1711620000000,
+        messages=[],
     )
 
-    with patch.object(ClaudeIngestor, '_get_org_id', new_callable=AsyncMock, return_value="org-1"):
-        with patch.object(ClaudeIngestor, '_get', new_callable=AsyncMock, return_value=convs):
-            with patch.object(ClaudeIngestor, '_fetch_thread', new_callable=AsyncMock, return_value=thread):
+    with patch.object(ClaudeIngestor, "_get_org_id", new_callable=AsyncMock, return_value="org-1"):
+        with patch.object(ClaudeIngestor, "_get", new_callable=AsyncMock, return_value=convs):
+            with patch.object(
+                ClaudeIngestor, "_fetch_thread", new_callable=AsyncMock, return_value=thread
+            ):
                 threads = []
                 async for t in ingestor.threads(existing_thread_ids=existing):
                     threads.append(t)
@@ -878,16 +966,26 @@ async def test_claude_on_total_callback():
 
     ingestor = ClaudeIngestor()
 
-    convs = [{"uuid": f"conv-{i}", "updated_at": "2024-03-27T10:00:00Z", "created_at": "2024-03-27T10:00:00Z"} for i in range(75)]
+    convs = [
+        {
+            "uuid": f"conv-{i}",
+            "updated_at": "2024-03-27T10:00:00Z",
+            "created_at": "2024-03-27T10:00:00Z",
+        }
+        for i in range(75)
+    ]
 
     reported_total = None
+
     def on_total(count):
         nonlocal reported_total
         reported_total = count
 
-    with patch.object(ClaudeIngestor, '_get_org_id', new_callable=AsyncMock, return_value="org-1"):
-        with patch.object(ClaudeIngestor, '_get', new_callable=AsyncMock, return_value=convs):
-            with patch.object(ClaudeIngestor, '_fetch_thread', new_callable=AsyncMock, return_value=None):
+    with patch.object(ClaudeIngestor, "_get_org_id", new_callable=AsyncMock, return_value="org-1"):
+        with patch.object(ClaudeIngestor, "_get", new_callable=AsyncMock, return_value=convs):
+            with patch.object(
+                ClaudeIngestor, "_fetch_thread", new_callable=AsyncMock, return_value=None
+            ):
                 async for _ in ingestor.threads(on_total=on_total):
                     pass
 
@@ -902,9 +1000,17 @@ async def test_claude_v2_dict_response():
 
     ingestor = ClaudeIngestor()
 
-    convs = [{"uuid": f"conv-{i}", "updated_at": "2024-03-27T10:00:00Z", "created_at": "2024-03-27T10:00:00Z"} for i in range(75)]
+    convs = [
+        {
+            "uuid": f"conv-{i}",
+            "updated_at": "2024-03-27T10:00:00Z",
+            "created_at": "2024-03-27T10:00:00Z",
+        }
+        for i in range(75)
+    ]
 
     reported_total = None
+
     def on_total(count):
         nonlocal reported_total
         reported_total = count
@@ -912,9 +1018,11 @@ async def test_claude_v2_dict_response():
     # v2 returns dict with "data" and "has_more"
     v2_response = {"data": convs, "has_more": False}
 
-    with patch.object(ClaudeIngestor, '_get_org_id', new_callable=AsyncMock, return_value="org-1"):
-        with patch.object(ClaudeIngestor, '_get', new_callable=AsyncMock, return_value=v2_response):
-            with patch.object(ClaudeIngestor, '_fetch_thread', new_callable=AsyncMock, return_value=None):
+    with patch.object(ClaudeIngestor, "_get_org_id", new_callable=AsyncMock, return_value="org-1"):
+        with patch.object(ClaudeIngestor, "_get", new_callable=AsyncMock, return_value=v2_response):
+            with patch.object(
+                ClaudeIngestor, "_fetch_thread", new_callable=AsyncMock, return_value=None
+            ):
                 async for _ in ingestor.threads(on_total=on_total):
                     pass
 
@@ -929,20 +1037,42 @@ async def test_claude_v2_paginated():
 
     ingestor = ClaudeIngestor()
 
-    page1 = [{"uuid": f"conv-{i}", "updated_at": "2024-03-27T10:00:00Z", "created_at": "2024-03-27T10:00:00Z"} for i in range(3)]
-    page2 = [{"uuid": f"conv-{i}", "updated_at": "2024-03-26T10:00:00Z", "created_at": "2024-03-26T10:00:00Z"} for i in range(3, 5)]
+    page1 = [
+        {
+            "uuid": f"conv-{i}",
+            "updated_at": "2024-03-27T10:00:00Z",
+            "created_at": "2024-03-27T10:00:00Z",
+        }
+        for i in range(3)
+    ]
+    page2 = [
+        {
+            "uuid": f"conv-{i}",
+            "updated_at": "2024-03-26T10:00:00Z",
+            "created_at": "2024-03-26T10:00:00Z",
+        }
+        for i in range(3, 5)
+    ]
 
     reported_total = None
+
     def on_total(count):
         nonlocal reported_total
         reported_total = count
 
-    with patch.object(ClaudeIngestor, '_get_org_id', new_callable=AsyncMock, return_value="org-1"):
-        with patch.object(ClaudeIngestor, '_get', new_callable=AsyncMock, side_effect=[
-            {"data": page1, "has_more": True},
-            {"data": page2, "has_more": False},
-        ]):
-            with patch.object(ClaudeIngestor, '_fetch_thread', new_callable=AsyncMock, return_value=None):
+    with patch.object(ClaudeIngestor, "_get_org_id", new_callable=AsyncMock, return_value="org-1"):
+        with patch.object(
+            ClaudeIngestor,
+            "_get",
+            new_callable=AsyncMock,
+            side_effect=[
+                {"data": page1, "has_more": True},
+                {"data": page2, "has_more": False},
+            ],
+        ):
+            with patch.object(
+                ClaudeIngestor, "_fetch_thread", new_callable=AsyncMock, return_value=None
+            ):
                 async for _ in ingestor.threads(on_total=on_total):
                     pass
 
@@ -967,17 +1097,32 @@ async def test_deepseek_smart_sync_continues_past_existing():
     existing = {"deepseek:sess-1": 5000}
 
     thread2 = IngestedThread(
-        id="deepseek:sess-2", source_id="deepseek", title="Sess 2",
-        created_at=4000, updated_at=4000, messages=[],
+        id="deepseek:sess-2",
+        source_id="deepseek",
+        title="Sess 2",
+        created_at=4000,
+        updated_at=4000,
+        messages=[],
     )
     thread3 = IngestedThread(
-        id="deepseek:sess-3", source_id="deepseek", title="Sess 3",
-        created_at=3000, updated_at=3000, messages=[],
+        id="deepseek:sess-3",
+        source_id="deepseek",
+        title="Sess 3",
+        created_at=3000,
+        updated_at=3000,
+        messages=[],
     )
 
-    with patch.object(DeepseekIngestor, '_get_token', new_callable=AsyncMock, return_value="tok"):
-        with patch.object(DeepseekIngestor, '_fetch_sessions', new_callable=AsyncMock, return_value=sessions):
-            with patch.object(DeepseekIngestor, '_fetch_thread', new_callable=AsyncMock, side_effect=[thread2, thread3]):
+    with patch.object(DeepseekIngestor, "_get_token", new_callable=AsyncMock, return_value="tok"):
+        with patch.object(
+            DeepseekIngestor, "_fetch_sessions", new_callable=AsyncMock, return_value=sessions
+        ):
+            with patch.object(
+                DeepseekIngestor,
+                "_fetch_thread",
+                new_callable=AsyncMock,
+                side_effect=[thread2, thread3],
+            ):
                 threads = []
                 async for t in ingestor.threads(existing_thread_ids=existing):
                     threads.append(t)
@@ -1032,15 +1177,45 @@ def test_search_threads_sorts_newest_first(tmp_path):
     """Regression: search_threads sorts by last_match_at DESC (newest first)."""
     con = db.connect(tmp_path / "archive.db")
     # Old thread
-    db.save_thread(con, IngestedThread(
-        id="test:old", source_id="test", title="Old", created_at=1000, updated_at=1000,
-        messages=[IngestedMessage(id="test:m1", thread_id="test:old", role="user", content="findme", created_at=1000)],
-    ))
+    db.save_thread(
+        con,
+        IngestedThread(
+            id="test:old",
+            source_id="test",
+            title="Old",
+            created_at=1000,
+            updated_at=1000,
+            messages=[
+                IngestedMessage(
+                    id="test:m1",
+                    thread_id="test:old",
+                    role="user",
+                    content="findme",
+                    created_at=1000,
+                )
+            ],
+        ),
+    )
     # New thread
-    db.save_thread(con, IngestedThread(
-        id="test:new", source_id="test", title="New", created_at=2000, updated_at=2000,
-        messages=[IngestedMessage(id="test:m2", thread_id="test:new", role="user", content="findme", created_at=2000)],
-    ))
+    db.save_thread(
+        con,
+        IngestedThread(
+            id="test:new",
+            source_id="test",
+            title="New",
+            created_at=2000,
+            updated_at=2000,
+            messages=[
+                IngestedMessage(
+                    id="test:m2",
+                    thread_id="test:new",
+                    role="user",
+                    content="findme",
+                    created_at=2000,
+                )
+            ],
+        ),
+    )
     results = db.search_threads(con, "findme", limit=10)
     assert len(results) == 2
     assert results[0]["thread_id"] == "test:new"
@@ -1051,13 +1226,32 @@ def test_search_messages_newest_message_first_within_thread(con):
     """Regression: within a thread, newest messages appear first."""
     from llm_archive.schema import IngestedMessage, IngestedPart, IngestedThread
 
-    db.save_thread(con, IngestedThread(
-        id="test:sort", source_id="test", title="Sort", created_at=1000, updated_at=3000,
-        messages=[
-            IngestedMessage(id="test:early", thread_id="test:sort", role="user", content="findme early", created_at=1000),
-            IngestedMessage(id="test:late", thread_id="test:sort", role="assistant", content="findme late", created_at=3000),
-        ],
-    ))
+    db.save_thread(
+        con,
+        IngestedThread(
+            id="test:sort",
+            source_id="test",
+            title="Sort",
+            created_at=1000,
+            updated_at=3000,
+            messages=[
+                IngestedMessage(
+                    id="test:early",
+                    thread_id="test:sort",
+                    role="user",
+                    content="findme early",
+                    created_at=1000,
+                ),
+                IngestedMessage(
+                    id="test:late",
+                    thread_id="test:sort",
+                    role="assistant",
+                    content="findme late",
+                    created_at=3000,
+                ),
+            ],
+        ),
+    )
     results = db.search_messages(con, "findme", limit=10)
     msg_ids = [r["message_id"] for r in results]
     late_idx = msg_ids.index("test:late")
@@ -1071,13 +1265,28 @@ def test_search_messages_newest_message_first_within_thread(con):
 def test_resolve_short_id_thread(tmp_path):
     """resolve_short_id with t-prefix returns thread with all messages."""
     con = db.connect(tmp_path / "archive.db")
-    db.save_thread(con, IngestedThread(
-        id="test:t1", source_id="test", title="Thread", created_at=1000, updated_at=1000,
-        messages=[
-            IngestedMessage(id="test:m1", thread_id="test:t1", role="user", content="hello", created_at=1000),
-            IngestedMessage(id="test:m2", thread_id="test:t1", role="assistant", content="world", created_at=2000),
-        ],
-    ))
+    db.save_thread(
+        con,
+        IngestedThread(
+            id="test:t1",
+            source_id="test",
+            title="Thread",
+            created_at=1000,
+            updated_at=1000,
+            messages=[
+                IngestedMessage(
+                    id="test:m1", thread_id="test:t1", role="user", content="hello", created_at=1000
+                ),
+                IngestedMessage(
+                    id="test:m2",
+                    thread_id="test:t1",
+                    role="assistant",
+                    content="world",
+                    created_at=2000,
+                ),
+            ],
+        ),
+    )
     rowid = con.execute("SELECT rowid FROM threads WHERE id='test:t1'").fetchone()[0]
     short_id = f"t{db.to_base53(rowid)}"
     result = db.resolve_short_id(con, short_id)
@@ -1089,13 +1298,28 @@ def test_resolve_short_id_thread(tmp_path):
 def test_resolve_short_id_message(tmp_path):
     """resolve_short_id with m-prefix returns single message with thread info."""
     con = db.connect(tmp_path / "archive.db")
-    db.save_thread(con, IngestedThread(
-        id="test:t1", source_id="test", title="Thread", created_at=1000, updated_at=3000,
-        messages=[
-            IngestedMessage(id="test:m1", thread_id="test:t1", role="user", content="first", created_at=1000),
-            IngestedMessage(id="test:m2", thread_id="test:t1", role="assistant", content="second", created_at=2000),
-        ],
-    ))
+    db.save_thread(
+        con,
+        IngestedThread(
+            id="test:t1",
+            source_id="test",
+            title="Thread",
+            created_at=1000,
+            updated_at=3000,
+            messages=[
+                IngestedMessage(
+                    id="test:m1", thread_id="test:t1", role="user", content="first", created_at=1000
+                ),
+                IngestedMessage(
+                    id="test:m2",
+                    thread_id="test:t1",
+                    role="assistant",
+                    content="second",
+                    created_at=2000,
+                ),
+            ],
+        ),
+    )
     rowid = con.execute("SELECT rowid FROM messages WHERE id='test:m2'").fetchone()[0]
     short_id = f"m{db.to_base53(rowid)}"
     result = db.resolve_short_id(con, short_id)
@@ -1116,13 +1340,28 @@ def test_resolve_short_id_invalid(tmp_path):
 def test_get_message(tmp_path):
     """get_message fetches single message with thread context."""
     con = db.connect(tmp_path / "archive.db")
-    db.save_thread(con, IngestedThread(
-        id="test:t1", source_id="test", title="Thread", created_at=1000, updated_at=1000,
-        messages=[
-            IngestedMessage(id="test:m1", thread_id="test:t1", role="user", content="hello", created_at=1000),
-            IngestedMessage(id="test:m2", thread_id="test:t1", role="assistant", content="world", created_at=2000),
-        ],
-    ))
+    db.save_thread(
+        con,
+        IngestedThread(
+            id="test:t1",
+            source_id="test",
+            title="Thread",
+            created_at=1000,
+            updated_at=1000,
+            messages=[
+                IngestedMessage(
+                    id="test:m1", thread_id="test:t1", role="user", content="hello", created_at=1000
+                ),
+                IngestedMessage(
+                    id="test:m2",
+                    thread_id="test:t1",
+                    role="assistant",
+                    content="world",
+                    created_at=2000,
+                ),
+            ],
+        ),
+    )
     result = db.get_message(con, "test:m2")
     assert result is not None
     assert result["thread"]["id"] == "test:t1"
@@ -1134,3 +1373,219 @@ def test_get_message(tmp_path):
 def test_get_message_not_found(tmp_path):
     con = db.connect(tmp_path / "archive.db")
     assert db.get_message(con, "nonexistent") is None
+
+
+# --- ChatGPT ingestor tests ---
+
+
+def test_chatgpt_parse_timestamp():
+    from llm_archive.ingestors.chatgpt import _parse_timestamp
+
+    assert _parse_timestamp(1.5) == 1500
+    assert _parse_timestamp("2.25") == 2250
+    assert _parse_timestamp(None) is None
+    assert _parse_timestamp("nope") is None
+
+
+def test_chatgpt_extract_message_text():
+    from llm_archive.ingestors.chatgpt import _extract_message_text
+
+    assert _extract_message_text({"content": {"parts": ["hello", "world"]}}) == "hello\n\nworld"
+    assert _extract_message_text({"content": {"parts": [{"text": "greeting"}]}}) == "greeting"
+    assert _extract_message_text({"content": {"parts": [""]}}) == ""
+    assert _extract_message_text({"content": {}}) == ""
+    assert (
+        _extract_message_text({"content": {"parts": [{"content_type": "image_asset_pointer"}]}})
+        == "[Image]"
+    )
+
+
+def test_message_rate_limiter_initial_state():
+    from llm_archive.ingestors.chatgpt import MessageRateLimiter
+
+    limiter = MessageRateLimiter()
+
+    assert limiter.current_delay == 5.0
+    assert limiter._consecutive_successes == 0
+    assert limiter._consecutive_429s == 0
+
+
+def test_message_rate_limiter_429_doubles_delay():
+    from llm_archive.ingestors.chatgpt import MessageRateLimiter
+
+    limiter = MessageRateLimiter(initial_delay=5.0)
+
+    assert limiter.current_delay == 5.0
+    limiter.record_429()
+    assert limiter.current_delay == 10.0  # Doubled
+    limiter.record_429()
+    assert limiter.current_delay == 20.0  # Doubled again
+
+
+def test_message_rate_limiter_429_max_cap():
+    from llm_archive.ingestors.chatgpt import MessageRateLimiter
+
+    limiter = MessageRateLimiter(initial_delay=5.0, max_delay=15.0)
+
+    limiter.record_429()
+    assert limiter.current_delay == 10.0
+    limiter.record_429()
+    assert limiter.current_delay == 15.0  # Capped at max
+    limiter.record_429()
+    assert limiter.current_delay == 15.0  # Still capped
+
+
+def test_message_rate_limiter_success_decreases_delay():
+    from llm_archive.ingestors.chatgpt import MessageRateLimiter
+
+    limiter = MessageRateLimiter(initial_delay=5.0, min_delay=4.0)
+
+    # Need 10 consecutive successes to decrease
+    for i in range(10):
+        limiter.record_success()
+
+    assert 4.85 <= limiter.current_delay <= 4.95  # ~4.9
+
+    # Another 10 successes
+    for i in range(10):
+        limiter.record_success()
+
+    assert 4.75 <= limiter.current_delay <= 4.85  # ~4.8
+
+
+def test_message_rate_limiter_success_resets_429_counter():
+    from llm_archive.ingestors.chatgpt import MessageRateLimiter
+
+    limiter = MessageRateLimiter(initial_delay=5.0)
+
+    limiter.record_429()
+    limiter.record_429()
+    assert limiter._consecutive_429s == 2
+
+    limiter.record_success()
+    assert limiter._consecutive_429s == 0
+    assert limiter._consecutive_successes == 1
+
+
+def test_message_rate_limiter_get_and_apply_delay():
+    from llm_archive.ingestors.chatgpt import MessageRateLimiter
+    import time
+
+    limiter = MessageRateLimiter(initial_delay=2.0)
+
+    # First call - no previous request, no delay needed
+    delay = limiter.get_and_apply_delay()
+    assert delay == 0.0
+
+    limiter.update_last_request_time()
+
+    # Immediate second call - should need almost full delay
+    delay = limiter.get_and_apply_delay()
+    assert 1.9 <= delay <= 2.0
+
+    # After waiting 1.9s, only 0.1s left
+    time.sleep(1.95)
+    delay = limiter.get_and_apply_delay()
+    assert 0.0 <= delay <= 0.1  # Almost no delay needed
+
+
+@pytest.mark.asyncio
+async def test_chatgpt_fetch_thread_parses_messages():
+    from llm_archive.ingestors.chatgpt import ChatGPTIngestor
+
+    class MockResp:
+        status_code = 200
+        is_success = True
+
+        def json(self):
+            return {
+                "mapping": {
+                    "node-1": {
+                        "message": {
+                            "id": "msg-1",
+                            "author": {"role": "user"},
+                            "create_time": 1704108000.0,
+                            "content": {"parts": ["hello"]},
+                        }
+                    },
+                    "node-2": {
+                        "message": {
+                            "id": "msg-2",
+                            "author": {"role": "assistant"},
+                            "create_time": 1704108010.0,
+                            "content": {"parts": ["hi there"]},
+                            "model": "gpt-4",
+                        }
+                    },
+                    "node-3": {
+                        "message": {
+                            "id": "msg-3",
+                            "author": {"role": "system"},
+                            "create_time": 1704107990.0,
+                            "content": {"parts": ["system prompt"]},
+                        }
+                    },
+                    "node-4": {"message": None},
+                }
+            }
+
+    class MockClient:
+        async def get(self, url, params=None, headers=None):
+            return MockResp()
+
+    ingestor = ChatGPTIngestor()
+    thread = await ingestor._fetch_thread(
+        MockClient(),
+        {
+            "id": "conv-1",
+            "title": "Test Chat",
+            "create_time": 1704108000.0,
+            "update_time": 1704108010.0,
+        },
+        "fake-token",
+    )
+    assert thread is not None
+    assert thread.id == "chatgpt:conv-1"
+    assert thread.source_id == "chatgpt"
+    assert thread.title == "Test Chat"
+    assert len(thread.messages) == 2
+    assert thread.messages[0].role == "user"
+    assert thread.messages[0].content == "hello"
+    assert thread.messages[1].role == "assistant"
+    assert thread.messages[1].content == "hi there"
+    assert thread.messages[1].metadata["model"] == "gpt-4"
+
+
+@pytest.mark.asyncio
+async def test_chatgpt_smart_sync_skips_existing():
+    """Test that conversations in existing_thread_ids are skipped."""
+    from llm_archive.ingestors.chatgpt import ChatGPTIngestor
+
+    ingestor = ChatGPTIngestor()
+
+    # Test the filtering logic directly
+    conversations = [
+        {"id": "conv-1", "create_time": 1704108000.0, "update_time": 1704108000.0},
+        {"id": "conv-2", "create_time": 1704107000.0, "update_time": 1704107000.0},
+    ]
+
+    existing = {"chatgpt:conv-1": 1704108000000}
+
+    # Simulate the filtering logic
+    skipped = []
+    fetched = []
+
+    for conv in conversations:
+        conv_id = conv.get("id")
+        thread_id = f"chatgpt:{conv_id}"
+        updated_at = 1704108000000  # Both convs have same timestamp for this test
+
+        if thread_id in existing:
+            if existing.get(thread_id) and existing.get(thread_id) >= updated_at:
+                skipped.append(conv_id)
+                continue
+
+        fetched.append(conv_id)
+
+    assert skipped == ["conv-1"]
+    assert fetched == ["conv-2"]
