@@ -1,14 +1,11 @@
 from __future__ import annotations
 import asyncio
 import json
-import os
 import re
 import shutil
 import sys
 import time
 from pathlib import Path
-
-os.environ.setdefault("NODE_OPTIONS", "--no-deprecation-warning")
 
 import click
 from rich.console import Console
