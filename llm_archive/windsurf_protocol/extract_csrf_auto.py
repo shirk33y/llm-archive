@@ -5,8 +5,6 @@ Extract CSRF token via CDP without user interaction by searching window object.
 import asyncio
 import json
 import urllib.request
-import tempfile
-from pathlib import Path
 import websockets
 
 async def extract_csrf_auto(cdp_port=9222):

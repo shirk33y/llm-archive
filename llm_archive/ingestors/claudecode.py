@@ -15,7 +15,7 @@ def _parse_timestamp(ts) -> int | None:
     if isinstance(ts, (int, float)):
         return int(ts) if ts > 1e12 else int(ts * 1000)
     if isinstance(ts, str):
-        from datetime import datetime, timezone
+        from datetime import datetime
         try:
             dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
             return int(dt.timestamp() * 1000)
