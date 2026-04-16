@@ -1400,93 +1400,72 @@ def test_chatgpt_extract_message_text():
     )
 
 
-def test_message_rate_limiter_initial_state():
-    from llm_archive.ingestors.chatgpt import MessageRateLimiter
-
-    limiter = MessageRateLimiter()
-
-    assert limiter.current_delay == 5.0
-    assert limiter._consecutive_successes == 0
-    assert limiter._consecutive_429s == 0
-
-
 def test_message_rate_limiter_429_doubles_delay():
-    from llm_archive.ingestors.chatgpt import MessageRateLimiter
+    from llm_archive.ratelimit import MessageRateLimiter
 
-    limiter = MessageRateLimiter(initial_delay=5.0)
+    limiter = MessageRateLimiter(initial_delay=5.0, max_delay=60.0)
+    limiter._jitter = 0.0  # Disable jitter for test
 
     assert limiter.current_delay == 5.0
-    limiter.record_429()
-    assert limiter.current_delay == 10.0  # Doubled
-    limiter.record_429()
-    assert limiter.current_delay == 20.0  # Doubled again
+    delay = limiter.record_429()
+    assert delay == 10.0
+    assert limiter.current_delay == 10.0
 
 
 def test_message_rate_limiter_429_max_cap():
-    from llm_archive.ingestors.chatgpt import MessageRateLimiter
+    from llm_archive.ratelimit import MessageRateLimiter
 
     limiter = MessageRateLimiter(initial_delay=5.0, max_delay=15.0)
+    limiter._jitter = 0.0
 
     limiter.record_429()
     assert limiter.current_delay == 10.0
     limiter.record_429()
-    assert limiter.current_delay == 15.0  # Capped at max
+    assert limiter.current_delay == 15.0
     limiter.record_429()
-    assert limiter.current_delay == 15.0  # Still capped
+    assert limiter.current_delay == 15.0
 
 
-def test_message_rate_limiter_success_decreases_delay():
-    from llm_archive.ingestors.chatgpt import MessageRateLimiter
+def test_message_rate_limiter_repeated_429s():
+    from llm_archive.ratelimit import MessageRateLimiter
 
-    limiter = MessageRateLimiter(initial_delay=5.0, min_delay=4.0)
+    limiter = MessageRateLimiter(initial_delay=5.0, max_delay=60.0)
+    limiter._jitter = 0.0
 
-    # Need 10 consecutive successes to decrease
-    for i in range(10):
+    limiter.record_429()
+    assert limiter.current_delay == 10.0
+    limiter.record_429()
+    assert limiter.current_delay == 20.0
+    limiter.record_429()
+    assert limiter.current_delay == 40.0
+    limiter.record_429()
+    assert limiter.current_delay == 60.0
+
+    for _ in range(50):
         limiter.record_success()
 
-    assert 4.85 <= limiter.current_delay <= 4.95  # ~4.9
-
-    # Another 10 successes
-    for i in range(10):
-        limiter.record_success()
-
-    assert 4.75 <= limiter.current_delay <= 4.85  # ~4.8
-
-
-def test_message_rate_limiter_success_resets_429_counter():
-    from llm_archive.ingestors.chatgpt import MessageRateLimiter
-
-    limiter = MessageRateLimiter(initial_delay=5.0)
-
-    limiter.record_429()
-    limiter.record_429()
-    assert limiter._consecutive_429s == 2
-
-    limiter.record_success()
-    assert limiter._consecutive_429s == 0
-    assert limiter._consecutive_successes == 1
+    assert limiter.current_delay < 60.0
+    assert limiter.current_delay >= 5.0
 
 
 def test_message_rate_limiter_get_and_apply_delay():
-    from llm_archive.ingestors.chatgpt import MessageRateLimiter
+    from llm_archive.ratelimit import MessageRateLimiter
     import time
 
-    limiter = MessageRateLimiter(initial_delay=2.0)
+    limiter = MessageRateLimiter(initial_delay=2.0, max_delay=60.0)
+    limiter._jitter = 0.0
 
-    # First call - no previous request, no delay needed
     delay = limiter.get_and_apply_delay()
     assert delay == 0.0
 
     limiter.update_last_request_time()
 
-    # Immediate second call - should need almost full delay
     delay = limiter.get_and_apply_delay()
     assert 1.9 <= delay <= 2.0
 
-    # After waiting 1.9s, only 0.1s left
     time.sleep(1.95)
     delay = limiter.get_and_apply_delay()
-    assert 0.0 <= delay <= 0.1  # Almost no delay needed
+    assert 0.0 <= delay <= 0.1
 
 
 @pytest.mark.asyncio

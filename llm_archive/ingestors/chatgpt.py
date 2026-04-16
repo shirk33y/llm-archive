@@ -10,11 +10,12 @@ For flatpak Chrome, use an isolated temp profile:
     flatpak run com.google.Chrome --remote-debugging-port=9333 --user-dir=/tmp/chatgpt-chrome
 
 Rate limiting: The /conversation/{id} endpoint triggers 429 after ~2 rapid requests.
-We use a simple adaptive delay:
-- Initial delay: 3 seconds between message requests
-- On 429: double the delay (max 60s)
-- On 10 consecutive successes: decrease delay by 0.1s (min 2.5s)
-- Conversations list is not rate limited.
+Adaptive MessageRateLimiter:
+- Initial delay: 5s
+- On 429: double delay (max 60s), enter conservative mode
+- Conservative mode: decrease 2s per 20 successes until safe_delay (10s)
+- At safe_delay: continue decreasing 0.5s per 20 successes until initial_delay
+- Recovery from 60s to 5s takes ~35 minutes
 
 API: Uses Bearer token auth from /api/auth/session, not cookie-based auth
 (which returns 403).
@@ -22,7 +23,6 @@ API: Uses Bearer token auth from /api/auth/session, not cookie-based auth
 
 from __future__ import annotations
 import asyncio
-import time
 from datetime import datetime
 from typing import AsyncIterator
 
@@ -30,6 +30,7 @@ import httpx
 
 from llm_archive.ingestors.base import BaseIngestor
 from llm_archive.logging import get_logger
+from llm_archive.ratelimit import MessageRateLimiter
 from llm_archive.schema import IngestedMessage, IngestedThread
 
 logger = get_logger("chatgpt")
@@ -42,72 +43,6 @@ BROWSER_HEADERS = {
     "accept": "application/json",
     "content-type": "application/json",
 }
-
-
-class MessageRateLimiter:
-    """Simple rate limiter for message requests only.
-
-    Tracks consecutive successes/failures to adapt delay.
-    Does NOT track conversation requests (not rate limited).
-    """
-
-    def __init__(
-        self,
-        initial_delay: float = 5.0,
-        min_delay: float = 4.0,
-        max_delay: float = 60.0,
-    ):
-        self._delay = initial_delay
-        self._min_delay = min_delay
-        self._max_delay = max_delay
-        self._consecutive_successes = 0
-        self._consecutive_429s = 0
-        self._last_request_time = 0.0
-
-    @property
-    def current_delay(self) -> float:
-        return self._delay
-
-    def record_success(self) -> None:
-        """Record a successful message request."""
-        self._consecutive_successes += 1
-        self._consecutive_429s = 0
-
-        # Decrease delay slowly if we're doing well
-        if self._consecutive_successes >= 10:
-            self._delay = max(self._delay - 0.1, self._min_delay)
-            self._consecutive_successes = 0
-            logger.info(f"Message delay decreased to {self._delay:.1f}s")
-
-    def record_429(self) -> None:
-        """Record a 429 rate limit error."""
-        self._consecutive_429s += 1
-        self._consecutive_successes = 0
-
-        # Double delay on 429
-        old_delay = self._delay
-        self._delay = min(self._delay * 2, self._max_delay)
-
-        logger.warning(
-            f"Rate limited! 429 #{self._consecutive_429s}, "
-            f"delay: {old_delay:.1f}s -> {self._delay:.1f}s"
-        )
-
-    def get_and_apply_delay(self) -> float:
-        """Calculate and apply the delay since last request."""
-        now = time.time()
-        elapsed = now - self._last_request_time
-
-        if elapsed < self._delay:
-            wait_time = self._delay - elapsed
-            logger.debug(f"Message rate limit: waiting {wait_time:.1f}s")
-            return wait_time
-
-        return 0.0
-
-    def update_last_request_time(self) -> None:
-        """Update the timestamp of the last request."""
-        self._last_request_time = time.time()
 
 
 class ChatGPTIngestor(BaseIngestor):
