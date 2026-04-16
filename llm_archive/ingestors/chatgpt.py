@@ -276,14 +276,13 @@ class ChatGPTIngestor(BaseIngestor):
                     if "chatgpt.com" in pg.url:
                         page = pg
                         break
-                if not page and ctx.pages:
-                    page = ctx.pages[0]
 
                 if not page:
-                    await browser.close()
-                    raise RuntimeError(
-                        "No ChatGPT page found. Make sure you're logged in at chatgpt.com"
-                    )
+                    page = await ctx.new_page()
+                    await page.goto(LOGIN_URL, wait_until="domcontentloaded")
+
+                if "chatgpt.com" not in page.url:
+                    await page.goto(LOGIN_URL, wait_until="domcontentloaded")
 
                 cookies = await ctx.cookies()
                 cookie_dict = {c["name"]: c["value"] for c in cookies}
