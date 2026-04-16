@@ -222,12 +222,11 @@ class ChatGPTIngestor(BaseIngestor):
 
             try:
                 resp = await client.get(url, headers=headers)
-                self._message_limiter.update_last_request_time()
+                self._message_limiter.update_request_time()
 
                 if resp.status_code == 429:
-                    self._message_limiter.record_429()
-                    # Wait using our adaptive delay
-                    wait_time = self._message_limiter.current_delay
+                    # record_429() returns the jittered delay to wait
+                    wait_time = self._message_limiter.record_429()
                     logger.warning(f"Rate limited, waiting {wait_time:.0f}s...")
                     await asyncio.sleep(wait_time)
                     continue
