@@ -77,6 +77,7 @@ class ChatGPTIngestor(BaseIngestor):
             offset = 0
             limit = 100
             total_estimate = None
+            total_fetched = 0
 
             while True:
                 # Fetch next chunk of conversations (no rate limit)
@@ -122,9 +123,14 @@ class ChatGPTIngestor(BaseIngestor):
                         continue
 
                     thread = await self._fetch_thread(
-                        client, conv, token, on_conversation_progress=on_conversation_progress
+                        client,
+                        conv,
+                        token,
+                        on_conversation_progress=on_conversation_progress,
+                        total_fetched=total_fetched,
                     )
                     if thread:
+                        total_fetched += 1
                         if store_thread:
                             store_thread(thread)
                         yield thread
@@ -210,6 +216,7 @@ class ChatGPTIngestor(BaseIngestor):
         client: httpx.AsyncClient,
         url: str,
         headers: dict | None = None,
+        total_fetched: int = 0,
     ) -> httpx.Response:
         """Fetch a message thread with rate limiting and retry."""
         max_retries = 10
@@ -225,9 +232,10 @@ class ChatGPTIngestor(BaseIngestor):
                 self._message_limiter.update_request_time()
 
                 if resp.status_code == 429:
-                    # record_429() returns the jittered delay to wait
                     wait_time = self._message_limiter.record_429()
-                    logger.warning(f"Rate limited, waiting {wait_time:.0f}s...")
+                    logger.warning(
+                        f"Rate limited! 429 #{self._message_limiter.consecutive_429s}, fetched {total_fetched}, waiting {wait_time:.0f}s"
+                    )
                     await asyncio.sleep(wait_time)
                     continue
 
@@ -251,7 +259,12 @@ class ChatGPTIngestor(BaseIngestor):
         raise RuntimeError(f"Failed to fetch {url} after {max_retries} retries")
 
     async def _fetch_thread(
-        self, client: httpx.AsyncClient, conv: dict, token: str, on_conversation_progress=None
+        self,
+        client: httpx.AsyncClient,
+        conv: dict,
+        token: str,
+        on_conversation_progress=None,
+        total_fetched: int = 0,
     ) -> IngestedThread | None:
         conv_id = conv.get("id")
         if not conv_id:
@@ -260,7 +273,10 @@ class ChatGPTIngestor(BaseIngestor):
         headers = {"authorization": f"Bearer {token}"}
 
         resp = await self._request_with_message_with_retry(
-            client, f"{API_BASE}/conversation/{conv_id}", headers=headers
+            client,
+            f"{API_BASE}/conversation/{conv_id}",
+            headers=headers,
+            total_fetched=total_fetched,
         )
 
         data = resp.json()
