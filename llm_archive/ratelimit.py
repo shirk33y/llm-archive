@@ -69,7 +69,7 @@ class RateLimiter:
     def record_429(self) -> float:
         """Call after receiving a 429 rate limit response.
 
-        Returns the delay to wait before retrying (with full jitter).
+        Returns the delay to wait before retrying (with jitter, min 1s).
         """
         self._consecutive_429s += 1
         self._fail_factor += 1.0
@@ -77,6 +77,10 @@ class RateLimiter:
 
         self._delay = min(self._delay * self._backoff_factor, self._max_delay)
         wait_time = self._full_jitter(self._delay)
+
+        # Ensure minimum wait time after 429
+        if wait_time < self._min_delay_after_429:
+            wait_time = self._min_delay_after_429 + random.uniform(0, self._min_delay_after_429)
 
         return wait_time
 
