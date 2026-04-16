@@ -47,13 +47,15 @@ Web-based ingestors require a Chrome/Chromium browser with remote debugging enab
 # Start Chrome with CDP (pick a free port)
 google-chrome --remote-debugging-port=9222
 
-# Or use flatpak:
-flatpak run com.google.Chrome --remote-debugging-port=9222
+# Or use flatpak (use isolated temp profile to avoid CDP issues):
+flatpak run com.google.Chrome --remote-debugging-port=9222 --user-dir=/tmp/llm-archive-chrome
 ```
 
-**Important:** Use your normal browser profile so you're already logged in. Headless mode won't work due to Cloudflare CAPTCHA.
+**Important:** 
+- Use your normal browser profile so you're already logged in. Headless mode won't work due to Cloudflare CAPTCHA.
+- Port 9222 is used by Windsurf CDP. For ChatGPT, use 9333 or another free port.
 
-For CDP port conflicts, use a different port:
+For CDP port conflicts:
 ```sh
 google-chrome --remote-debugging-port=9333
 ```
