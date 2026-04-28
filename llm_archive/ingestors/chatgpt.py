@@ -203,6 +203,11 @@ class ChatGPTIngestor(BaseIngestor):
                     on_total(len(first_items))
 
             # --- Tail check: find last page and verify oldest known thread ---
+            logger.debug(
+                f"Tail check conditions: tail_check={tail_check is not None}, "
+                f"db_updated_at={len(db_updated_at) if db_updated_at else 0}, "
+                f"has_multiple_pages={has_multiple_pages}"
+            )
             if tail_check and db_updated_at and has_multiple_pages:
                 db_count = len(db_updated_at)
                 logger.info("Looking for last page")
