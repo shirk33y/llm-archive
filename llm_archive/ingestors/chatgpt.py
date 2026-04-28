@@ -203,11 +203,6 @@ class ChatGPTIngestor(BaseIngestor):
                     on_total(len(first_items))
 
             # --- Tail check: find last page and verify oldest known thread ---
-            logger.debug(
-                f"Tail check conditions: tail_check={tail_check is not None}, "
-                f"db_updated_at={len(db_updated_at) if db_updated_at else 0}, "
-                f"has_multiple_pages={has_multiple_pages}"
-            )
             if tail_check and db_updated_at and has_multiple_pages:
                 db_count = len(db_updated_at)
                 logger.info("Looking for last page")
@@ -237,6 +232,8 @@ class ChatGPTIngestor(BaseIngestor):
                                         tail_verified = True
                                         logger.info(f"Tail verified: {conv_id} sha1 matches — history is complete")
                                 break
+                else:
+                    logger.warning("Could not determine total (tail search failed), proceeding with pagination")
 
             # --- Main pagination loop, starting with already-fetched page 0 ---
             prefetched = [(0, first_items)]
