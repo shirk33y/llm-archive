@@ -420,7 +420,7 @@ class ChatGPTIngestor(BaseIngestor):
                 payload = json.loads(base64.urlsafe_b64decode(payload_b64))
                 exp = payload.get("exp")
                 if exp and time.time() > exp - 60:
-                    logger.info("Stored token expired, will fetch fresh via CDP")
+                    logger.warning("Stored token expired, will fetch fresh via CDP")
                     return None
         except Exception:
             pass  # Can't decode exp — treat token as valid and let the API reject if needed
@@ -438,7 +438,7 @@ class ChatGPTIngestor(BaseIngestor):
         if stored:
             return stored
 
-        logger.info("No valid stored token, fetching via Chrome CDP...")
+        logger.warning("No valid stored token, fetching via Chrome CDP...")
 
         from playwright.async_api import async_playwright
 
@@ -694,7 +694,7 @@ async def _login() -> None:
                     logger.debug(f"Checking login... URL: {url[:60]}")
             except Exception as e:
                 if i % 10 == 0:
-                    logger.debug(f"Error: {e}")
+                    logger.warning(f"Error checking login: {e}")
 
             await asyncio.sleep(1)
         logger.warning("Login timeout")
