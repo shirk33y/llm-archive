@@ -188,17 +188,21 @@ class ChatGPTIngestor(BaseIngestor):
             if not first_items:
                 return
 
+            # --- Check if we have multiple pages ---
+            # If we got a full page (100 items), there might be more. Try tail finding if conditions met.
+            has_multiple_pages = len(first_items) == limit
+
             # --- Report total from first page (if available) ---
             if on_total:
                 remaining = first_data.get("remaining")
                 if remaining is not None:
                     total = len(first_items) + remaining
-                    logger.info(f"Total (from first page): {total} conversations")
                     on_total(total)
+                elif not has_multiple_pages:
+                    # Single page with unknown remaining — just report what we have
+                    on_total(len(first_items))
 
             # --- Tail check: find last page and verify oldest known thread ---
-            # Skip if data fits in single page (no remaining items or < limit items)
-            has_multiple_pages = len(first_items) == limit and first_data.get("remaining", 0) > 0
             if tail_check and db_updated_at and has_multiple_pages:
                 db_count = len(db_updated_at)
                 logger.info("Looking for last page")
@@ -317,7 +321,7 @@ class ChatGPTIngestor(BaseIngestor):
                     break
 
                 if not sha1_stop and page_all_old_and_known:
-                    logger.info("Page fully up-to-date — stopping pagination")
+                    logger.info("All conversations already in database, stopping")
                     break
 
     async def _find_tail_page(
