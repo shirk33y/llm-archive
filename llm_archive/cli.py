@@ -40,8 +40,11 @@ def main(verbose: bool):
 @click.option("--path", default=None, help="Override local path (for windsurf, etc.)")
 @click.option("--db-path", default=None, help="Override database path")
 @click.option("-f", "--force", is_flag=True, help="Force full resync (ignore last sync timestamp)")
-def sync(source: str | None, path: str | None, db_path: str | None, force: bool):
+@click.option("-v", "--verbose", is_flag=True, help="Enable verbose logging")
+def sync(source: str | None, path: str | None, db_path: str | None, force: bool, verbose: bool):
     """Sync sources. Performs first-time setup automatically when needed."""
+    if verbose:
+        set_verbose(True)
     _run(_sync(source, db_path, path, force))
 
 
