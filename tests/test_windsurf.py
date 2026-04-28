@@ -792,7 +792,7 @@ async def test_smart_sync_skips_unchanged_conversations():
 
     ingestor = WindsurfIngestor()
     recent_ms = int(time.time() * 1000)
-    existing = {"windsurf:ls:some-id": recent_ms}
+    existing = {"windsurf:some-id": recent_ms}
 
     mock_pb = MagicMock()
     mock_pb.exists.return_value = True
@@ -824,7 +824,7 @@ async def test_smart_sync_fetches_changed_conversations():
 
     ingestor = WindsurfIngestor()
     old_ms = int(time.time() * 1000) - 100000
-    existing = {"windsurf:ls:some-id": old_ms}
+    existing = {"windsurf:some-id": old_ms}
 
     trajectory = {
         "trajectory_id": "traj-1",

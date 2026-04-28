@@ -64,6 +64,59 @@ def clean_content(text: str) -> str:
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
+def _migrate_windsurf_prefix(con: sqlite3.Connection) -> None:
+    """Migrate windsurf:ls: thread IDs to windsurf: (one-time migration)."""
+    # Check if any threads still have the old prefix
+    old_threads = con.execute(
+        "SELECT id FROM threads WHERE id LIKE 'windsurf:ls:%'"
+    ).fetchall()
+    if not old_threads:
+        return
+
+    logger.info(f"Migrating {len(old_threads)} windsurf thread IDs from 'windsurf:ls:' to 'windsurf:'")
+
+    # Disable foreign key checks for the migration
+    con.execute("PRAGMA foreign_keys=OFF")
+
+    try:
+        # For each old thread ID, create new ID and migrate data
+        for (old_id,) in old_threads:
+            new_id = old_id.replace("windsurf:ls:", "windsurf:", 1)
+
+            # Get the thread data
+            thread = con.execute(
+                "SELECT source_id, title, created_at, updated_at, sha1, content_checked_at FROM threads WHERE id=?",
+                (old_id,)
+            ).fetchone()
+
+            if thread:
+                # Insert new thread with updated ID (FK checks disabled)
+                con.execute(
+                    "INSERT INTO threads(id, source_id, title, created_at, updated_at, sha1, content_checked_at) "
+                    "VALUES(?,?,?,?,?,?,?)",
+                    (new_id, thread["source_id"], thread["title"], thread["created_at"],
+                     thread["updated_at"], thread["sha1"], thread["content_checked_at"])
+                )
+
+            # Now update messages to point to new thread ID
+            con.execute(
+                "UPDATE messages SET thread_id=? WHERE thread_id=?",
+                (new_id, old_id)
+            )
+
+            # Update messages_fts to point to new thread ID
+            con.execute(
+                "UPDATE messages_fts SET thread_id=? WHERE thread_id=?",
+                (new_id, old_id)
+            )
+
+            # Delete old thread (now safe since new thread exists and messages updated)
+            con.execute("DELETE FROM threads WHERE id=?", (old_id,))
+    finally:
+        # Re-enable foreign key checks
+        con.execute("PRAGMA foreign_keys=ON")
+
+
 DDL = """
 PRAGMA journal_mode=WAL;
 PRAGMA foreign_keys=ON;
@@ -159,6 +212,7 @@ def connect(path: Path = DB_PATH) -> sqlite3.Connection:
             "INSERT INTO message_parts_fts(message_id, ord, search_text) "
             "SELECT message_id, ord, search_text FROM message_parts WHERE searchable=1"
         )
+    _migrate_windsurf_prefix(con)
     con.commit()
     return con
 

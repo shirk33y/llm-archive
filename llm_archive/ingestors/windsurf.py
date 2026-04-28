@@ -1058,8 +1058,8 @@ class WindsurfIngestor(BaseIngestor):
                 if user_input:
                     parts = [IngestedPart(kind="text", text=user_input)]
                     messages.append(IngestedMessage(
-                        id=f"windsurf:ls:{traj_id}:{i}",
-                        thread_id=f"windsurf:ls:{traj_id}",
+                        id=f"windsurf:{traj_id}:{i}",
+                        thread_id=f"windsurf:{traj_id}",
                         role="user",
                         content=user_input,
                         created_at=timestamp,
@@ -1073,8 +1073,8 @@ class WindsurfIngestor(BaseIngestor):
                 if planner_response:
                     parts = [IngestedPart(kind="text", text=planner_response)]
                     messages.append(IngestedMessage(
-                        id=f"windsurf:ls:{traj_id}:{i}",
-                        thread_id=f"windsurf:ls:{traj_id}",
+                        id=f"windsurf:{traj_id}:{i}",
+                        thread_id=f"windsurf:{traj_id}",
                         role="assistant",
                         content=planner_response,
                         created_at=timestamp,
@@ -1093,8 +1093,8 @@ class WindsurfIngestor(BaseIngestor):
                         content += f"\nOutput:\n{stdout}"
                     parts = [IngestedPart(kind="tool_call", text=content, data=cmd_data)]
                     messages.append(IngestedMessage(
-                        id=f"windsurf:ls:{traj_id}:{i}",
-                        thread_id=f"windsurf:ls:{traj_id}",
+                        id=f"windsurf:{traj_id}:{i}",
+                        thread_id=f"windsurf:{traj_id}",
                         role="tool",
                         content=content,
                         created_at=timestamp,
@@ -1110,8 +1110,8 @@ class WindsurfIngestor(BaseIngestor):
                     content = f"[Write file: {path}]"
                     parts = [IngestedPart(kind="tool_call", text=content, data=write_data)]
                     messages.append(IngestedMessage(
-                        id=f"windsurf:ls:{traj_id}:{i}",
-                        thread_id=f"windsurf:ls:{traj_id}",
+                        id=f"windsurf:{traj_id}:{i}",
+                        thread_id=f"windsurf:{traj_id}",
                         role="tool",
                         content=content,
                         created_at=timestamp,
@@ -1127,8 +1127,8 @@ class WindsurfIngestor(BaseIngestor):
                     content = f"[View file: {path}]"
                     parts = [IngestedPart(kind="tool_call", text=content, data=view_data)]
                     messages.append(IngestedMessage(
-                        id=f"windsurf:ls:{traj_id}:{i}",
-                        thread_id=f"windsurf:ls:{traj_id}",
+                        id=f"windsurf:{traj_id}:{i}",
+                        thread_id=f"windsurf:{traj_id}",
                         role="tool",
                         content=content,
                         created_at=timestamp,
@@ -1144,8 +1144,8 @@ class WindsurfIngestor(BaseIngestor):
                     content = f"[List directory: {path}]"
                     parts = [IngestedPart(kind="tool_call", text=content, data=list_data)]
                     messages.append(IngestedMessage(
-                        id=f"windsurf:ls:{traj_id}:{i}",
-                        thread_id=f"windsurf:ls:{traj_id}",
+                        id=f"windsurf:{traj_id}:{i}",
+                        thread_id=f"windsurf:{traj_id}",
                         role="tool",
                         content=content,
                         created_at=timestamp,
@@ -1161,8 +1161,8 @@ class WindsurfIngestor(BaseIngestor):
                     content = f"[Grep search: {query}]"
                     parts = [IngestedPart(kind="tool_call", text=content, data=grep_data)]
                     messages.append(IngestedMessage(
-                        id=f"windsurf:ls:{traj_id}:{i}",
-                        thread_id=f"windsurf:ls:{traj_id}",
+                        id=f"windsurf:{traj_id}:{i}",
+                        thread_id=f"windsurf:{traj_id}",
                         role="tool",
                         content=content,
                         created_at=timestamp,
@@ -1181,8 +1181,8 @@ class WindsurfIngestor(BaseIngestor):
                         content += f"\n{results}"
                     parts = [IngestedPart(kind="tool_call", text=content, data=search_data)]
                     messages.append(IngestedMessage(
-                        id=f"windsurf:ls:{traj_id}:{i}",
-                        thread_id=f"windsurf:ls:{traj_id}",
+                        id=f"windsurf:{traj_id}:{i}",
+                        thread_id=f"windsurf:{traj_id}",
                         role="tool",
                         content=content,
                         created_at=timestamp,
@@ -1198,8 +1198,8 @@ class WindsurfIngestor(BaseIngestor):
                     content = f"[Checkpoint: {message}]"
                     parts = [IngestedPart(kind="tool_call", text=content, data=checkpoint_data)]
                     messages.append(IngestedMessage(
-                        id=f"windsurf:ls:{traj_id}:{i}",
-                        thread_id=f"windsurf:ls:{traj_id}",
+                        id=f"windsurf:{traj_id}:{i}",
+                        thread_id=f"windsurf:{traj_id}",
                         role="tool",
                         content=content,
                         created_at=timestamp,
@@ -1214,8 +1214,8 @@ class WindsurfIngestor(BaseIngestor):
                     content = f"[Error: {error_msg}]"
                     parts = [IngestedPart(kind="tool_call", text=content, data={"error_message": error_msg})]
                     messages.append(IngestedMessage(
-                        id=f"windsurf:ls:{traj_id}:{i}",
-                        thread_id=f"windsurf:ls:{traj_id}",
+                        id=f"windsurf:{traj_id}:{i}",
+                        thread_id=f"windsurf:{traj_id}",
                         role="tool",
                         content=content,
                         created_at=timestamp,
@@ -1231,8 +1231,8 @@ class WindsurfIngestor(BaseIngestor):
                     content = f"[Find: {pattern}]"
                     parts = [IngestedPart(kind="tool_call", text=content, data=find_data)]
                     messages.append(IngestedMessage(
-                        id=f"windsurf:ls:{traj_id}:{i}",
-                        thread_id=f"windsurf:ls:{traj_id}",
+                        id=f"windsurf:{traj_id}:{i}",
+                        thread_id=f"windsurf:{traj_id}",
                         role="tool",
                         content=content,
                         created_at=timestamp,
@@ -1248,8 +1248,8 @@ class WindsurfIngestor(BaseIngestor):
                     content = f"[Command output]\n{stdout}"
                     parts = [IngestedPart(kind="tool_call", text=content, data=cmd_output)]
                     messages.append(IngestedMessage(
-                        id=f"windsurf:ls:{traj_id}:{i}",
-                        thread_id=f"windsurf:ls:{traj_id}",
+                        id=f"windsurf:{traj_id}:{i}",
+                        thread_id=f"windsurf:{traj_id}",
                         role="tool",
                         content=content,
                         created_at=timestamp,
@@ -1265,8 +1265,8 @@ class WindsurfIngestor(BaseIngestor):
                     content = f"[Read URL: {url}]"
                     parts = [IngestedPart(kind="tool_call", text=content, data=url_data)]
                     messages.append(IngestedMessage(
-                        id=f"windsurf:ls:{traj_id}:{i}",
-                        thread_id=f"windsurf:ls:{traj_id}",
+                        id=f"windsurf:{traj_id}:{i}",
+                        thread_id=f"windsurf:{traj_id}",
                         role="tool",
                         content=content,
                         created_at=timestamp,
@@ -1282,8 +1282,8 @@ class WindsurfIngestor(BaseIngestor):
                     content = f"[MCP tool: {tool_name}]"
                     parts = [IngestedPart(kind="tool_call", text=content, data=mcp_data)]
                     messages.append(IngestedMessage(
-                        id=f"windsurf:ls:{traj_id}:{i}",
-                        thread_id=f"windsurf:ls:{traj_id}",
+                        id=f"windsurf:{traj_id}:{i}",
+                        thread_id=f"windsurf:{traj_id}",
                         role="tool",
                         content=content,
                         created_at=timestamp,
@@ -1299,8 +1299,8 @@ class WindsurfIngestor(BaseIngestor):
                     content = f"[Plan]\n{plans}"
                     parts = [IngestedPart(kind="tool_call", text=content, data=plan_data)]
                     messages.append(IngestedMessage(
-                        id=f"windsurf:ls:{traj_id}:{i}",
-                        thread_id=f"windsurf:ls:{traj_id}",
+                        id=f"windsurf:{traj_id}:{i}",
+                        thread_id=f"windsurf:{traj_id}",
                         role="tool",
                         content=content,
                         created_at=timestamp,
@@ -1315,8 +1315,8 @@ class WindsurfIngestor(BaseIngestor):
                     content = f"[User question: {question}]"
                     parts = [IngestedPart(kind="tool_call", text=content, data={"question": question})]
                     messages.append(IngestedMessage(
-                        id=f"windsurf:ls:{traj_id}:{i}",
-                        thread_id=f"windsurf:ls:{traj_id}",
+                        id=f"windsurf:{traj_id}:{i}",
+                        thread_id=f"windsurf:{traj_id}",
                         role="tool",
                         content=content,
                         created_at=timestamp,
@@ -1331,8 +1331,8 @@ class WindsurfIngestor(BaseIngestor):
                     content = f"[File content edit]\n{file_content}"
                     parts = [IngestedPart(kind="tool_call", text=content, data={"file_content": file_content})]
                     messages.append(IngestedMessage(
-                        id=f"windsurf:ls:{traj_id}:{i}",
-                        thread_id=f"windsurf:ls:{traj_id}",
+                        id=f"windsurf:{traj_id}:{i}",
+                        thread_id=f"windsurf:{traj_id}",
                         role="tool",
                         content=content,
                         created_at=timestamp,
@@ -1347,8 +1347,8 @@ class WindsurfIngestor(BaseIngestor):
                     content = f"[Parsed URL content]\n{url_content}"
                     parts = [IngestedPart(kind="tool_call", text=content, data={"url_content": url_content})]
                     messages.append(IngestedMessage(
-                        id=f"windsurf:ls:{traj_id}:{i}",
-                        thread_id=f"windsurf:ls:{traj_id}",
+                        id=f"windsurf:{traj_id}:{i}",
+                        thread_id=f"windsurf:{traj_id}",
                         role="tool",
                         content=content,
                         created_at=timestamp,
@@ -1364,8 +1364,8 @@ class WindsurfIngestor(BaseIngestor):
                     content = f"[File search pattern: {pattern}]"
                     parts = [IngestedPart(kind="tool_call", text=content, data=search_pattern)]
                     messages.append(IngestedMessage(
-                        id=f"windsurf:ls:{traj_id}:{i}",
-                        thread_id=f"windsurf:ls:{traj_id}",
+                        id=f"windsurf:{traj_id}:{i}",
+                        thread_id=f"windsurf:{traj_id}",
                         role="tool",
                         content=content,
                         created_at=timestamp,
@@ -1381,8 +1381,8 @@ class WindsurfIngestor(BaseIngestor):
                     content = f"[Context memory: {summary}]"
                     parts = [IngestedPart(kind="tool_call", text=content, data=context)]
                     messages.append(IngestedMessage(
-                        id=f"windsurf:ls:{traj_id}:{i}",
-                        thread_id=f"windsurf:ls:{traj_id}",
+                        id=f"windsurf:{traj_id}:{i}",
+                        thread_id=f"windsurf:{traj_id}",
                         role="tool",
                         content=content,
                         created_at=timestamp,
@@ -1398,8 +1398,8 @@ class WindsurfIngestor(BaseIngestor):
                     content = f"[Project context: {summary}]"
                     parts = [IngestedPart(kind="tool_call", text=content, data=project_ctx)]
                     messages.append(IngestedMessage(
-                        id=f"windsurf:ls:{traj_id}:{i}",
-                        thread_id=f"windsurf:ls:{traj_id}",
+                        id=f"windsurf:{traj_id}:{i}",
+                        thread_id=f"windsurf:{traj_id}",
                         role="tool",
                         content=content,
                         created_at=timestamp,
@@ -1414,8 +1414,8 @@ class WindsurfIngestor(BaseIngestor):
                     content = f"[URL reference: {url_ref}]"
                     parts = [IngestedPart(kind="tool_call", text=content, data={"url": url_ref})]
                     messages.append(IngestedMessage(
-                        id=f"windsurf:ls:{traj_id}:{i}",
-                        thread_id=f"windsurf:ls:{traj_id}",
+                        id=f"windsurf:{traj_id}:{i}",
+                        thread_id=f"windsurf:{traj_id}",
                         role="tool",
                         content=content,
                         created_at=timestamp,
@@ -1436,7 +1436,7 @@ class WindsurfIngestor(BaseIngestor):
         last_timestamp = messages[-1].created_at if messages else None
         
         return IngestedThread(
-            id=f"windsurf:ls:{traj_id}",
+            id=f"windsurf:{traj_id}",
             source_id="windsurf",
             title=title,
             created_at=first_timestamp,
