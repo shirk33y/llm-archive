@@ -201,11 +201,12 @@ class ChatGPTIngestor(BaseIngestor):
             has_multiple_pages = len(first_items) == limit and first_data.get("remaining", 0) > 0
             if tail_check and db_updated_at and has_multiple_pages:
                 db_count = len(db_updated_at)
+                logger.info("Looking for last page")
                 tail_result = await self._find_tail_page(client, headers, db_count, limit)
                 if tail_result:
                     tail_offset, tail_items = tail_result
                     total = tail_offset + len(tail_items)
-                    logger.info(f"Total determined: {total} conversations")
+                    logger.info(f"Found {total} conversations")
                     if on_total:
                         on_total(total)
 

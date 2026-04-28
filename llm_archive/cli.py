@@ -124,11 +124,12 @@ async def _do_ingest(con, ingestor, since: int | None, force: bool = False):
             progress.update(task, description=f"  {ingestor.source_id} — {label}")
 
         def _desc():
+            total_display = total if total is not None else _total_processed
             return (
                 f"  {ingestor.source_id} — "
                 f"[green]{written}[/green] new, "
                 f"[grey37]{updated}[/grey37] updated, "
-                f"{_total_processed} total"
+                f"{total_display} total"
             )
 
         def _on_fetch_done():
