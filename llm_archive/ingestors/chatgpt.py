@@ -217,7 +217,7 @@ class ChatGPTIngestor(BaseIngestor):
                                 continue
                             thread_id = f"chatgpt:{conv_id}"
                             if thread_id in db_updated_at:
-                                logger.info(f"Tail check: fetching {conv_id}")
+                                logger.debug(f"Tail check: fetching {conv_id}")
                                 thread = await self._fetch_thread(
                                     client, conv, headers, total_fetched=total_fetched
                                 )
@@ -243,7 +243,7 @@ class ChatGPTIngestor(BaseIngestor):
                     if not items:
                         break
 
-                logger.info(f"Processing conversations {offset + 1}-{offset + len(items)}")
+                logger.debug(f"Processing conversations {offset + 1}-{offset + len(items)}")
 
                 page_all_old_and_known = True
                 page_skip_timestamps: dict[str, int] = {}
@@ -273,7 +273,7 @@ class ChatGPTIngestor(BaseIngestor):
                                 page_skip_timestamps[thread_id] = updated_at
                             continue
 
-                        logger.info(
+                        logger.debug(
                             f"Conversation {conv_id} needs re-fetch "
                             f"(api={updated_at} db={db_ts})"
                         )
@@ -661,7 +661,7 @@ async def _login() -> None:
             url = page.url
             if "login" in url.lower():
                 if i % 10 == 0:
-                    logger.info("Still on login page...")
+                    logger.debug("Still on login page...")
                 await asyncio.sleep(1)
                 continue
 
@@ -691,10 +691,10 @@ async def _login() -> None:
                     logger.info("Login detected!")
                     return True
                 if i % 10 == 0:
-                    logger.info(f"Checking login... URL: {url[:60]}")
+                    logger.debug(f"Checking login... URL: {url[:60]}")
             except Exception as e:
                 if i % 10 == 0:
-                    logger.info(f"Error: {e}")
+                    logger.debug(f"Error: {e}")
 
             await asyncio.sleep(1)
         logger.warning("Login timeout")
