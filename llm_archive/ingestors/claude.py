@@ -142,7 +142,7 @@ class ClaudeIngestor(BaseIngestor):
                 if thread_id in existing_thread_ids:
                     if isinstance(existing_thread_ids, dict):
                         db_updated_at = existing_thread_ids.get(thread_id)
-                        if db_updated_at and db_updated_at >= updated_at:
+                        if db_updated_at is None or updated_at is None or db_updated_at >= updated_at:
                             continue
                         logger.info(f"Conversation {conv_id} was updated, re-fetching")
                     else:

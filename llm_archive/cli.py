@@ -81,15 +81,17 @@ def _source_thread_count(con, source: str) -> int:
 
 async def _do_ingest(con, ingestor, since: int | None, force: bool = False):
     written = 0
-    skipped = 0
+    updated = 0
     errors = 0
     total = None
+    _total_processed = 0
 
     # Fetch existing thread IDs and updated_at for smart sync (disabled when force=True)
     existing_threads = {}
     if not force:
         rows = con.execute(
-            "SELECT id, updated_at FROM threads WHERE source_id=?", (ingestor.source_id,)
+            "SELECT id, updated_at FROM threads WHERE source_id=?",
+            (ingestor.source_id,),
         ).fetchall()
         existing_threads = {row["id"]: row["updated_at"] for row in rows}
 
@@ -118,11 +120,16 @@ async def _do_ingest(con, ingestor, since: int | None, force: bool = False):
         def _on_fetch_start(label: str):
             progress.update(task, description=f"  {ingestor.source_id} — {label}")
 
-        def _on_fetch_done():
-            progress.update(
-                task,
-                description=f"  {ingestor.source_id} — [green]{written}[/green] new, [grey37]{skipped}[/grey37] up to date",
+        def _desc():
+            return (
+                f"  {ingestor.source_id} — "
+                f"[green]{written}[/green] new, "
+                f"[grey37]{updated}[/grey37] updated, "
+                f"{_total_processed} total"
             )
+
+        def _on_fetch_done():
+            progress.update(task, description=_desc())
 
         try:
             # Check if ingestor supports callback parameters
@@ -139,37 +146,75 @@ async def _do_ingest(con, ingestor, since: int | None, force: bool = False):
             if "on_total" in sig.parameters and total is None:
                 kwargs["on_total"] = _on_total
 
+            use_store_thread = "store_thread" in sig.parameters
+
+            if use_store_thread:
+                def _store_thread(thread):
+                    nonlocal written, updated, _total_processed
+                    saved = db.save_thread(con, thread, force=force)
+                    _total_processed += 1
+                    if saved:
+                        if thread.id in existing_threads:
+                            updated += 1
+                        else:
+                            written += 1
+                    progress.update(task, advance=1, description=_desc())
+                    return saved
+                kwargs["store_thread"] = _store_thread
+
+            if "on_skip_timestamps" in sig.parameters:
+                def _on_skip_timestamps(updates: dict):
+                    nonlocal _total_processed
+                    _total_processed += len(updates)
+                    db.bulk_update_timestamps(con, updates)
+                    progress.update(task, advance=len(updates), description=_desc())
+                kwargs["on_skip_timestamps"] = _on_skip_timestamps
+
+            if "on_delta_skip" in sig.parameters:
+                def _on_delta_skip(count: int):
+                    nonlocal _total_processed
+                    _total_processed += count
+                    progress.update(task, advance=count, description=_desc())
+                kwargs["on_delta_skip"] = _on_delta_skip
+
+            if "tail_check" in sig.parameters:
+                def _tail_check(thread) -> bool:
+                    return db.check_thread_sha1(con, thread)
+                kwargs["tail_check"] = _tail_check
+
             if kwargs:
                 async for thread in ingestor.threads(since=None, **kwargs):
-                    # Force update if thread exists and has newer updated_at
-                    thread_force = force
-                    if not force and thread.id in existing_threads:
-                        db_updated_at = existing_threads[thread.id]
-                        if thread.updated_at and thread.updated_at > db_updated_at:
-                            thread_force = True
-                    saved = db.save_thread(con, thread, force=thread_force)
-                    if saved:
-                        written += 1
+                    if use_store_thread:
+                        pass  # saved + progress updated in _store_thread callback
                     else:
-                        skipped += 1
-                    progress.update(
-                        task,
-                        advance=1,
-                        total=total,
-                        description=f"  {ingestor.source_id} — [green]{written}[/green] new, [grey37]{skipped}[/grey37] up to date",
-                    )
+                        thread_force = force
+                        is_existing = thread.id in existing_threads
+                        if not force and is_existing:
+                            db_ts = existing_threads[thread.id]
+                            if thread.updated_at and db_ts and thread.updated_at > db_ts:
+                                thread_force = True
+                        saved = db.save_thread(con, thread, force=thread_force)
+                        if saved:
+                            if is_existing:
+                                updated += 1
+                            else:
+                                written += 1
+                        progress.update(
+                            task,
+                            advance=1,
+                            total=total,
+                            description=f"  {ingestor.source_id} — [green]{written}[/green] new, [grey37]{updated}[/grey37] updated",
+                        )
             else:
                 async for thread in ingestor.threads(since=None):
                     saved = db.save_thread(con, thread, force=force)
                     if saved:
                         written += 1
-                    else:
-                        skipped += 1
                     progress.update(
                         task,
                         advance=1,
                         total=total,
-                        description=f"  {ingestor.source_id} — [green]{written}[/green] new, [grey37]{skipped}[/grey37] up to date",
+                        description=f"  {ingestor.source_id} — [green]{written}[/green] new, [grey37]{updated}[/grey37] updated",
                     )
         except NotImplementedError as e:
             console.print(f"  [yellow]Not implemented:[/yellow] {e}")
@@ -181,15 +226,10 @@ async def _do_ingest(con, ingestor, since: int | None, force: bool = False):
             console.print(f"  [red]Error:[/red] {e}")
             errors += 1
 
-    # Calculate skipped from total - written - errors (for smart sync)
-    if total is not None:
-        skipped = total - written - errors
-
-    status = f"[green]{written}[/green] new, [grey37]{skipped}[/grey37] up to date"
+    total_shown = total if total is not None else _total_processed
+    status = f"[green]{written}[/green] new, [grey37]{updated}[/grey37] updated, {total_shown} total"
     if errors:
         status += f", [red]{errors}[/red] errors"
-    if total is not None:
-        status += f", {total} total"
     console.print(f"  {ingestor.source_id}: {status}")
     return errors == 0
 

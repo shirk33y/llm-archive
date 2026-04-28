@@ -4,9 +4,13 @@ import json
 import re
 import socket
 import sqlite3
+import time
 from pathlib import Path
 
+from llm_archive.logging import get_logger
 from llm_archive.schema import IngestedThread, IngestedMessage, IngestedPart
+
+logger = get_logger("db")
 
 DB_PATH = Path.home() / ".llm-archive" / "archive.db"
 
@@ -72,14 +76,16 @@ CREATE TABLE IF NOT EXISTS sources (
 );
 
 CREATE TABLE IF NOT EXISTS threads (
-    id          TEXT PRIMARY KEY,
-    source_id   TEXT    NOT NULL,
-    title       TEXT,
-    created_at  INTEGER,
-    updated_at  INTEGER,
-    sha1        TEXT,
+    id                  TEXT PRIMARY KEY,
+    source_id           TEXT    NOT NULL,
+    title               TEXT,
+    created_at          INTEGER,
+    updated_at          INTEGER,
+    sha1                TEXT,
+    content_checked_at  INTEGER,
     FOREIGN KEY (source_id) REFERENCES sources(id)
 );
+CREATE INDEX IF NOT EXISTS idx_threads_checked ON threads(source_id, content_checked_at);
 
 CREATE TABLE IF NOT EXISTS messages (
     id              TEXT PRIMARY KEY,
@@ -182,6 +188,24 @@ def set_last_sync(con: sqlite3.Connection, source_id: str, ts: int) -> None:
     con.commit()
 
 
+def check_thread_sha1(con: sqlite3.Connection, thread: IngestedThread) -> bool:
+    """Return True if thread's sha1 matches DB (no write)."""
+    sha1 = _thread_sha1(thread)
+    existing = con.execute("SELECT sha1 FROM threads WHERE id=?", (thread.id,)).fetchone()
+    return existing is not None and existing["sha1"] == sha1
+
+
+def bulk_update_timestamps(con: sqlite3.Connection, updates: dict[str, int]) -> None:
+    """Update updated_at for threads where the new value is newer than stored."""
+    if not updates:
+        return
+    con.executemany(
+        "UPDATE threads SET updated_at=? WHERE id=? AND (updated_at IS NULL OR updated_at < ?)",
+        [(ts, tid, ts) for tid, ts in updates.items()],
+    )
+    con.commit()
+
+
 def get_last_sync(con: sqlite3.Connection, source_id: str) -> int | None:
     row = con.execute("SELECT last_sync FROM sources WHERE id=?", (source_id,)).fetchone()
     return row["last_sync"] if row else None
@@ -191,16 +215,32 @@ def save_thread(con: sqlite3.Connection, thread: IngestedThread, force: bool = F
     """Save thread + messages. Returns True if written, False if skipped (dedup)."""
     sha1 = _thread_sha1(thread)
     existing = con.execute("SELECT sha1 FROM threads WHERE id=?", (thread.id,)).fetchone()
+    if existing:
+        if existing["sha1"] == sha1:
+            logger.info(f"sha1 match {thread.id} — skipping")
+        else:
+            logger.info(f"sha1 changed {thread.id} — old={existing['sha1']} new={sha1}")
+    now_ms = int(time.time() * 1000)
     if not force and existing and existing["sha1"] == sha1:
+        # Content unchanged — bump updated_at if API has a newer timestamp,
+        # and always update content_checked_at so skip logic knows we verified recently.
+        updates = ["content_checked_at=?"]
+        params: list = [now_ms]
+        if thread.updated_at is not None:
+            updates.append("updated_at=CASE WHEN updated_at IS NULL OR updated_at < ? THEN ? ELSE updated_at END")
+            params.extend([thread.updated_at, thread.updated_at])
+        params.append(thread.id)
+        con.execute(f"UPDATE threads SET {', '.join(updates)} WHERE id=?", params)
+        con.commit()
         return False
 
     # Ensure source row exists (FK constraint)
     con.execute("INSERT OR IGNORE INTO sources(id) VALUES(?)", (thread.source_id,))
 
     con.execute(
-        "INSERT OR REPLACE INTO threads(id, source_id, title, created_at, updated_at, sha1) "
-        "VALUES(?,?,?,?,?,?)",
-        (thread.id, thread.source_id, thread.title, thread.created_at, thread.updated_at, sha1),
+        "INSERT OR REPLACE INTO threads(id, source_id, title, created_at, updated_at, sha1, content_checked_at) "
+        "VALUES(?,?,?,?,?,?,?)",
+        (thread.id, thread.source_id, thread.title, thread.created_at, thread.updated_at, sha1, now_ms),
     )
     ids = [
         row[0]
