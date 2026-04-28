@@ -412,6 +412,7 @@ class ChatGPTIngestor(BaseIngestor):
             return None
 
         # Decode JWT exp without a library (header.payload.signature)
+        exp_days = None
         try:
             parts = token.split(".")
             if len(parts) == 3:
@@ -420,14 +421,19 @@ class ChatGPTIngestor(BaseIngestor):
                 payload_b64 += "=" * (4 - len(payload_b64) % 4)
                 payload = json.loads(base64.urlsafe_b64decode(payload_b64))
                 exp = payload.get("exp")
-                if exp and time.time() > exp - 60:
-                    logger.warning("Stored token expired, will fetch fresh via CDP")
-                    return None
+                if exp:
+                    exp_days = max(0, (exp - time.time()) / 86400)
+                    if time.time() > exp - 60:
+                        logger.warning("Stored token expired, will fetch fresh via CDP")
+                        return None
         except Exception:
             pass  # Can't decode exp — treat token as valid and let the API reject if needed
 
         cookies = {c["name"]: c["value"] for c in state.get("cookies", [])}
-        logger.info("Using stored access token")
+        if exp_days is not None:
+            logger.info(f"Using stored access token (expires in {exp_days:.0f} days)")
+        else:
+            logger.info("Using stored access token")
         return token, cookies
 
     async def _get_token_via_cdp(self) -> tuple[str, dict[str, str]]:
