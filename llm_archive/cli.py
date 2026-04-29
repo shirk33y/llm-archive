@@ -730,3 +730,10 @@ def tui(db_path: str | None):
     from llm_archive.tui import run
 
     run(Path(db_path) if db_path else None)
+
+
+@main.command()
+def mcp():
+    """Start MCP server for conversation search and retrieval (stdio transport)."""
+    from llm_archive.mcp_server import run_sync
+    run_sync()

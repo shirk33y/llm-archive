@@ -2,13 +2,6 @@
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-[dependency-groups]
-dev = [
-    "pytest>=8.0",
-    "pytest-asyncio>=0.23",
-    "ruff>=0.4",
-]
-
 [project]
 name = "llm-archive"
 version = "0.1.0"
@@ -24,8 +17,15 @@ dependencies = [
     "psutil>=5.9",
     "websockets>=16.0",
     "textual>=0.50",
+    "mcp>=0.6.0",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.4",
+]
 
 [project.scripts]
 llm-archive = "llm_archive.cli:main"
