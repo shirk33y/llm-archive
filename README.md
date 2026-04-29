@@ -86,6 +86,38 @@ uv run llm-archive status    # per-source: threads, messages, last sync time
 uv run llm-archive sources   # list all sources and initialization status
 ```
 
+## MCP Server
+
+llm-archive exposes an MCP (Model Context Protocol) server for querying your archive from any MCP-compatible client (Claude Code, Cline, Cursor, etc.).
+
+```sh
+llm-archive mcp    # start MCP server (stdio transport)
+```
+
+### Client configuration
+
+Add to your MCP client config (e.g. `.mcp.json` or equivalent):
+
+```json
+{
+  "llm-archive": {
+    "command": "llm-archive",
+    "args": ["mcp"]
+  }
+}
+```
+
+### Available tools
+
+| Tool | Description |
+|------|-------------|
+| `search_conversations` | Full-text search across all messages (FTS5) |
+| `search_threads` | Find conversations by topic, grouped by thread |
+| `list_conversations` | List all threads sorted by recency |
+| `get_conversation` | Retrieve full thread with all messages |
+| `get_message` | Get a single message with parent thread context |
+| `list_sources` | Show configured sources and last sync time |
+
 ## Database
 
 Conversations are stored in `~/.llm-archive/archive.db` (SQLite, WAL mode).
@@ -105,7 +137,8 @@ Adding a new source = one new file in `llm_archive/ingestors/`, registered in `l
 
 ```
 llm_archive/
-├── cli.py              # click commands: init, sync, status, sources
+├── cli.py              # click commands: init, sync, status, sources, mcp
+├── mcp_server.py       # MCP server (FastMCP, stdio transport)
 ├── db.py               # SQLite setup, SHA1 dedup, data access
 ├── schema.py           # IngestedThread, IngestedMessage dataclasses
 ├── registry.py         # INGESTORS dict
