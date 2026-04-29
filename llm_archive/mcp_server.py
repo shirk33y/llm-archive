@@ -135,9 +135,7 @@ def list_sources() -> dict:
 
 def run_sync():
     """Entry point for CLI."""
-    import sys
-
-    mcp.run(transport="stdio", stream=sys.stdin, write=sys.stdout.buffer)
+    mcp.run(transport="stdio")
 
 
 if __name__ == "__main__":
