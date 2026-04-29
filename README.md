@@ -17,10 +17,23 @@ A CLI tool that dumps and syncs AI conversations from multiple sources into a lo
 
 ## Installation
 
+### Development (local, with venv)
 ```sh
 git clone https://github.com/shirk33y/llm-archive
 cd llm-archive
 uv venv && uv sync
+uv run llm-archive --help
+```
+
+### User installation (global binary in ~/.local/bin)
+```sh
+uv tool install /path/to/llm-archive
+```
+Binary installed to `~/.local/bin/llm-archive`. Ensure it's in your PATH (usually already configured).
+
+### Global installation (system-wide)
+```sh
+sudo uv tool install /path/to/llm-archive --global
 ```
 
 ## Usage
