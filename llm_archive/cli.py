@@ -733,6 +733,78 @@ def tui(db_path: str | None):
 
 
 @main.command()
+@click.argument("source", type=click.Choice(list(INGESTORS)), required=False)
+@click.option("--force", "-f", is_flag=True, help="Re-embed already embedded threads")
+@click.option("--model", default="nomic-embed-text", show_default=True, help="Ollama embedding model")
+@click.option("--ollama-url", default="http://localhost:11434", show_default=True, help="Ollama API URL")
+@click.option("--db-path", default=None, help="Override database path")
+def embed(
+    source: str | None,
+    force: bool,
+    model: str,
+    ollama_url: str,
+    db_path: str | None,
+):
+    """Generate embeddings for semantic search (requires ollama + embedding model)."""
+    import time as _time
+    from llm_archive import embed as embed_mod
+
+    con = db.connect(Path(db_path) if db_path else db.DB_PATH)
+    dims = embed_mod.get_dims(model)
+    has_vec = db.init_embeddings(con, dims)
+    if not has_vec:
+        console.print(
+            "[red]sqlite-vec not installed.[/red] Run: [bold]pip install sqlite-vec[/bold]"
+        )
+        return
+
+    thread_ids = embed_mod.threads_needing_embedding(con, source, force)
+    if not thread_ids:
+        console.print("All threads already embedded. Use [bold]--force[/bold] to re-embed.")
+        return
+
+    console.print(
+        f"Embedding [bold]{len(thread_ids)}[/bold] threads using [cyan]{model}[/cyan]..."
+    )
+
+    errors = 0
+    skipped = 0
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        console=progress_console,
+        transient=True,
+    ) as progress:
+        task = progress.add_task("Embedding", total=len(thread_ids))
+        for thread_id in thread_ids:
+            try:
+                text = embed_mod.extract_thread_text(con, thread_id)
+                if not text.strip():
+                    skipped += 1
+                    progress.advance(task)
+                    continue
+                vector = embed_mod.embed_text(text, model, ollama_url)
+                blob = embed_mod.serialize(vector)
+                db.upsert_thread_embedding(
+                    con, thread_id, model, blob, int(_time.time() * 1000)
+                )
+            except Exception as e:
+                errors += 1
+                console.print(f"  [red]Error[/red] {thread_id}: {e}")
+            progress.advance(task)
+
+    done = len(thread_ids) - errors - skipped
+    parts = [f"[green]{done}[/green] embedded"]
+    if skipped:
+        parts.append(f"[dim]{skipped}[/dim] skipped (empty)")
+    if errors:
+        parts.append(f"[red]{errors}[/red] errors")
+    console.print("  " + ", ".join(parts))
+
+
+@main.command()
 def mcp():
     """Start MCP server for conversation search and retrieval (stdio transport)."""
     from llm_archive.mcp_server import run_sync

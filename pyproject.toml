@@ -18,6 +18,7 @@ dependencies = [
     "websockets>=16.0",
     "textual>=0.50",
     "mcp>=0.6.0",
+    "sqlite-vec>=0.1.9",
 ]
 
 [project.optional-dependencies]

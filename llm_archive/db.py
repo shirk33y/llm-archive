@@ -438,11 +438,114 @@ def source_stats(con: sqlite3.Connection) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def search_messages(con: sqlite3.Connection, phrase: str, limit: int = 50) -> list[dict]:
+def _load_vec(con: sqlite3.Connection) -> bool:
+    try:
+        import sqlite_vec
+        con.enable_load_extension(True)
+        sqlite_vec.load(con)
+        con.enable_load_extension(False)
+        return True
+    except Exception:
+        return False
+
+
+_EMBEDDINGS_DDL = """
+CREATE TABLE IF NOT EXISTS thread_embeddings (
+    rowid       INTEGER PRIMARY KEY AUTOINCREMENT,
+    thread_id   TEXT UNIQUE NOT NULL,
+    model       TEXT NOT NULL,
+    embedded_at INTEGER NOT NULL
+);
+"""
+
+
+def init_embeddings(con: sqlite3.Connection, dims: int = 768) -> bool:
+    """Initialize embedding tables. Returns True if sqlite-vec is available."""
+    has_vec = _load_vec(con)
+    con.execute(_EMBEDDINGS_DDL)
+    con.commit()
+    if has_vec:
+        try:
+            con.execute(
+                f"CREATE VIRTUAL TABLE IF NOT EXISTS vec_threads USING vec0(embedding FLOAT[{dims}])"
+            )
+            con.commit()
+        except Exception:
+            pass
+    return has_vec
+
+
+def upsert_thread_embedding(
+    con: sqlite3.Connection,
+    thread_id: str,
+    model: str,
+    vector_bytes: bytes,
+    embedded_at: int,
+) -> None:
+    con.execute(
+        """
+        INSERT INTO thread_embeddings(thread_id, model, embedded_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(thread_id) DO UPDATE SET model=excluded.model, embedded_at=excluded.embedded_at
+        """,
+        (thread_id, model, embedded_at),
+    )
+    rowid = con.execute(
+        "SELECT rowid FROM thread_embeddings WHERE thread_id=?", (thread_id,)
+    ).fetchone()["rowid"]
+    con.execute("DELETE FROM vec_threads WHERE rowid=?", (rowid,))
+    con.execute("INSERT INTO vec_threads(rowid, embedding) VALUES (?, ?)", (rowid, vector_bytes))
+    con.commit()
+
+
+def semantic_search_threads(
+    con: sqlite3.Connection,
+    query_vector: bytes,
+    limit: int | None = None,
+    source_id: str | None = None,
+) -> list[dict]:
+    _load_vec(con)
+    exists = con.execute("SELECT 1 FROM sqlite_master WHERE name='vec_threads'").fetchone()
+    if not exists:
+        return []
+    k = limit if limit is not None else 9999
+    if source_id:
+        rows = con.execute(
+            """
+            SELECT te.thread_id, v.distance, t.title, t.source_id, t.updated_at,
+                   t.rowid AS thread_rowid
+            FROM vec_threads v
+            JOIN thread_embeddings te ON te.rowid = v.rowid
+            JOIN threads t ON t.id = te.thread_id
+            WHERE v.embedding MATCH ? AND t.source_id = ?
+            ORDER BY v.distance
+            LIMIT ?
+            """,
+            (query_vector, source_id, k),
+        ).fetchall()
+    else:
+        rows = con.execute(
+            """
+            SELECT te.thread_id, v.distance, t.title, t.source_id, t.updated_at,
+                   t.rowid AS thread_rowid
+            FROM vec_threads v
+            JOIN thread_embeddings te ON te.rowid = v.rowid
+            JOIN threads t ON t.id = te.thread_id
+            WHERE v.embedding MATCH ?
+            ORDER BY v.distance
+            LIMIT ?
+            """,
+            (query_vector, k),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def search_messages(con: sqlite3.Connection, phrase: str, limit: int | None = None) -> list[dict]:
     # First find matching message IDs (limit applies to distinct messages)
     # Then join parts for content — avoids LIMIT cutting off mid-message
+    limit_clause = f"LIMIT {limit}" if limit is not None else ""
     rows = con.execute(
-        """
+        f"""
         SELECT
             t.source_id,
             t.id AS thread_id,
@@ -462,21 +565,22 @@ def search_messages(con: sqlite3.Connection, phrase: str, limit: int = 50) -> li
             JOIN threads t ON t.id = m.thread_id
             WHERE message_parts_fts MATCH ?
             ORDER BY t.updated_at DESC, m.created_at DESC
-            LIMIT ?
+            {limit_clause}
         ) matched
         JOIN messages m ON m.id = matched.id
         JOIN threads t ON t.id = m.thread_id
         JOIN message_parts p ON p.message_id = m.id
         ORDER BY t.updated_at DESC, m.created_at DESC, m.id, p.ord
         """,
-        (_fts_query(phrase), limit),
+        (_fts_query(phrase),),
     ).fetchall()
     return [dict(r) for r in rows]
 
 
-def search_threads(con: sqlite3.Connection, phrase: str, limit: int = 50) -> list[dict]:
+def search_threads(con: sqlite3.Connection, phrase: str, limit: int | None = None) -> list[dict]:
+    limit_clause = f"LIMIT {limit}" if limit is not None else ""
     rows = con.execute(
-        """
+        f"""
         SELECT
             t.source_id,
             t.id AS thread_id,
@@ -491,17 +595,18 @@ def search_threads(con: sqlite3.Connection, phrase: str, limit: int = 50) -> lis
         WHERE message_parts_fts MATCH ?
         GROUP BY t.id, t.source_id, t.title
         ORDER BY last_match_at DESC
-        LIMIT ?
+        {limit_clause}
         """,
-        (_fts_query(phrase), limit),
+        (_fts_query(phrase),),
     ).fetchall()
     return [dict(r) for r in rows]
 
 
-def list_threads(con: sqlite3.Connection, limit: int = 1000) -> list[dict]:
+def list_threads(con: sqlite3.Connection, limit: int | None = None) -> list[dict]:
     """Return all threads sorted by newest first."""
+    limit_clause = f"LIMIT {limit}" if limit is not None else ""
     rows = con.execute(
-        """
+        f"""
         SELECT
             source_id,
             id AS thread_id,
@@ -510,9 +615,8 @@ def list_threads(con: sqlite3.Connection, limit: int = 1000) -> list[dict]:
             rowid AS thread_rowid
         FROM threads
         ORDER BY updated_at DESC
-        LIMIT ?
+        {limit_clause}
         """,
-        (limit,),
     ).fetchall()
     return [dict(r) for r in rows]
 

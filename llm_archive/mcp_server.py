@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Optional
 
 from mcp.server import FastMCP
 from llm_archive import db
@@ -11,12 +11,12 @@ mcp = FastMCP("llm-archive", json_response=True)
 
 
 @mcp.tool()
-def search_conversations(phrase: str, limit: int = 50) -> dict:
+def search_conversations(phrase: str, limit: Optional[int] = None) -> dict:
     """Search message content (FTS5) across all sources.
 
     Args:
         phrase: Full-text search query
-        limit: Max messages to return (default: 50)
+        limit: Max messages to return (default: unlimited, use -n 50 to limit)
 
     Returns:
         Results dict with 'results' array and count.
@@ -34,12 +34,12 @@ def search_conversations(phrase: str, limit: int = 50) -> dict:
 
 
 @mcp.tool()
-def search_threads(phrase: str, limit: int = 50) -> dict:
+def search_threads(phrase: str, limit: Optional[int] = None) -> dict:
     """Find conversations containing search term (groups by thread).
 
     Args:
         phrase: Search query
-        limit: Max results (default: 50)
+        limit: Max results (default: unlimited, use -n 50 to limit)
 
     Returns:
         Results dict with thread matches grouped by ID.
@@ -57,11 +57,11 @@ def search_threads(phrase: str, limit: int = 50) -> dict:
 
 
 @mcp.tool()
-def list_conversations(limit: int = 100) -> dict:
+def list_conversations(limit: Optional[int] = None) -> dict:
     """List all conversations sorted by recency.
 
     Args:
-        limit: Max results (default: 100)
+        limit: Max results (default: unlimited, use -n 50 to limit)
 
     Returns:
         Results dict with all threads, sorted newest first.
@@ -73,6 +73,50 @@ def list_conversations(limit: int = 100) -> dict:
             "results": results,
             "count": len(results),
         }
+    finally:
+        con.close()
+
+
+@mcp.tool()
+def semantic_search(
+    query: str,
+    limit: Optional[int] = None,
+    source_id: Optional[str] = None,
+) -> dict:
+    """Search conversations by semantic meaning — finds synonyms, related topics, paraphrases.
+    Unlike keyword search, finds 'CPU' when searching 'processor', 'login' when searching 'auth'.
+    Requires embeddings: run 'llm-archive embed' first (needs ollama + nomic-embed-text).
+
+    Args:
+        query: Natural language search query
+        limit: Max results (default: unlimited)
+        source_id: Filter by source (claudecode, opencode, claude, deepseek, chatgpt)
+
+    Returns:
+        Results with threads sorted by relevance. distance=0 is perfect, >0.6 is unrelated.
+    """
+    from llm_archive import embed as embed_mod
+
+    con = db.connect()
+    try:
+        has_vec = db.init_embeddings(con)
+        if not has_vec:
+            return {
+                "error": "sqlite-vec not installed. Run: pip install sqlite-vec",
+                "results": [],
+                "count": 0,
+            }
+        try:
+            vector = embed_mod.embed_text(query)
+        except Exception as e:
+            return {
+                "error": f"Embedding failed — is ollama running with nomic-embed-text? {e}",
+                "results": [],
+                "count": 0,
+            }
+        blob = embed_mod.serialize(vector)
+        results = db.semantic_search_threads(con, blob, limit, source_id)
+        return {"results": results, "count": len(results), "query": query}
     finally:
         con.close()
 
