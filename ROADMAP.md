@@ -78,8 +78,6 @@ Blocks TUI + proxy — can't render inference output without handling tool calls
 
 Extend existing Textual TUI from read-only browser to full chat. Three modes: Browse (current), Chat (streaming response, input at bottom), Fork (preload archived context, enter chat). Depends on Phase 2 for rendering. SIGINT to abort.
 
-**Optional** — proxy already enables any OpenAI-compatible client. Build only if terminal-native interface needed.
-
 **Done**: start new chat, send message, stream response, fork from archive, all in TUI.
 
 ---
@@ -96,12 +94,6 @@ Add to existing MCP server (currently read-only: search, list, get):
 Transport stays stdio; can add SSE/streamable-http later. Lets any MCP client (Cline, Claude Code, Cursor) use llm-archive as memory + inference backplane.
 
 **Done**: MCP client can call `infer` and get a response.
-
-### Phase 5: Replaced
-
-HTTP proxy (Phase 1) eliminates need for custom web UI. Any OpenAI-compatible client works — MinimalChat (PWA), StatelessChatUI (zero-install), Open WebUI (full-featured), Cline (IDE). If later a custom browser for archive search is wanted, build as thin FastAPI page ~200 lines, not a phase.
-
----
 
 ## Appendix: Unified inference event stream
 
