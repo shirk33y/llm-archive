@@ -8,6 +8,8 @@ llm-archive already has: schema (threads+messages+parts), FTS5 across everything
 
 **Why extend vs rebuild**: schema is provider-agnostic (archived + inference share it), IngestedParts already model tool calls/code/reasoning, FTS5 crosses all sources, single binary/ no Docker/ no MongoDB, ingestors are extensible.
 
+**Separate projects?** Extracting inference proxy or bridges into standalone tools seems cleaner, but the whole value is one DB for everything — splitting breaks that. Shared schema changes would need coordinated releases, version sync across repos, more complex dev workflow. For a single-user tool, in-repo separation (distinct modules) is enough.
+
 ## Architecture
 
 Ingest → SQLite ← Infer bridges (API key / CLI subprocess / HTTP proxy)
