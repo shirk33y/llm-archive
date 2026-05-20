@@ -49,29 +49,38 @@ llm-archive already handles most of the hard parts. The roadmap extends it, does
 │  │                   │    │  │ Anthropic│  │ opencode │ │   │
 │  │  (import from     │    │  │ Ollama   │  │ codex    │ │   │
 │  │   any JSON)       │    │  │ OpenRouter│  │ (TBD)   │ │   │
-│  └────────┬─────────┘    │  └──────────┘  └──────────┘ │   │
-│           │              └────────┬─────────────────────┘   │
-│           ▼                       ▼                         │
-│  ┌────────────────────────────────────────┐                 │
-│  │  SQLite (one schema for all)           │                 │
-│  │  sources | threads | messages | parts  │                 │
-│  │  FTS5 across everything                │                 │
-│  └────────────────┬───────────────────────┘                 │
-│                   ▼                                         │
-│  ┌────────────────────────────────────────┐                 │
-│  │  UI (TUI → Web if needed)              │                 │
-│  │  browse / search / chat / fork         │                 │
-│  └────────────────────────────────────────┘                 │
-└──────────────────────────────────────────────────────────────┘
+│  │                   │    │  └────┬─────┘  └──────────┘ │   │
+│  │                   │    │       │                      │   │
+│  │                   │    │  ┌────▼─────────────────┐    │   │
+│  │                   │    │  │  HTTP proxy           │    │   │
+│  │                   │    │  │  /v1/chat/completions │    │   │
+│  │                   │    │  │  /v1/models           │    │   │
+│  │                   │    │  │  (SSE stream +        │    │   │
+│  │                   │    │  │   dual-write to DB)   │    │   │
+│  │                   │    │  └────┬─────────────────┘    │   │
+│  │  └────────┬─────────┘    └─────┼──────────────────────┘   │
+│  │           │                    │                           │
+│  │           ▼                    ▼                           │
+│  │  ┌────────────────────────────────────────┐               │
+│  │  │  SQLite (one schema for all)           │               │
+│  │  │  sources | threads | messages | parts  │               │
+│  │  │  FTS5 across everything                │               │
+│  │  └────────────────┬───────────────────────┘               │
+│  │                   ▼                                       │
+│  │  ┌──────────────┐  ┌───────────┐  ┌──────────────────┐   │
+│  │  │  TUI          │  │  MCP      │  │  HTTP proxy      │   │
+│  │  │  browse/chat  │  │  server   │  │  → any OpenAI    │   │
+│  │  │  fork/search  │  │  (stdio)  │  │    client        │   │
+│  │  └──────────────┘  └───────────┘  └──────────────────┘   │
+│  └──────────────────────────────────────────────────────────────┘
 ```
 
 ## Priorities
 
-1. **Inference engine** — makes the tool useful (can chat + archive)
-2. **Rich content rendering** — needed before chat TUI is usable
-3. **Chat TUI** — primary interface
-4. **MCP inference extension** — use from any MCP client
-5. **Web UI** — only if TUI hits limits
+1. **Inference engine** — CLI bridges + API bridges + HTTP proxy. Chat + archive in one DB, use from any OpenAI-compatible client.
+2. **Rich content rendering** — parse/serialize tool calls, code, reasoning in plain text. Blocks TUI and proxy response rendering.
+3. **Chat TUI** — optional (proxy already enables any UI). Build only if terminal-native interface needed.
+4. **MCP inference extension** — add infer/fork tools to existing MCP server. Use from Cline, Claude Code, etc.
 
 ---
 
@@ -101,6 +110,44 @@ Spawn provider CLIs as subprocess for models behind paywalls (Claude Pro, Codex,
 - Anthropic Messages API (for direct Claude API access)
 
 No LiteLLM — overkill for single-user. OpenAI-compatible covers almost everything. Anthropic API for direct Claude. Add more only when requested.
+
+### OpenAI-compatible HTTP proxy
+
+Expose all bridges (CLI + API) as a standard OpenAI-compatible HTTP endpoint. This lets any OpenAI-compatible client (Open WebUI, MinimalChat, StatelessChatUI, Cline, Continue.dev, ChatGPT app custom endpoint) use llm-archive as backend.
+
+```
+                    ┌──────────────────┐
+Client ──POST──────→│  /v1/chat/       │
+(any OpenAI         │  completions     │
+compatible)         │                  │
+                    │  1. translate    │
+                    │     OpenAI       │
+                    │     schema →     │
+                    │     unified      │
+                    │     NDJSON       │
+                    │  2. spawn bridge │
+                    │  3. stream SSE   │
+                    │  4. dual-write   │
+                    │     to archive   │
+                    └──────────────────┘
+                         │
+                    ┌────▼────┐
+                    │ archive │
+                    │ DB      │
+                    └─────────┘
+
+GET /v1/models → list available providers/models
+```
+
+**Dual-write**: during SSE streaming, every complete message gets written to llm-archive DB with `source_id = "inference"`. The client UI may store its own copy too — that's fine, llm-archive is the canonical store. No sync needed because writes happen in real-time during the request.
+
+**Endpoints**:
+- `POST /v1/chat/completions` — translate OpenAI request → unified NDJSON → bridge → translate response → SSE stream
+- `GET /v1/models` — return list of configured providers/models
+
+**Cost**: ~200-300 lines of FastAPI. Reuses the same bridge/engine code as CLI and TUI paths.
+
+This replaces the need for a custom web UI — any existing OpenAI-compatible client works as frontend.
 
 ### Storage
 
@@ -144,7 +191,7 @@ messages.metadata: {
 }
 ```
 
-Phase 1 **done when**: can send a prompt via CLI bridge and API bridge, store response, see it in `llm-archive status`.
+Phase 1 **done when**: can send a prompt via CLI bridge, API bridge, and HTTP proxy — all store response in archive DB, visible in `llm-archive status` and in any OpenAI-compatible client.
 
 ---
 
@@ -214,31 +261,17 @@ Expose inference through the existing MCP server (currently read-only: search, l
 
 MCP transport stays stdio by default. Can add `sse`/`streamable-http` later.
 
-This lets any MCP client (Claude Code, Cline, Cursor) use llm-archive as both memory + inference backplane. Phase 4 is independent of Phase 3 — the MCP route might satisfy the need for a web UI without building one.
+This lets any MCP client (Claude Code, Cline, Cursor) use llm-archive as both memory + inference backplane. Phase 4 is independent of Phase 3 — and alongside the HTTP proxy (Phase 1), covers all integration paths without a custom UI.
 
 Phase 4 **done when**: MCP client can call `infer` and get a response.
 
 ---
 
-## Phase 5: Web UI
+## Phase 5: Replaced
 
-Only build if TUI hits limits. Concrete triggers:
+OpenAI-compatible HTTP proxy (Phase 1) eliminates the need for a custom web UI. Any OpenAI-compatible client works as frontend — MinimalChat for PWA, StatelessChatUI for zero-install, Open WebUI for full-featured, Cline for IDE integration. llm-archive is the canonical store via dual-write; the client is just a view layer.
 
-- **Need to access archive from phone/tablet** — TUI is terminal-only
-- **Need to share conversations** — URLs are easier than terminal dumps
-- **TUI performance degrades at >5000 conversations** — Textual starts struggling
-
-### Options
-
-- **Lightweight**: FastAPI server wrapping the inference engine + barebones HTML/JS. Same DB access, just a web wrapper. Probably <500 lines.
-- **Full**: React/Svelte frontend, same FastAPI backend. Only if the lightweight option feels too sparse.
-
-### What not to build
-
-- Multi-user auth, RBAC, orgs — single-user tool
-- Docker deployment — local CLI binary
-- Plugin ecosystem — no market for a 1-person tool
-- Image generation, voice, file uploads — out of scope
+If later a custom UI is wanted (e.g. embedded conversation browser with archive search), build it as a thin FastAPI page using QuikChat widget or similar — ~200 lines, not a phase.
 
 ---
 
@@ -325,8 +358,8 @@ Subprocess crash handling: on unexpected exit, check if we can resume via sessio
 
 | Phase | Done when |
 |-------|-----------|
-| 1: Inference engine | Can prompt via CLI bridge + API bridge, store response, see in `llm-archive status` |
+| 1: Inference engine | Can prompt via CLI bridge + API bridge + HTTP proxy, store response, see in `llm-archive status` and in any OpenAI-compatible client |
 | 2: Rich plain text | `to_plain_text()` and `from_plain_text()` handle all `IngestedPart` kinds |
 | 3: Chat TUI | Start new chat, send message, stream response, fork from archive |
 | 4: MCP inference | MCP client can call `infer` tool and get response |
-| 5: Web UI | Trigger conditions met + usable browser interface |
+| 5: Replaced | Proxy eliminates need for custom web UI. Any OpenAI-compatible client works. |
