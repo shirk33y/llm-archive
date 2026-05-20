@@ -134,7 +134,7 @@ Provider-specific mappings:
 | Subprocess crash | restart if resumable, else report | N/A |
 | Context too long | truncate oldest msgs | truncate oldest msgs |
 
-## Done
+## Milestones
 
 | Phase | Done when |
 |-------|-----------|
