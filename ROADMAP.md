@@ -10,32 +10,8 @@ llm-archive already has: schema (threads+messages+parts), FTS5 across everything
 
 ## Architecture
 
-```
-┌──────────────────────────────────────────────────────────┐
-│  llm-archive                                             │
-│  ┌──────────┐  ┌────────────────────────────────────┐   │
-│  │ INGEST   │  │ INFER                               │   │
-│  │ ccode    │  │ ┌────────┐ ┌────────┐ ┌──────────┐ │   │
-│  │ opencode │  │ │ API    │ │ CLI    │ │ HTTP     │ │   │
-│  │ deepseek │  │ │ bridge  │ │ bridge │ │ proxy    │ │   │
-│  │ chatgpt  │  │ │ (key)  │ │ (sub)  │ │ /v1/*    │ │   │
-│  │ windsurf │  │ │ OA,Oll │ │ cc,oc  │ │ SSE+     │ │   │
-│  │ ...      │  │ │ Anthr  │ │ codex  │ │ dual-    │ │   │
-│  └────┬─────┘  │ └────────┘ └────────┘ │ write    │ │   │
-│       │        └───────────────────┬────┴──────────┘ │   │
-│       ▼                            ▼                  │   │
-│  ┌─────────────────────────────────────┐              │   │
-│  │ SQLite: sources|threads|msgs|parts  │              │   │
-│  │ FTS5 | vec | WAL                    │              │   │
-│  └────────┬────────────────────────────┘              │   │
-│           ▼                                           │   │
-│  ┌─────────┐  ┌──────────┐  ┌───────────────────┐    │   │
-│  │ TUI     │  │ MCP      │  │ HTTP proxy        │    │   │
-│  │ browse  │  │ server   │  │ → any OpenAI      │    │   │
-│  │ chat    │  │ (stdio)  │  │   client          │    │   │
-│  └─────────┘  └──────────┘  └───────────────────┘    │   │
-└──────────────────────────────────────────────────────────┘
-```
+Ingest → SQLite ← Infer bridges (API key / CLI subprocess / HTTP proxy)
+Three access paths: TUI (browse/chat), MCP server (stdio), HTTP proxy (any OpenAI client)
 
 ## Phases
 
