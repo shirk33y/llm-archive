@@ -5,11 +5,13 @@ from llm_archive.ingestors.chatgpt import ChatGPTIngestor
 from llm_archive.ingestors.claude import ClaudeIngestor
 from llm_archive.ingestors.claudecode import ClaudeCodeIngestor
 from llm_archive.ingestors.deepseek import DeepseekIngestor
+from llm_archive.ingestors.codex import CodexIngestor
 from llm_archive.ingestors.opencode import OpenCodeIngestor
 from llm_archive.ingestors.windsurf import WindsurfIngestor
 
 INGESTORS: dict[str, type[BaseIngestor]] = {
     "claudecode": ClaudeCodeIngestor,
+    "codex": CodexIngestor,
     "opencode": OpenCodeIngestor,
     "windsurf": WindsurfIngestor,
     "claude": ClaudeIngestor,
