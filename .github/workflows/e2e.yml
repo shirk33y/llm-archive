@@ -125,8 +125,7 @@ jobs:
           cat "$RUNNER_TEMP/svc.log" 2>/dev/null || true
 
   # Manual only: prove the real brew artifact installs and runs as a service
-  # on both macOS and Linux. Requires the tapped formula version to ship the
-  # dummy ingestor (i.e. run this after a release that includes it).
+  # on both macOS and Linux. The formula lives in Formula/llm-archive.rb.
   brew:
     name: brew + brew services (${{ matrix.os }})
     if: github.event_name == 'workflow_dispatch'
@@ -142,8 +141,8 @@ jobs:
 
       - name: Install via brew
         run: |
-          brew tap shirk33y/tap
-          brew install shirk33y/tap/llm-archive
+          brew tap shirk33y/llm-archive
+          brew install llm-archive --HEAD
           llm-archive --help
 
       - name: CLI smoke + dummy invisible
