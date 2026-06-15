@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from llm_archive.config import (
+    ensure_config,
     format_duration_ms,
     load_config,
     parse_duration_ms,
@@ -60,3 +61,23 @@ def test_update_ingestor_config_writes_toml(tmp_path):
     assert config.ingestor("claude").enabled is True
     assert config.ingestor("claude").mode == "cookies"
     assert config.ingestor("claude").sync_interval_ms == 60_000
+
+
+def test_ensure_config_creates_default_disabled_providers(monkeypatch, tmp_path):
+    path = tmp_path / "config.toml"
+    browser_root = tmp_path / "firefox"
+    profile = browser_root / "default"
+    profile.mkdir(parents=True)
+    (profile / "cookies.sqlite").touch()
+    monkeypatch.setattr("llm_archive.config._detect_browser_dir", lambda: browser_root)
+
+    ensure_config(path)
+
+    text = path.read_text()
+    config = load_config(path)
+    assert 'browser_dir = "' in text
+    assert "[ingestors.chatgpt]" in text
+    assert "[ingestors.claudecode]" in text
+    assert config.ingestor("chatgpt").enabled is False
+    assert config.ingestor("chatgpt").sync_interval_ms == 60_000
+    assert config.ingestor("claudecode").watch is True

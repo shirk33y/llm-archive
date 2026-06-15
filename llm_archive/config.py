@@ -10,6 +10,7 @@ from typing import Any
 VALID_AUTH_MODES = {"cookies", "cdp"}
 WEB_INGESTORS = {"chatgpt", "claude", "deepseek"}
 FILE_INGESTORS = {"claudecode", "codex", "opencode", "windsurf"}
+INGESTOR_ORDER = ("chatgpt", "claude", "deepseek", "claudecode", "codex", "opencode", "windsurf")
 _DURATION_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)(ms|s|m|h|d)\s*$")
 
 
@@ -62,8 +63,7 @@ class AppConfig:
 
 def load_config(path: Path | None = None) -> AppConfig:
     path = path or config_path()
-    if not path.exists():
-        return AppConfig(ingestors={})
+    ensure_config(path)
 
     data = tomllib.loads(path.read_text())
     ingestors: dict[str, IngestorConfig] = {}
@@ -179,7 +179,8 @@ def default_ingestor_config(source_id: str) -> IngestorConfig:
 
 def read_config_text(path: Path | None = None) -> str:
     path = path or config_path()
-    return path.read_text() if path.exists() else ""
+    ensure_config(path)
+    return path.read_text()
 
 
 def write_config_text(text: str, path: Path | None = None) -> None:
@@ -190,6 +191,7 @@ def write_config_text(text: str, path: Path | None = None) -> None:
 
 def update_ingestor_config(source_id: str, values: dict[str, Any], path: Path | None = None) -> None:
     path = path or config_path()
+    ensure_config(path)
     data = _raw_config(path)
     ingestors = data.setdefault("ingestors", {})
     raw = ingestors.setdefault(source_id, {})
@@ -201,6 +203,69 @@ def _raw_config(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
     return tomllib.loads(path.read_text())
+
+
+def ensure_config(path: Path | None = None) -> Path:
+    path = path or config_path()
+    if path.exists():
+        return path
+    data = _default_raw_config()
+    browser_dir = _detect_browser_dir()
+    if browser_dir:
+        data["browser_dir"] = str(browser_dir)
+    _write_raw_config(data, path)
+    return path
+
+
+def _default_raw_config() -> dict[str, Any]:
+    return {
+        "ingestors": {
+            source_id: _default_ingestor_table(source_id)
+            for source_id in INGESTOR_ORDER
+        }
+    }
+
+
+def _default_ingestor_table(source_id: str) -> dict[str, Any]:
+    config = default_ingestor_config(source_id)
+    row: dict[str, Any] = {"enabled": False}
+    if config.mode:
+        row["mode"] = config.mode
+    if config.sync_interval_ms:
+        row["sync_interval"] = format_duration_ms(config.sync_interval_ms)
+    if config.min_sync_interval_ms:
+        row["min_sync_interval"] = format_duration_ms(config.min_sync_interval_ms)
+    if config.watch is not None:
+        row["watch"] = config.watch
+    return row
+
+
+def _detect_browser_dir() -> Path | None:
+    for path in _browser_roots():
+        if path.exists() and any(path.glob("**/cookies.sqlite")):
+            return path
+    return None
+
+
+def _browser_roots() -> list[Path]:
+    config_home = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")).expanduser()
+    home = Path.home()
+    if os.sys.platform == "darwin":
+        return [
+            home / "Library" / "Application Support" / "Firefox" / "Profiles",
+            home / "Library" / "Application Support" / "Waterfox" / "Profiles",
+            home / "Library" / "Application Support" / "LibreWolf" / "Profiles",
+        ]
+    return [
+        home / ".var" / "app" / "net.waterfox.waterfox" / ".waterfox",
+        home / ".waterfox",
+        home / "snap" / "waterfox" / "common" / ".waterfox",
+        config_home / "mozilla" / "firefox",
+        home / ".mozilla" / "firefox",
+        home / ".var" / "app" / "org.mozilla.firefox" / "config" / "mozilla" / "firefox",
+        home / ".var" / "app" / "org.mozilla.firefox" / ".mozilla" / "firefox",
+        home / "snap" / "firefox" / "common" / ".mozilla" / "firefox",
+    ]
 
 
 def _write_raw_config(data: dict[str, Any], path: Path) -> None:
