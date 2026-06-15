@@ -1,0 +1,231 @@
+name: e2e
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Push/PR gate: prove the scheduler service works, fast, on Linux, no brew.
+  service:
+    name: service e2e (ubuntu)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install package
+        run: uv sync --extra dev
+
+      - name: Write state poller
+        run: |
+          cat > /tmp/check.py <<'PY'
+          import json, sys, time
+          mode = sys.argv[1]
+          with open('/tmp/status.json') as f:
+              data = json.load(f)
+          svc = data.get('service') or {}
+          hb = svc.get('heartbeat_at')
+          fresh = bool(hb) and (time.time() * 1000 - int(hb)) <= 90000
+          sources = data.get('sources') or []
+          dummy = next((s for s in sources if s.get('id') == 'dummy'), None)
+          threads = (dummy or {}).get('thread_count') or 0
+          jobs = data.get('jobs') or []
+          success = any(
+              j.get('source_id') == 'dummy' and j.get('status') == 'success'
+              for j in jobs
+          )
+          ok = False
+          if not fresh:
+              print('heartbeat not fresh', file=sys.stderr)
+          elif mode == 'disabled':
+              if threads or success:
+                  print(f'dummy synced while disabled (threads={threads})', file=sys.stderr)
+              else:
+                  ok = True
+          else:
+              if not success:
+                  print('no dummy success job', file=sys.stderr)
+              elif threads < 1:
+                  print('dummy thread not written', file=sys.stderr)
+              else:
+                  ok = True
+          if not ok:
+              sys.exit(1)
+          print(f'OK ({mode}): threads={threads} success={success}')
+          PY
+
+      - name: Run scheduler e2e
+        env:
+          TEST_HOME: ${{ runner.temp }}/home
+        run: |
+          set -euo pipefail
+          export HOME="$TEST_HOME"
+          LA="$GITHUB_WORKSPACE/.venv/bin/llm-archive"
+          CFG="$HOME/.config/llm-archive/config.toml"
+          mkdir -p "$(dirname "$CFG")"
+
+          write_config() {
+            printf '%s\n' \
+              '[ingestors.dummy]' \
+              "enabled = $1" \
+              'sync_interval = "1s"' \
+              'min_sync_interval = "1s"' \
+              'watch = false' > "$CFG"
+          }
+
+          poll() {
+            local mode="$1" tries="${2:-45}"
+            for _ in $(seq 1 "$tries"); do
+              "$LA" status --json > /tmp/status.json 2>/dev/null || true
+              if python3 /tmp/check.py "$mode" 2>/dev/null; then return 0; fi
+              sleep 2
+            done
+            echo "::error::poll timed out ($mode)"
+            "$LA" status --json || true
+            python3 /tmp/check.py "$mode" || true
+            return 1
+          }
+
+          # dummy must stay invisible in the provider catalog
+          "$LA" sources | tee /tmp/sources.txt
+          ! grep -qw dummy /tmp/sources.txt
+
+          # Phase 1: disabled. Service must heartbeat but must NOT sync dummy.
+          write_config false
+          "$LA" service > "$RUNNER_TEMP/svc.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/svc.pid"
+          poll disabled 20
+
+          # Phase 2: enable. Service must pick up the live config change.
+          write_config true
+          poll enabled 60
+
+          # CLI smoke against the running service's database
+          "$LA" search dummycanarytoken --no-refresh --json | tee /tmp/search.json
+          python3 -c "import json;d=json.load(open('/tmp/search.json'));assert d['count']>0,d;print('search ok',d['count'])"
+          "$LA" logs | grep -q dummy
+          echo "e2e PASS"
+
+      - name: Teardown
+        if: always()
+        run: |
+          [ -f "$RUNNER_TEMP/svc.pid" ] && kill "$(cat "$RUNNER_TEMP/svc.pid")" 2>/dev/null || true
+          echo '--- service log ---'
+          cat "$RUNNER_TEMP/svc.log" 2>/dev/null || true
+
+  # Manual only: prove the real brew artifact installs and runs as a service
+  # on both macOS and Linux. Requires the tapped formula version to ship the
+  # dummy ingestor (i.e. run this after a release that includes it).
+  brew:
+    name: brew + brew services (${{ matrix.os }})
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Setup Homebrew
+        uses: homebrew/actions/setup-homebrew@master
+
+      - name: Install via brew
+        run: |
+          brew tap shirk33y/tap
+          brew install shirk33y/tap/llm-archive
+          llm-archive --help
+
+      - name: CLI smoke + dummy invisible
+        run: |
+          llm-archive sources | tee /tmp/sources.txt
+          ! grep -qw dummy /tmp/sources.txt
+
+      - name: Write state poller
+        run: |
+          cat > /tmp/check.py <<'PY'
+          import json, sys, time
+          mode = sys.argv[1]
+          with open('/tmp/status.json') as f:
+              data = json.load(f)
+          svc = data.get('service') or {}
+          hb = svc.get('heartbeat_at')
+          fresh = bool(hb) and (time.time() * 1000 - int(hb)) <= 90000
+          sources = data.get('sources') or []
+          dummy = next((s for s in sources if s.get('id') == 'dummy'), None)
+          threads = (dummy or {}).get('thread_count') or 0
+          jobs = data.get('jobs') or []
+          success = any(
+              j.get('source_id') == 'dummy' and j.get('status') == 'success'
+              for j in jobs
+          )
+          ok = False
+          if not fresh:
+              print('heartbeat not fresh', file=sys.stderr)
+          elif mode == 'disabled':
+              if threads or success:
+                  print(f'dummy synced while disabled (threads={threads})', file=sys.stderr)
+              else:
+                  ok = True
+          else:
+              if not success:
+                  print('no dummy success job', file=sys.stderr)
+              elif threads < 1:
+                  print('dummy thread not written', file=sys.stderr)
+              else:
+                  ok = True
+          if not ok:
+              sys.exit(1)
+          print(f'OK ({mode}): threads={threads} success={success}')
+          PY
+
+      - name: Enable dummy
+        run: |
+          mkdir -p ~/.config/llm-archive
+          printf '%s\n' \
+            '[ingestors.dummy]' \
+            'enabled = true' \
+            'sync_interval = "1s"' \
+            'min_sync_interval = "1s"' \
+            'watch = false' > ~/.config/llm-archive/config.toml
+
+      - name: Start service via brew services
+        run: |
+          # Linuxbrew services drives systemd --user, which needs a user session.
+          if command -v systemctl >/dev/null 2>&1; then
+            sudo loginctl enable-linger "$USER" 2>/dev/null || true
+            export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+            systemctl --user daemon-reload 2>/dev/null || true
+          fi
+          brew services start llm-archive
+          sleep 3
+          brew services info llm-archive
+
+      - name: Poll service + dummy sync
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 90); do
+            llm-archive status --json > /tmp/status.json 2>/dev/null || true
+            if python3 /tmp/check.py enabled 2>/dev/null; then break; fi
+            sleep 2
+          done
+          python3 /tmp/check.py enabled
+          llm-archive search dummycanarytoken --no-refresh --json | tee /tmp/search.json
+          python3 -c "import json;d=json.load(open('/tmp/search.json'));assert d['count']>0,d;print('search ok',d['count'])"
+          echo "brew e2e PASS"
+
+      - name: Teardown
+        if: always()
+        run: |
+          brew services stop llm-archive 2>/dev/null || true
+          brew services cleanup 2>/dev/null || true
