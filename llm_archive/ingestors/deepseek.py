@@ -7,6 +7,12 @@ from pathlib import Path
 
 import httpx
 
+from llm_archive.auth.browser_cookies import (
+    cookies_to_dict,
+    extract_firefox_cookies,
+    extract_firefox_local_storage,
+)
+from llm_archive.config import VALID_AUTH_MODES, load_config
 from llm_archive.ingestors.base import BaseIngestor
 from llm_archive.logging import get_logger
 from llm_archive.schema import IngestedMessage, IngestedThread
@@ -31,8 +37,23 @@ BROWSER_HEADERS = {
 class DeepseekIngestor(BaseIngestor):
     source_id = "deepseek"
 
-    def __init__(self):
+    def __init__(
+        self,
+        auth_mode: str | None = None,
+        browser_dir: str | None = None,
+        browser_path: str | None = None,
+    ):
+        config = load_config()
+        deepseek_config = config.ingestor(self.source_id)
+        mode = auth_mode or deepseek_config.mode or "cdp"
+        if mode not in VALID_AUTH_MODES:
+            valid = ", ".join(sorted(VALID_AUTH_MODES))
+            raise ValueError(f"Invalid DeepSeek auth mode: {mode!r}. Expected: {valid}")
         self._token: str | None = None
+        self._cookies: dict[str, str] = {}
+        self._auth_mode = mode
+        self._browser_dir = browser_dir or config.browser_dir
+        self._browser_path = browser_path or config.browser_path
 
     async def requires_auth(self) -> bool:
         return True
@@ -40,6 +61,10 @@ class DeepseekIngestor(BaseIngestor):
     async def init(self, **kwargs) -> None:
         from llm_archive.auth.playwright import auth_path
         logger.info("Checking auth state")
+        if self._auth_mode == "cookies":
+            self._token = None
+            self._cookies = {}
+            return
         if not auth_path(self.source_id).exists() or kwargs.get("reauth"):
             logger.info("Auth missing or reauth requested, starting browser login")
             await _login()
@@ -54,11 +79,12 @@ class DeepseekIngestor(BaseIngestor):
             **BROWSER_HEADERS,
             "authorization": f"Bearer {token}",
         }
+        cookies = await self._get_cookies()
 
         if existing_thread_ids is None:
             existing_thread_ids = set()
 
-        async with httpx.AsyncClient(timeout=30, headers=headers) as client:
+        async with httpx.AsyncClient(timeout=30, headers=headers, cookies=cookies) as client:
             sessions = await self._fetch_sessions(client)
             logger.debug(f"Found {len(sessions)} conversations")
             if on_total:
@@ -182,6 +208,11 @@ class DeepseekIngestor(BaseIngestor):
         if self._token:
             return self._token
 
+        if self._auth_mode == "cookies":
+            self._token = self._get_token_from_browser_storage()
+            logger.debug("Extracted bearer token from browser storage")
+            return self._token
+
         from llm_archive.auth.playwright import auth_path
 
         path = auth_path(self.source_id)
@@ -213,6 +244,33 @@ class DeepseekIngestor(BaseIngestor):
 
         # If not found in localStorage, fall back to Chrome extraction
         return await self._get_token_via_chrome(path)
+
+    async def _get_cookies(self) -> dict[str, str]:
+        if not self._cookies and self._auth_mode == "cookies":
+            browser_cookies = extract_firefox_cookies(
+                browser_dir=self._browser_dir,
+                domains=("chat.deepseek.com", "deepseek.com"),
+            )
+            self._cookies = cookies_to_dict(browser_cookies)
+        return self._cookies
+
+    def _get_token_from_browser_storage(self) -> str:
+        storage = extract_firefox_local_storage(
+            "https://chat.deepseek.com",
+            browser_dir=self._browser_dir,
+        )
+        token = storage.get("userToken")
+        if not token:
+            raise FileNotFoundError("No DeepSeek userToken found in browser localStorage")
+        try:
+            parsed = json.loads(token)
+            if isinstance(parsed, dict) and isinstance(parsed.get("value"), str):
+                token = parsed["value"]
+        except (json.JSONDecodeError, TypeError):
+            pass
+        if not token:
+            raise FileNotFoundError("No DeepSeek userToken found in browser localStorage")
+        return token
 
     async def _get_token_via_chrome(self, path: Path) -> str:
         """Fallback: extract bearer token by launching Chrome and intercepting request."""
@@ -268,6 +326,9 @@ class DeepseekIngestor(BaseIngestor):
 
     async def _reauth(self) -> None:
         self._token = None
+        self._cookies = {}
+        if self._auth_mode == "cookies":
+            return
         logger.info("Reauthenticating")
         await _login()
 
