@@ -128,6 +128,54 @@ CREATE TABLE IF NOT EXISTS sources (
     hostname    TEXT
 );
 
+CREATE TABLE IF NOT EXISTS provider_state (
+    source_id             TEXT PRIMARY KEY,
+    enabled               INTEGER NOT NULL DEFAULT 0,
+    stale_since           INTEGER,
+    pending_events        INTEGER NOT NULL DEFAULT 0,
+    last_sync_started_at  INTEGER,
+    last_sync_finished_at INTEGER,
+    last_success_at       INTEGER,
+    next_sync_at          INTEGER,
+    last_error            TEXT,
+    failure_count         INTEGER NOT NULL DEFAULT 0,
+    auth_status           TEXT,
+    path_status           TEXT
+);
+
+CREATE TABLE IF NOT EXISTS jobs (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind            TEXT NOT NULL,
+    source_id       TEXT,
+    status          TEXT NOT NULL,
+    reason          TEXT,
+    started_at      INTEGER NOT NULL,
+    heartbeat_at    INTEGER NOT NULL,
+    finished_at     INTEGER,
+    force           INTEGER NOT NULL DEFAULT 0,
+    error           TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_jobs_active ON jobs(kind, source_id, status);
+CREATE INDEX IF NOT EXISTS idx_jobs_history ON jobs(started_at DESC);
+
+CREATE TABLE IF NOT EXISTS service_state (
+    id             INTEGER PRIMARY KEY CHECK (id = 1),
+    pid            INTEGER,
+    started_at     INTEGER,
+    heartbeat_at   INTEGER,
+    version        TEXT,
+    config_hash    TEXT
+);
+
+CREATE TABLE IF NOT EXISTS backup_state (
+    id              INTEGER PRIMARY KEY CHECK (id = 1),
+    last_started_at INTEGER,
+    last_success_at INTEGER,
+    next_backup_at  INTEGER,
+    last_error      TEXT,
+    failure_count   INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS threads (
     id                  TEXT PRIMARY KEY,
     source_id           TEXT    NOT NULL,
@@ -436,6 +484,239 @@ def source_stats(con: sqlite3.Connection) -> list[dict]:
         GROUP BY s.id
     """).fetchall()
     return [dict(r) for r in rows]
+
+
+def now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def ensure_provider_state(con: sqlite3.Connection, source_id: str, enabled: bool = False) -> None:
+    con.execute(
+        "INSERT OR IGNORE INTO provider_state(source_id, enabled) VALUES(?, ?)",
+        (source_id, 1 if enabled else 0),
+    )
+    con.commit()
+
+
+def set_provider_enabled(con: sqlite3.Connection, source_id: str, enabled: bool) -> None:
+    ensure_provider_state(con, source_id, enabled)
+    con.execute(
+        "UPDATE provider_state SET enabled=? WHERE source_id=?",
+        (1 if enabled else 0, source_id),
+    )
+    con.commit()
+
+
+def mark_provider_stale(con: sqlite3.Connection, source_id: str) -> None:
+    ts = now_ms()
+    ensure_provider_state(con, source_id)
+    con.execute(
+        """
+        UPDATE provider_state
+        SET stale_since=COALESCE(stale_since, ?), pending_events=pending_events + 1
+        WHERE source_id=?
+        """,
+        (ts, source_id),
+    )
+    con.commit()
+
+
+def set_provider_next_sync(con: sqlite3.Connection, source_id: str, ts: int | None) -> None:
+    ensure_provider_state(con, source_id)
+    con.execute("UPDATE provider_state SET next_sync_at=? WHERE source_id=?", (ts, source_id))
+    con.commit()
+
+
+def set_provider_sync_started(con: sqlite3.Connection, source_id: str, ts: int | None = None) -> None:
+    ensure_provider_state(con, source_id)
+    con.execute(
+        "UPDATE provider_state SET last_sync_started_at=? WHERE source_id=?",
+        (ts or now_ms(), source_id),
+    )
+    con.commit()
+
+
+def set_provider_sync_success(con: sqlite3.Connection, source_id: str, ts: int | None = None) -> None:
+    ts = ts or now_ms()
+    ensure_provider_state(con, source_id)
+    con.execute(
+        """
+        UPDATE provider_state
+        SET last_sync_finished_at=?, last_success_at=?, stale_since=NULL, pending_events=0,
+            last_error=NULL, failure_count=0, auth_status='ok', path_status='ok'
+        WHERE source_id=?
+        """,
+        (ts, ts, source_id),
+    )
+    con.commit()
+
+
+def set_provider_sync_failure(
+    con: sqlite3.Connection,
+    source_id: str,
+    error: str,
+    *,
+    auth_status: str | None = None,
+    path_status: str | None = None,
+) -> None:
+    ensure_provider_state(con, source_id)
+    con.execute(
+        """
+        UPDATE provider_state
+        SET last_sync_finished_at=?, last_error=?, failure_count=failure_count + 1,
+            auth_status=COALESCE(?, auth_status), path_status=COALESCE(?, path_status)
+        WHERE source_id=?
+        """,
+        (now_ms(), error[:500], auth_status, path_status, source_id),
+    )
+    con.commit()
+
+
+def provider_states(con: sqlite3.Connection) -> dict[str, dict]:
+    rows = con.execute("SELECT * FROM provider_state ORDER BY source_id").fetchall()
+    return {row["source_id"]: dict(row) for row in rows}
+
+
+def active_job(con: sqlite3.Connection, kind: str, source_id: str | None) -> dict | None:
+    row = con.execute(
+        """
+        SELECT * FROM jobs
+        WHERE kind=? AND (source_id=? OR (source_id IS NULL AND ? IS NULL)) AND status='running'
+        ORDER BY started_at DESC
+        LIMIT 1
+        """,
+        (kind, source_id, source_id),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def create_job(
+    con: sqlite3.Connection,
+    kind: str,
+    source_id: str | None,
+    *,
+    force: bool = False,
+    status: str = "running",
+    reason: str | None = None,
+) -> int:
+    ts = now_ms()
+    cur = con.execute(
+        """
+        INSERT INTO jobs(kind, source_id, status, reason, started_at, heartbeat_at, force)
+        VALUES(?, ?, ?, ?, ?, ?, ?)
+        """,
+        (kind, source_id, status, reason, ts, ts, 1 if force else 0),
+    )
+    con.commit()
+    return int(cur.lastrowid)
+
+
+def update_job(
+    con: sqlite3.Connection,
+    job_id: int,
+    *,
+    status: str | None = None,
+    reason: str | None = None,
+    error: str | None = None,
+    finish: bool = False,
+) -> None:
+    fields = ["heartbeat_at=?"]
+    params: list = [now_ms()]
+    if status is not None:
+        fields.append("status=?")
+        params.append(status)
+    if reason is not None:
+        fields.append("reason=?")
+        params.append(reason)
+    if error is not None:
+        fields.append("error=?")
+        params.append(error[:500])
+    if finish:
+        fields.append("finished_at=?")
+        params.append(now_ms())
+    params.append(job_id)
+    con.execute(f"UPDATE jobs SET {', '.join(fields)} WHERE id=?", params)
+    con.commit()
+
+
+def recent_jobs(con: sqlite3.Connection, limit: int = 20) -> list[dict]:
+    rows = con.execute("SELECT * FROM jobs ORDER BY started_at DESC LIMIT ?", (limit,)).fetchall()
+    return [dict(row) for row in rows]
+
+
+def heartbeat_service(
+    con: sqlite3.Connection,
+    *,
+    pid: int,
+    started_at: int,
+    version: str,
+    config_hash: str,
+) -> None:
+    con.execute(
+        """
+        INSERT INTO service_state(id, pid, started_at, heartbeat_at, version, config_hash)
+        VALUES(1, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            pid=excluded.pid,
+            started_at=excluded.started_at,
+            heartbeat_at=excluded.heartbeat_at,
+            version=excluded.version,
+            config_hash=excluded.config_hash
+        """,
+        (pid, started_at, now_ms(), version, config_hash),
+    )
+    con.commit()
+
+
+def get_service_state(con: sqlite3.Connection) -> dict | None:
+    row = con.execute("SELECT * FROM service_state WHERE id=1").fetchone()
+    return dict(row) if row else None
+
+
+def set_backup_started(con: sqlite3.Connection) -> None:
+    con.execute(
+        """
+        INSERT INTO backup_state(id, last_started_at) VALUES(1, ?)
+        ON CONFLICT(id) DO UPDATE SET last_started_at=excluded.last_started_at
+        """,
+        (now_ms(),),
+    )
+    con.commit()
+
+
+def set_backup_success(con: sqlite3.Connection, next_backup_at: int | None = None) -> None:
+    ts = now_ms()
+    con.execute(
+        """
+        INSERT INTO backup_state(id, last_success_at, next_backup_at, last_error, failure_count)
+        VALUES(1, ?, ?, NULL, 0)
+        ON CONFLICT(id) DO UPDATE SET
+            last_success_at=excluded.last_success_at,
+            next_backup_at=excluded.next_backup_at,
+            last_error=NULL,
+            failure_count=0
+        """,
+        (ts, next_backup_at),
+    )
+    con.commit()
+
+
+def set_backup_failure(con: sqlite3.Connection, error: str) -> None:
+    con.execute(
+        """
+        INSERT INTO backup_state(id, last_error, failure_count) VALUES(1, ?, 1)
+        ON CONFLICT(id) DO UPDATE SET
+            last_error=excluded.last_error,
+            failure_count=failure_count + 1
+        """,
+        (error[:500],),
+    )
+    con.commit()
+
+
+def get_backup_state(con: sqlite3.Connection) -> dict | None:
+    row = con.execute("SELECT * FROM backup_state WHERE id=1").fetchone()
+    return dict(row) if row else None
 
 
 def _load_vec(con: sqlite3.Connection) -> bool:

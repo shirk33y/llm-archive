@@ -35,7 +35,7 @@ import httpx
 from llm_archive.auth.browser_cookies import (
     cookie_header_for_url,
     cookies_to_dict,
-    extract_firefox_cookies,
+    extract_browser_cookies,
 )
 from llm_archive.auth.playwright import AUTH_DIR, auth_path, login_with_detection
 from llm_archive.config import VALID_AUTH_MODES, load_config
@@ -49,6 +49,7 @@ logger = get_logger("chatgpt")
 LOGIN_URL = "https://chatgpt.com"
 API_BASE = "https://chatgpt.com/backend-api"
 CDP_PORT = 9333
+COOKIE_DOMAINS = ("chatgpt.com", "openai.com")
 
 
 def _find_chrome_binary() -> list[str]:
@@ -140,8 +141,10 @@ class ChatGPTIngestor(BaseIngestor):
             raise ValueError(f"Invalid ChatGPT auth mode: {mode!r}. Expected: {valid}")
         self._message_limiter = MessageRateLimiter()
         self._auth_mode = mode
-        self._browser_dir = browser_dir or config.browser_dir
-        self._browser_path = browser_path or config.browser_path
+        self._browser = chatgpt_config.browser
+        self._profile = chatgpt_config.profile
+        self._browser_dir = browser_dir or chatgpt_config.browser_dir or config.browser_dir
+        self._browser_path = browser_path or chatgpt_config.browser_path or config.browser_path
         self._use_cdp = mode == "cdp"
 
     async def requires_auth(self) -> bool:
@@ -492,9 +495,11 @@ class ChatGPTIngestor(BaseIngestor):
     async def _try_browser_cookies_token(self) -> tuple[str, dict[str, str]] | None:
         """Try extracting cookies from Waterfox/Firefox and fetching access token via API."""
         try:
-            browser_cookies = extract_firefox_cookies(
+            browser_cookies = extract_browser_cookies(
+                self._browser,
+                profile=self._profile,
                 browser_dir=self._browser_dir,
-                domains=("chatgpt.com", "openai.com"),
+                domains=COOKIE_DOMAINS,
             )
         except FileNotFoundError as e:
             logger.warning(f"Browser cookie extraction failed: {e}")
@@ -536,7 +541,7 @@ class ChatGPTIngestor(BaseIngestor):
                 if path.exists():
                     existing = json.loads(path.read_text())
                 existing["access_token"] = token
-                existing["cookies"] = browser_cookies
+                existing["cookies"] = _relevant_cookie_cache(browser_cookies)
                 path.write_text(json.dumps(existing))
                 logger.info("Saved fresh token from browser cookies")
             except Exception as e:
@@ -613,7 +618,8 @@ class ChatGPTIngestor(BaseIngestor):
                     raise RuntimeError("Login timeout - please login at chatgpt.com")
 
                 cookies = await ctx.cookies()
-                cookie_dict = {c["name"]: c["value"] for c in cookies}
+                relevant_cookies = _relevant_cookie_cache(cookies)
+                cookie_dict = {c["name"]: c["value"] for c in relevant_cookies}
 
                 await browser.close()
 
@@ -623,7 +629,7 @@ class ChatGPTIngestor(BaseIngestor):
                     if path.exists():
                         existing = json.loads(path.read_text())
                     existing["access_token"] = result
-                    existing["cookies"] = [{"name": k, "value": v} for k, v in cookie_dict.items()]
+                    existing["cookies"] = relevant_cookies
                     path.write_text(json.dumps(existing))
                     logger.info("Saved fresh token to auth file")
                 except Exception as e:
@@ -632,6 +638,7 @@ class ChatGPTIngestor(BaseIngestor):
                 return result, cookie_dict
         finally:
             _cleanup_chrome_proc(chrome_proc, user_data_dir)
+
 
     async def _request_with_message_with_retry(
         self,
@@ -757,6 +764,29 @@ class ChatGPTIngestor(BaseIngestor):
             updated_at=_parse_timestamp(conv.get("update_time")),
             messages=messages,
         )
+
+
+def _relevant_cookie_cache(cookies: list[dict]) -> list[dict]:
+    relevant = []
+    for cookie in cookies:
+        domain = str(cookie.get("domain") or "")
+        if domain and not _domain_matches(domain, COOKIE_DOMAINS):
+            continue
+        item = {
+            "name": cookie.get("name"),
+            "value": cookie.get("value"),
+        }
+        for key in ("domain", "path", "expires", "secure"):
+            if cookie.get(key) is not None:
+                item[key] = cookie[key]
+        if item["name"] and item["value"] is not None:
+            relevant.append(item)
+    return relevant
+
+
+def _domain_matches(host: str, domains: tuple[str, ...]) -> bool:
+    normalized = host.lstrip(".").lower()
+    return any(normalized == domain or normalized.endswith(f".{domain}") for domain in domains)
 
 
 async def _login() -> None:

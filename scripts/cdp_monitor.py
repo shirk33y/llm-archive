@@ -25,7 +25,7 @@ def launch_chrome():
         if targets:
             print("Chrome already running with CDP")
             return True
-    except:
+    except Exception:
         pass
 
     print("Launching Chrome...")
@@ -53,7 +53,7 @@ def launch_chrome():
             if targets:
                 print("Chrome launched")
                 return True
-        except:
+        except Exception:
             continue
     return False
 

@@ -137,7 +137,6 @@ async def monitor_cdp(ws_url: str, auth_timeout: int, interact_timeout: int):
                 else:
                     # Auth timeout passed, now interaction timeout
                     interact_elapsed = elapsed - auth_timeout
-                    interact_remaining = interact_timeout - interact_elapsed
                     if int(interact_elapsed) % 10 == 0:
                         print(
                             f"\n[Interaction period: {int(interact_elapsed)}s / {interact_timeout}s]\n"
@@ -207,7 +206,7 @@ def main():
             if targets:
                 print(f"Chrome ready! (took {i + 1}s)")
                 break
-        except:
+        except Exception:
             continue
     else:
         print("Chrome failed to start!")
@@ -226,8 +225,8 @@ def main():
         proc.terminate()
         return 1
 
-    print(f"\nNavigate to ChatGPT and log in...")
-    print(f"Monitor will start in 5 seconds...\n")
+    print("\nNavigate to ChatGPT and log in...")
+    print("Monitor will start in 5 seconds...\n")
     time.sleep(5)
 
     # Setup signal handlers

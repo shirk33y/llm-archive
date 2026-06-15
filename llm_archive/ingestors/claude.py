@@ -4,7 +4,7 @@ from typing import AsyncIterator
 
 import httpx
 
-from llm_archive.auth.browser_cookies import cookies_to_dict, extract_firefox_cookies
+from llm_archive.auth.browser_cookies import cookies_to_dict, extract_browser_cookies
 from llm_archive.config import VALID_AUTH_MODES, load_config
 from llm_archive.ingestors.base import BaseIngestor
 from llm_archive.logging import get_logger
@@ -46,8 +46,10 @@ class ClaudeIngestor(BaseIngestor):
         self._cookies: dict[str, str] = {}
         self._org_id: str | None = None
         self._auth_mode = mode
-        self._browser_dir = browser_dir or config.browser_dir
-        self._browser_path = browser_path or config.browser_path
+        self._browser = claude_config.browser
+        self._profile = claude_config.profile
+        self._browser_dir = browser_dir or claude_config.browser_dir or config.browser_dir
+        self._browser_path = browser_path or claude_config.browser_path or config.browser_path
 
     async def requires_auth(self) -> bool:
         return True
@@ -64,7 +66,9 @@ class ClaudeIngestor(BaseIngestor):
     async def _get_cookies(self) -> dict[str, str]:
         if not self._cookies:
             if self._auth_mode == "cookies":
-                browser_cookies = extract_firefox_cookies(
+                browser_cookies = extract_browser_cookies(
+                    self._browser,
+                    profile=self._profile,
                     browser_dir=self._browser_dir,
                     domains=("claude.ai",),
                 )

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 import json
-import textwrap
 from pathlib import Path
 
 import pytest
@@ -17,7 +16,7 @@ from llm_archive.ingestors.deepseek import (
     _parse_ts,
     _role,
 )
-from llm_archive.ingestors.opencode import OpenCodeIngestor, _build_thread
+from llm_archive.ingestors.opencode import OpenCodeIngestor
 from llm_archive.schema import IngestedMessage, IngestedThread, IngestedPart
 
 
@@ -852,7 +851,7 @@ def test_claude_parse_timestamp_none():
 async def test_claude_smart_sync_continues_past_existing():
     """Regression: smart sync must continue past already-synced conversations, not break."""
     from llm_archive.ingestors.claude import ClaudeIngestor
-    from unittest.mock import patch, AsyncMock, MagicMock
+    from unittest.mock import patch, AsyncMock
 
     ingestor = ClaudeIngestor()
 
@@ -1224,7 +1223,7 @@ def test_search_threads_sorts_newest_first(tmp_path):
 
 def test_search_messages_newest_message_first_within_thread(con):
     """Regression: within a thread, newest messages appear first."""
-    from llm_archive.schema import IngestedMessage, IngestedPart, IngestedThread
+    from llm_archive.schema import IngestedMessage, IngestedThread
 
     db.save_thread(
         con,
@@ -1538,10 +1537,6 @@ async def test_chatgpt_fetch_thread_parses_messages():
 @pytest.mark.asyncio
 async def test_chatgpt_smart_sync_skips_existing():
     """Test that conversations in existing_thread_ids are skipped."""
-    from llm_archive.ingestors.chatgpt import ChatGPTIngestor
-
-    ingestor = ChatGPTIngestor()
-
     # Test the filtering logic directly
     conversations = [
         {"id": "conv-1", "create_time": 1704108000.0, "update_time": 1704108000.0},

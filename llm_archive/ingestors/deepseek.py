@@ -9,8 +9,8 @@ import httpx
 
 from llm_archive.auth.browser_cookies import (
     cookies_to_dict,
-    extract_firefox_cookies,
-    extract_firefox_local_storage,
+    extract_browser_cookies,
+    extract_browser_local_storage_value,
 )
 from llm_archive.config import VALID_AUTH_MODES, load_config
 from llm_archive.ingestors.base import BaseIngestor
@@ -52,8 +52,10 @@ class DeepseekIngestor(BaseIngestor):
         self._token: str | None = None
         self._cookies: dict[str, str] = {}
         self._auth_mode = mode
-        self._browser_dir = browser_dir or config.browser_dir
-        self._browser_path = browser_path or config.browser_path
+        self._browser = deepseek_config.browser
+        self._profile = deepseek_config.profile
+        self._browser_dir = browser_dir or deepseek_config.browser_dir or config.browser_dir
+        self._browser_path = browser_path or deepseek_config.browser_path or config.browser_path
 
     async def requires_auth(self) -> bool:
         return True
@@ -247,7 +249,9 @@ class DeepseekIngestor(BaseIngestor):
 
     async def _get_cookies(self) -> dict[str, str]:
         if not self._cookies and self._auth_mode == "cookies":
-            browser_cookies = extract_firefox_cookies(
+            browser_cookies = extract_browser_cookies(
+                self._browser,
+                profile=self._profile,
                 browser_dir=self._browser_dir,
                 domains=("chat.deepseek.com", "deepseek.com"),
             )
@@ -255,11 +259,13 @@ class DeepseekIngestor(BaseIngestor):
         return self._cookies
 
     def _get_token_from_browser_storage(self) -> str:
-        storage = extract_firefox_local_storage(
+        token = extract_browser_local_storage_value(
             "https://chat.deepseek.com",
+            "userToken",
+            self._browser,
+            profile=self._profile,
             browser_dir=self._browser_dir,
         )
-        token = storage.get("userToken")
         if not token:
             raise FileNotFoundError("No DeepSeek userToken found in browser localStorage")
         try:

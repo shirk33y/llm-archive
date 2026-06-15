@@ -1,6 +1,7 @@
 # TODO
 
 - [ ] Extract sync logic from `llm_archive/ingestors/chatgpt.py` to `sync.py` and apply to other ingestors
+- [ ] Add VS Code Copilot ingestor
 - [ ] Ask user before auto-launching CDP browser (currently opens Chrome silently)
 - [ ] Configurable Chrome/Chromium path
 - [ ] Auto-download Chromium and launch it if no browser found

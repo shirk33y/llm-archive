@@ -1,6 +1,8 @@
 from __future__ import annotations
 import glob
+import json
 import os
+import re
 import shutil
 import sqlite3
 import sys
@@ -138,6 +140,43 @@ def extract_firefox_cookies(
     return cookies
 
 
+def extract_browser_cookies(
+    browser: str | None = None,
+    profile: str | None = None,
+    *,
+    browser_dir: str | None = None,
+    domains: tuple[str, ...] | None = None,
+) -> list[dict[str, Any]]:
+    browser = (browser or "firefox").lower()
+    profile = browser_dir or profile
+    if browser in {"firefox", "waterfox", "librewolf"}:
+        return extract_firefox_cookies(profile=profile, domains=domains)
+    try:
+        from yt_dlp.cookies import extract_cookies_from_browser
+    except Exception as exc:
+        raise RuntimeError("yt-dlp cookie support unavailable") from exc
+    jar = extract_cookies_from_browser(browser, profile=profile)
+    cookies: list[dict[str, Any]] = []
+    now = time.time()
+    for cookie in jar:
+        if cookie.expires is not None and cookie.expires < now:
+            continue
+        if domains and not _domain_matches(cookie.domain, domains):
+            continue
+        cookies.append(
+            {
+                "name": cookie.name,
+                "value": cookie.value,
+                "domain": cookie.domain,
+                "path": cookie.path,
+                "expires": cookie.expires,
+                "secure": cookie.secure,
+            }
+        )
+    logger.info(f"Extracted {len(cookies)} cookies from {browser}")
+    return cookies
+
+
 def extract_firefox_local_storage(
     origin: str,
     profile: str | None = None,
@@ -165,6 +204,55 @@ def extract_firefox_local_storage(
         else:
             values[str(key)] = str(value)
     return values
+
+
+def extract_browser_local_storage_value(
+    origin: str,
+    key: str,
+    browser: str | None = None,
+    profile: str | None = None,
+    *,
+    browser_dir: str | None = None,
+) -> str:
+    browser = (browser or "firefox").lower()
+    if browser in {"firefox", "waterfox", "librewolf"}:
+        return extract_firefox_local_storage(origin, profile, browser_dir=browser_dir)[key]
+    profile_dir = Path(browser_dir or profile or "").expanduser()
+    if not profile_dir:
+        raise FileNotFoundError("No browser profile configured")
+    return _extract_chromium_local_storage_value(profile_dir, key)
+
+
+def _extract_chromium_local_storage_value(profile_dir: Path, key: str) -> str:
+    storage_dir = profile_dir / "Local Storage" / "leveldb"
+    if not storage_dir.exists():
+        raise FileNotFoundError(f"could not find Chromium localStorage in {profile_dir}")
+    key_bytes = key.encode()
+    for path in sorted(storage_dir.glob("*")):
+        if path.suffix not in {".ldb", ".log"}:
+            continue
+        data = path.read_bytes()
+        if key_bytes not in data:
+            continue
+        text = data.decode("utf-8", errors="ignore")
+        value = _find_local_storage_value(text, key)
+        if value:
+            return value
+    raise FileNotFoundError(f"No {key} found in Chromium localStorage")
+
+
+def _find_local_storage_value(text: str, key: str) -> str | None:
+    start = text.find(key)
+    if start < 0:
+        return None
+    tail = text[start : start + 4096]
+    match = re.search(r"\{[^\{\}]{0,300}\"value\"\s*:\s*\"([^\"]+)\"[^\{\}]{0,300}\}", tail)
+    if match:
+        return json.dumps({"value": match.group(1)})
+    match = re.search(r"(eyJ[a-zA-Z0-9_.-]{20,})", tail)
+    if match:
+        return match.group(1)
+    return None
 
 
 def extract_cookies_from_firefox(
