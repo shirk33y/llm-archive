@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import os
 from pathlib import Path
 from typing import Awaitable, Callable
@@ -11,6 +12,8 @@ from llm_archive.backup import run_backup
 from llm_archive.config import AppConfig, config_path, load_config, read_config_text
 from llm_archive.jobs import run_sync_job
 from llm_archive.providers import provider_paths
+
+logger = logging.getLogger("llm_archive.service")
 
 SyncRunner = Callable[[str, bool], Awaitable[bool]]
 
@@ -24,18 +27,21 @@ async def run_service(
     started_at = db.now_ms()
     seen_mtimes: dict[str, float] = {}
     while True:
-        config = load_config()
-        con = db.connect(db_path or db.DB_PATH)
-        db.heartbeat_service(
-            con,
-            pid=os.getpid(),
-            started_at=started_at,
-            version="0.1.0",
-            config_hash=_config_hash(),
-        )
-        await _mark_file_changes(con, config, seen_mtimes)
-        await _run_due_syncs(con, config, runner, db_path)
-        await _run_due_backup(con, db_path)
+        try:
+            config = load_config()
+            con = db.connect(db_path or db.DB_PATH)
+            db.heartbeat_service(
+                con,
+                pid=os.getpid(),
+                started_at=started_at,
+                version="0.1.0",
+                config_hash=_config_hash(),
+            )
+            await _mark_file_changes(con, config, seen_mtimes)
+            await _run_due_syncs(con, config, runner, db_path)
+            await _run_due_backup(con, db_path)
+        except Exception:
+            logger.exception("service loop error")
         await asyncio.sleep(poll_interval)
 
 
