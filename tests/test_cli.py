@@ -29,6 +29,17 @@ class FakeIngestor:
             yield None
 
 
+def test_config_show_prints_toml_headers(monkeypatch, tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text('[ingestors.chatgpt]\nmode = "cookies"\n')
+    monkeypatch.setenv("LLM_ARCHIVE_CONFIG", str(path))
+
+    result = CliRunner().invoke(cli.main, ["config", "show"])
+
+    assert result.exit_code == 0
+    assert "[ingestors.chatgpt]" in result.output
+
+
 class CountIngestor(FakeIngestor):
     async def count_threads(self, since: int | None = None):
         return 2
@@ -287,7 +298,6 @@ async def test_force_flag_disables_smart_sync(tmp_path):
 def test_token_extraction_from_storage_state(tmp_path):
     """Test extracting bearer token from storage state localStorage."""
     import json
-    from pathlib import Path
     
     # Test plain token
     auth_dir = tmp_path / "auth"
@@ -601,7 +611,7 @@ def test_search_sorts_newest_thread_first(tmp_path):
     # New thread title should appear before old thread title
     new_pos = result.output.find("New thread")
     old_pos = result.output.find("Old thread")
-    assert new_pos < old_pos, f"New thread should appear before old thread"
+    assert new_pos < old_pos, "New thread should appear before old thread"
 
 
 def test_search_sorts_newest_messages_within_thread_first(tmp_path):
@@ -624,4 +634,4 @@ def test_search_sorts_newest_messages_within_thread_first(tmp_path):
     assert result.exit_code == 0
     late_pos = result.output.find("findme late")
     early_pos = result.output.find("findme early")
-    assert late_pos < early_pos, f"Later message should appear before earlier message within same thread"
+    assert late_pos < early_pos, "Later message should appear before earlier message within same thread"

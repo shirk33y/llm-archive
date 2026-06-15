@@ -1,11 +1,14 @@
 """MCP server for llm-archive — search and retrieve conversations."""
 from __future__ import annotations
 
-import json
-from typing import Any, Optional
+import asyncio
+from typing import Optional
 
 from mcp.server import FastMCP
 from llm_archive import db
+from llm_archive.config import load_config
+from llm_archive.ingestors import INGESTORS
+from llm_archive.jobs import ensure_fresh
 
 mcp = FastMCP("llm-archive", json_response=True)
 
@@ -21,6 +24,7 @@ def search_conversations(phrase: str, limit: Optional[int] = None) -> dict:
     Returns:
         Results dict with 'results' array and count.
     """
+    _ensure_fresh()
     con = db.connect()
     try:
         results = db.search_messages(con, phrase, limit)
@@ -44,6 +48,7 @@ def search_threads(phrase: str, limit: Optional[int] = None) -> dict:
     Returns:
         Results dict with thread matches grouped by ID.
     """
+    _ensure_fresh()
     con = db.connect()
     try:
         results = db.search_threads(con, phrase, limit)
@@ -66,6 +71,7 @@ def list_conversations(limit: Optional[int] = None) -> dict:
     Returns:
         Results dict with all threads, sorted newest first.
     """
+    _ensure_fresh()
     con = db.connect()
     try:
         results = db.list_threads(con, limit)
@@ -97,6 +103,7 @@ def semantic_search(
     """
     from llm_archive import embed as embed_mod
 
+    _ensure_fresh([source_id] if source_id else None)
     con = db.connect()
     try:
         has_vec = db.init_embeddings(con)
@@ -180,6 +187,21 @@ def list_sources() -> dict:
 def run_sync():
     """Entry point for CLI."""
     mcp.run(transport="stdio")
+
+
+def _ensure_fresh(source_ids: list[str] | None = None) -> None:
+    from llm_archive.cli import _sync_one
+
+    async def runner(src: str, force: bool) -> bool:
+        return await _sync_one(src, None, None, force, None, False)
+
+    asyncio.run(
+        ensure_fresh(
+            source_ids or list(INGESTORS),
+            config=load_config(),
+            runner=runner,
+        )
+    )
 
 
 if __name__ == "__main__":

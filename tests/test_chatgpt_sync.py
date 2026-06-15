@@ -13,12 +13,12 @@ from pathlib import Path
 from typing import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 
 from llm_archive.ingestors.chatgpt import (
     ChatGPTIngestor,
-    _parse_timestamp,
     _extract_message_text,
+    _parse_timestamp,
+    _relevant_cookie_cache,
 )
 from llm_archive.schema import IngestedThread, IngestedMessage
 
@@ -521,12 +521,10 @@ class TestSha1Stop:
 
         # store_thread must NOT force-write when api_ts > db_ts — sha1 is authoritative
         def store_thread(thread):
-            from llm_archive import db as db_mod
-            import sqlite3, tempfile
             # Just return False to simulate sha1 match (content unchanged)
             return False
 
-        threads = asyncio.run(_collect(ingestor.threads(
+        asyncio.run(_collect(ingestor.threads(
             existing_thread_ids=existing,
             store_thread=store_thread,
         )))
@@ -590,7 +588,7 @@ class TestMultiPagePagination:
 
 class TestSaveThreadUpdatedAtOnSha1Match:
     def _make_db(self):
-        import sqlite3, tempfile
+        import tempfile
         from llm_archive import db
         path = Path(tempfile.mktemp(suffix=".db"))
         con = db.connect(path)
@@ -718,6 +716,19 @@ class TestLoadStoredToken:
 
         assert result is not None
         assert result[0] == token
+
+
+def test_relevant_cookie_cache_filters_provider_domains():
+    cookies = [
+        {"name": "a", "value": "1", "domain": ".chatgpt.com", "path": "/"},
+        {"name": "b", "value": "2", "domain": ".openai.com", "path": "/"},
+        {"name": "c", "value": "3", "domain": ".example.com", "path": "/"},
+    ]
+
+    assert _relevant_cookie_cache(cookies) == [
+        {"name": "a", "value": "1", "domain": ".chatgpt.com", "path": "/"},
+        {"name": "b", "value": "2", "domain": ".openai.com", "path": "/"},
+    ]
 
 
 # ---------------------------------------------------------------------------

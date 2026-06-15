@@ -16,8 +16,12 @@ from rich.markdown import Markdown
 from rich.text import Text
 
 from llm_archive import db
+from llm_archive.backup import run_backup
+from llm_archive.config import config_path, format_duration_ms, load_config, read_config_text
 from llm_archive.ingestors import INGESTORS, get_ingestor
+from llm_archive.jobs import ensure_fresh, run_sync_job
 from llm_archive.logging import set_console, set_verbose
+from llm_archive.setup import disable_provider, enable_provider, setup_summary
 
 console = Console()
 progress_console = Console()
@@ -43,6 +47,8 @@ def main(verbose: bool):
 @click.option("-v", "--verbose", is_flag=True, help="Enable verbose logging")
 @click.option("--auth-mode", type=click.Choice(["cookies", "cdp"]), default=None, help="Override auth mode for this sync")
 @click.option("--use-cdp", is_flag=True, help="Use CDP for ChatGPT auth")
+@click.option("--no-wait", is_flag=True, help="Do not wait if source already syncing")
+@click.option("--json", "json_output", is_flag=True, help="Print JSON")
 def sync(
     source: str | None,
     path: str | None,
@@ -51,11 +57,56 @@ def sync(
     verbose: bool,
     auth_mode: str | None,
     use_cdp: bool,
+    no_wait: bool,
+    json_output: bool,
 ):
     """Sync sources. Performs first-time setup automatically when needed."""
     if verbose:
         set_verbose(True)
-    _run(_sync(source, db_path, path, force, auth_mode, use_cdp))
+    _run(_sync_command(source, db_path, path, force, auth_mode, use_cdp, no_wait, json_output))
+
+
+async def _sync_command(
+    source: str | None,
+    db_path: str | None,
+    path: str | None,
+    force: bool,
+    auth_mode: str | None,
+    use_cdp: bool,
+    no_wait: bool,
+    json_output: bool,
+):
+    config = load_config()
+    sources = [source] if source else list(INGESTORS)
+
+    async def runner(src: str, job_force: bool) -> bool:
+        return await _sync_one(src, db_path, path if src == source else None, job_force, auth_mode, use_cdp)
+
+    results = []
+    for src in sources:
+        result = await run_sync_job(
+            src,
+            config=config,
+            runner=runner,
+            db_path=Path(db_path) if db_path else None,
+            force=force,
+            wait=not no_wait,
+        )
+        results.append(result)
+        if result.status not in {"success", "joined"}:
+            console.print(f"  {src}: {result.reason}")
+    if json_output:
+        console.print_json(
+            data=[
+                {
+                    "source": item.source_id,
+                    "status": item.status,
+                    "reason": item.reason,
+                    "job_id": item.job_id,
+                }
+                for item in results
+            ]
+        )
 
 
 async def _sync(
@@ -98,6 +149,33 @@ async def _sync(
                 db.set_last_sync(con, src, int(time.time() * 1000))
         except Exception as e:
             console.print(f"[red]Error syncing {src}:[/red] {e}")
+
+
+async def _sync_one(
+    source: str,
+    db_path_str: str | None,
+    path: str | None = None,
+    force: bool = False,
+    auth_mode: str | None = None,
+    use_cdp: bool = False,
+) -> bool:
+    con = db.connect(Path(db_path_str) if db_path_str else db.DB_PATH)
+    since = None if force else db.get_last_sync(con, source)
+    if since is not None and _source_thread_count(con, source) == 0:
+        since = None
+    ingestor = get_ingestor(source)
+    if hasattr(ingestor, "_auth_mode") and (auth_mode or use_cdp):
+        ingestor._auth_mode = "cdp" if use_cdp else auth_mode
+        ingestor._use_cdp = ingestor._auth_mode == "cdp"
+    if path and hasattr(ingestor, "path"):
+        ingestor.path = Path(path)
+    db.upsert_source(con, source, {"path": path} if path else {})
+    console.print(f"[bold]Syncing:[/bold] {source}")
+    if since is None:
+        await ingestor.init(path=path)
+    if not await ingestor.prepare():
+        return False
+    return await _do_ingest(con, ingestor, since=since, force=force)
 
 
 def _source_thread_count(con, source: str) -> int:
@@ -273,32 +351,112 @@ async def _ingest_total(ingestor, since: int | None) -> int | None:
 
 
 @main.command()
+@click.argument("source", type=click.Choice(list(INGESTORS)))
+@click.option("--browser", default=None, help="Detected browser name")
+@click.option("--profile", default=None, help="Browser profile name")
+@click.option("--browser-path", default=None, help="Custom browser/profile path")
+@click.option("--path", default=None, help="Custom file-provider data path")
+@click.option("--force", is_flag=True, help="Reconfigure existing source")
+@click.option("--dry-run", is_flag=True, help="Detect and verify only")
+def enable(
+    source: str,
+    browser: str | None,
+    profile: str | None,
+    browser_path: str | None,
+    path: str | None,
+    force: bool,
+    dry_run: bool,
+):
+    """Configure source, verify auth/path, run first sync."""
+    values = enable_provider(
+        source,
+        browser=browser,
+        profile=profile,
+        browser_path=browser_path,
+        path=path,
+        force=force,
+        dry_run=dry_run,
+    )
+    console.print(setup_summary(source, values))
+    if not dry_run:
+        _run(_sync_command(source, None, path, True, None, False, False, False))
+
+
+@main.command()
+@click.argument("source", type=click.Choice(list(INGESTORS)))
+@click.option("--no-confirm", is_flag=True, help="Disable without prompt")
+def disable(source: str, no_confirm: bool):
+    """Disable source scheduling/watchers, keep archived data."""
+    if not no_confirm and not click.confirm(f"Disable {source}?", default=True):
+        return
+    disable_provider(source)
+    con = db.connect(db.DB_PATH)
+    db.set_provider_enabled(con, source, False)
+    console.print(f"{source} disabled")
+
+
+@main.command()
 @click.option("--db-path", default=None, help="Override database path")
-def status(db_path: str | None):
-    """Show per-source stats: threads, messages, last sync."""
+@click.option("--verbose", is_flag=True, help="Include setup checks and fix hints")
+@click.option("--json", "json_output", is_flag=True, help="Print JSON")
+def status(db_path: str | None, verbose: bool, json_output: bool):
+    """Show service, provider, auth, backup, and freshness state."""
     con = db.connect(Path(db_path) if db_path else db.DB_PATH)
     stats = db.source_stats(con)
+    states = db.provider_states(con)
+    service_state = db.get_service_state(con)
+    backup_state = db.get_backup_state(con)
+    jobs = db.recent_jobs(con, 10)
+
+    if json_output:
+        console.print_json(
+            data={
+                "service": service_state,
+                "backup": backup_state,
+                "providers": list(states.values()),
+                "sources": stats,
+                "jobs": jobs,
+            }
+        )
+        return
+
+    _print_service_status(service_state)
+    _print_backup_status(backup_state)
 
     if not stats:
-        console.print("No sources synced yet. Run `llm-archive sync <source>`.")
-        return
+        console.print("No sources synced yet. Run `llm-archive enable <source>`.")
 
     table = Table(title="llm-archive status")
     table.add_column("Source", style="bold")
-    table.add_column("Host")
+    table.add_column("State")
     table.add_column("Threads", justify="right")
     table.add_column("Messages", justify="right")
     table.add_column("Last sync")
+    table.add_column("Next")
+    table.add_column("Notes")
 
-    for row in stats:
-        last = row["last_sync"]
+    by_source = {row["id"]: row for row in stats}
+    for source_id in sorted(set(by_source) | set(states)):
+        row = by_source.get(source_id, {})
+        state = states.get(source_id, {})
+        last = row.get("last_sync")
         last_str = _fmt_ts(last) if last else "[dim]never[/dim]"
-        host = row["hostname"] or "[dim]—[/dim]"
+        next_sync = state.get("next_sync_at")
+        next_str = _until(next_sync) if next_sync else "-"
+        state_str, notes = _provider_status(state)
         table.add_row(
-            row["id"], host, str(row["thread_count"]), str(row["message_count"]), last_str
+            source_id,
+            state_str,
+            str(row.get("thread_count", 0)),
+            str(row.get("message_count", 0)),
+            last_str,
+            next_str,
+            notes,
         )
 
     console.print(table)
+    if verbose:
+        _print_verbose_status(states, jobs)
 
 
 @main.command()
@@ -334,17 +492,48 @@ def sources():
 @click.argument("phrase")
 @click.option("--db-path", default=None, help="Override database path")
 @click.option("--limit", default=200, show_default=True, help="Maximum matches to show")
+@click.option("--provider", "provider_filter", type=click.Choice(list(INGESTORS)), default=None)
+@click.option("--no-refresh", is_flag=True, help="Do not trigger early sync")
+@click.option("--json", "json_output", is_flag=True, help="Print JSON")
 @click.option(
     "-t", "threads_only", is_flag=True, help="Only show matching threads and match counts"
 )
-def search(phrase: str, db_path: str | None, limit: int, threads_only: bool):
+def search(
+    phrase: str,
+    db_path: str | None,
+    limit: int,
+    provider_filter: str | None,
+    no_refresh: bool,
+    json_output: bool,
+    threads_only: bool,
+):
     """Search all indexed messages across providers."""
+    if not no_refresh:
+        config = load_config()
+
+        async def runner(src: str, job_force: bool) -> bool:
+            return await _sync_one(src, db_path, None, job_force, None, False)
+
+        source_ids = [provider_filter] if provider_filter else list(INGESTORS)
+        _run(
+            ensure_fresh(
+                source_ids,
+                config=config,
+                runner=runner,
+                db_path=Path(db_path) if db_path else None,
+            )
+        )
     con = db.connect(Path(db_path) if db_path else db.DB_PATH)
     rows = (
         db.search_threads(con, phrase, limit=limit)
         if threads_only
         else db.search_messages(con, phrase, limit=limit)
     )
+    if provider_filter:
+        rows = [row for row in rows if row["source_id"] == provider_filter]
+    if json_output:
+        console.print_json(data={"query": phrase, "results": rows, "count": len(rows)})
+        return
     if not rows:
         console.print("No matches.")
         return
@@ -582,6 +771,72 @@ def _fmt_ts(ms: int) -> str:
 
     dt = datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
     return dt.strftime("%Y-%m-%d %H:%M UTC")
+
+
+def _until(ms: int) -> str:
+    remaining = int(ms - time.time() * 1000)
+    if remaining <= 0:
+        return "due"
+    return format_duration_ms(remaining)
+
+
+def _print_service_status(state: dict | None) -> None:
+    if not state or not state.get("heartbeat_at"):
+        console.print("service: stopped")
+        console.print("hint: brew services start llm-archive")
+        return
+    age = int(time.time() * 1000) - int(state["heartbeat_at"])
+    if age > 90_000:
+        console.print(f"service: stale heartbeat {_relative_time(state['heartbeat_at'])} ago")
+        console.print("hint: brew services restart llm-archive")
+        return
+    console.print(f"service: running pid {state.get('pid')}, heartbeat {format_duration_ms(age)} ago")
+
+
+def _print_backup_status(state: dict | None) -> None:
+    if not state:
+        console.print("backup: never")
+        return
+    if state.get("last_error"):
+        console.print(f"backup: failed {state['last_error']}")
+        return
+    last = state.get("last_success_at")
+    next_backup = state.get("next_backup_at")
+    last_text = _fmt_ts(last) if last else "never"
+    next_text = _until(next_backup) if next_backup else "-"
+    console.print(f"backup: ok, last {last_text}, next {next_text}")
+
+
+def _provider_status(state: dict) -> tuple[str, str]:
+    if not state:
+        return "[dim]unknown[/dim]", ""
+    if not state.get("enabled"):
+        return "[dim]disabled[/dim]", ""
+    if state.get("last_error"):
+        return "[red]blocked[/red]", str(state["last_error"])[:80]
+    if state.get("stale_since"):
+        return "[yellow]stale[/yellow]", f"{state.get('pending_events', 0)} pending"
+    return "[green]ok[/green]", ""
+
+
+def _print_verbose_status(states: dict[str, dict], jobs: list[dict]) -> None:
+    if jobs:
+        table = Table(title="recent jobs")
+        table.add_column("Job")
+        table.add_column("Source")
+        table.add_column("Status")
+        table.add_column("Reason")
+        for job in jobs[:10]:
+            table.add_row(
+                str(job["id"]),
+                job.get("source_id") or "-",
+                job["status"],
+                job.get("reason") or job.get("error") or "",
+            )
+        console.print(table)
+    for source_id, state in states.items():
+        if state.get("last_error"):
+            console.print(f"{source_id}: fix setup, then run `llm-archive enable {source_id} --force`")
 
 
 def _msg_marker(ms: int) -> str:
@@ -825,6 +1080,84 @@ def embed(
     if errors:
         parts.append(f"[red]{errors}[/red] errors")
     console.print("  " + ", ".join(parts))
+
+
+@main.command()
+@click.option("--verify", is_flag=True, help="Verify backup after writing")
+@click.option("--json", "json_output", is_flag=True, help="Print JSON")
+def backup(verify: bool, json_output: bool):
+    """Run backup now."""
+    con = db.connect(db.DB_PATH)
+    try:
+        db.set_backup_started(con)
+        target = run_backup(verify=verify)
+        db.set_backup_success(con, db.now_ms() + 86_400_000)
+    except Exception as exc:
+        db.set_backup_failure(con, str(exc))
+        if json_output:
+            console.print_json(data={"status": "failed", "error": str(exc)})
+            return
+        raise click.ClickException(str(exc))
+    if json_output:
+        console.print_json(data={"status": "ok", "path": str(target), "verified": verify})
+        return
+    console.print(f"backup ok: {target}")
+
+
+@main.command()
+def service():
+    """Run scheduler process in foreground."""
+    from llm_archive.service import run_service
+
+    async def runner(src: str, job_force: bool) -> bool:
+        return await _sync_one(src, None, None, job_force, None, False)
+
+    _run(run_service(runner=runner))
+
+
+@main.group()
+def config():
+    """View/edit/validate config."""
+
+
+@config.command("show")
+def config_show():
+    text = read_config_text()
+    console.print(escape(text.rstrip()) if text else "[dim]no config[/dim]")
+
+
+@config.command("edit")
+def config_edit():
+    editor = shutil.which("nano") or shutil.which("vi")
+    if not editor:
+        raise click.ClickException("No editor found")
+    path = config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.touch(exist_ok=True)
+    import subprocess
+
+    raise SystemExit(subprocess.call([editor, str(path)]))
+
+
+@config.command("validate")
+def config_validate():
+    load_config()
+    console.print("config ok")
+
+
+@main.command()
+@click.argument("source", type=click.Choice(list(INGESTORS)), required=False)
+def logs(source: str | None):
+    """Show recent service/provider job history."""
+    con = db.connect(db.DB_PATH)
+    rows = db.recent_jobs(con, 30)
+    if source:
+        rows = [row for row in rows if row.get("source_id") == source]
+    for row in rows:
+        console.print(
+            f"{row['id']} {row.get('source_id') or '-'} {row['status']} "
+            f"{row.get('reason') or row.get('error') or ''}"
+        )
 
 
 @main.command()
