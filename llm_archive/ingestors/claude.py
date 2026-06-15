@@ -4,6 +4,8 @@ from typing import AsyncIterator
 
 import httpx
 
+from llm_archive.auth.browser_cookies import cookies_to_dict, extract_firefox_cookies
+from llm_archive.config import VALID_AUTH_MODES, load_config
 from llm_archive.ingestors.base import BaseIngestor
 from llm_archive.logging import get_logger
 from llm_archive.schema import IngestedMessage, IngestedThread
@@ -29,24 +31,47 @@ BROWSER_HEADERS = {
 class ClaudeIngestor(BaseIngestor):
     source_id = "claude"
 
-    def __init__(self):
+    def __init__(
+        self,
+        auth_mode: str | None = None,
+        browser_dir: str | None = None,
+        browser_path: str | None = None,
+    ):
+        config = load_config()
+        claude_config = config.ingestor(self.source_id)
+        mode = auth_mode or claude_config.mode or "cdp"
+        if mode not in VALID_AUTH_MODES:
+            valid = ", ".join(sorted(VALID_AUTH_MODES))
+            raise ValueError(f"Invalid Claude auth mode: {mode!r}. Expected: {valid}")
         self._cookies: dict[str, str] = {}
         self._org_id: str | None = None
+        self._auth_mode = mode
+        self._browser_dir = browser_dir or config.browser_dir
+        self._browser_path = browser_path or config.browser_path
 
     async def requires_auth(self) -> bool:
         return True
 
     async def init(self, **kwargs) -> None:
         from llm_archive.auth.playwright import auth_path, login_headful
-        # Skip re-auth if valid session already exists
+        if self._auth_mode == "cookies":
+            self._cookies = {}
+            return
         if not auth_path("claude").exists() or kwargs.get("reauth"):
             await login_headful("claude", LOGIN_URL)
-        self._cookies = {}  # will be loaded on first use
+        self._cookies = {}
 
     async def _get_cookies(self) -> dict[str, str]:
         if not self._cookies:
-            from llm_archive.auth.playwright import load_cookies
-            self._cookies = await load_cookies("claude")
+            if self._auth_mode == "cookies":
+                browser_cookies = extract_firefox_cookies(
+                    browser_dir=self._browser_dir,
+                    domains=("claude.ai",),
+                )
+                self._cookies = cookies_to_dict(browser_cookies)
+            else:
+                from llm_archive.auth.playwright import load_cookies
+                self._cookies = await load_cookies("claude")
         return self._cookies
 
     async def _get(self, client: httpx.AsyncClient, url: str, params: dict | None = None) -> dict:
@@ -217,8 +242,10 @@ class ClaudeIngestor(BaseIngestor):
     async def _reauth(self) -> None:
         from llm_archive.auth.playwright import login_headful
         logger.warning("Session expired, re-authenticating")
-        await login_headful("claude", LOGIN_URL)
         self._cookies = {}
+        if self._auth_mode == "cookies":
+            return
+        await login_headful("claude", LOGIN_URL)
 
 
 def _parse_claude_ts(ts: str | None) -> int | None:

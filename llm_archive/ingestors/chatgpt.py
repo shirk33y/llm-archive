@@ -32,7 +32,13 @@ from typing import AsyncIterator
 
 import httpx
 
+from llm_archive.auth.browser_cookies import (
+    cookie_header_for_url,
+    cookies_to_dict,
+    extract_firefox_cookies,
+)
 from llm_archive.auth.playwright import AUTH_DIR, auth_path, login_with_detection
+from llm_archive.config import VALID_AUTH_MODES, load_config
 from llm_archive.ingestors.base import BaseIngestor
 from llm_archive.logging import get_logger
 from llm_archive.ratelimit import MessageRateLimiter
@@ -117,15 +123,39 @@ BROWSER_HEADERS = {
 class ChatGPTIngestor(BaseIngestor):
     source_id = "chatgpt"
 
-    def __init__(self):
+    def __init__(
+        self,
+        auth_mode: str | None = None,
+        browser_dir: str | None = None,
+        browser_path: str | None = None,
+        use_cdp: bool = False,
+    ):
+        config = load_config()
+        chatgpt_config = config.ingestor(self.source_id)
+        mode = auth_mode or chatgpt_config.mode or "cookies"
+        if use_cdp:
+            mode = "cdp"
+        if mode not in VALID_AUTH_MODES:
+            valid = ", ".join(sorted(VALID_AUTH_MODES))
+            raise ValueError(f"Invalid ChatGPT auth mode: {mode!r}. Expected: {valid}")
         self._message_limiter = MessageRateLimiter()
+        self._auth_mode = mode
+        self._browser_dir = browser_dir or config.browser_dir
+        self._browser_path = browser_path or config.browser_path
+        self._use_cdp = mode == "cdp"
 
     async def requires_auth(self) -> bool:
         return True
 
     async def init(self, **kwargs) -> None:
-        if not auth_path(self.source_id).exists() or kwargs.get("reauth"):
-            await _login()
+        if self._auth_mode == "cdp":
+            if not auth_path(self.source_id).exists() or kwargs.get("reauth"):
+                await _login()
+        else:
+            if kwargs.get("reauth"):
+                p = auth_path(self.source_id)
+                if p.exists():
+                    p.unlink()
 
     def _build_headers(self, token: str, cookies: dict[str, str]) -> dict[str, str]:
         """Build request headers with browser-like headers."""
@@ -430,7 +460,7 @@ class ChatGPTIngestor(BaseIngestor):
                 if exp:
                     exp_days = max(0, (exp - time.time()) / 86400)
                     if time.time() > exp - 60:
-                        logger.warning("Stored token expired, will fetch fresh via CDP")
+                        logger.warning("Stored token expired, will fetch fresh auth")
                         return None
         except Exception:
             pass  # Can't decode exp — treat token as valid and let the API reject if needed
@@ -443,15 +473,83 @@ class ChatGPTIngestor(BaseIngestor):
         return token, cookies
 
     async def _get_token_via_cdp(self) -> tuple[str, dict[str, str]]:
-        """Get access token and cookies — tries stored auth first, then Chrome CDP.
-
-        If no Chrome with CDP is found, automatically launches Chrome with proper flags.
-        """
+        """Get access token and cookies — tries stored auth, then browser cookies, then CDP."""
         stored = self._load_stored_token()
         if stored:
             return stored
 
-        logger.warning("No valid stored token, fetching via Chrome CDP...")
+        if self._auth_mode == "cookies":
+            token = await self._try_browser_cookies_token()
+            if token:
+                return token
+            raise RuntimeError(
+                "No valid stored token and browser cookie extraction failed. "
+                "Set ingestors.chatgpt.mode = \"cdp\" to use CDP, or login in the configured browser."
+            )
+
+        return await self._get_token_via_cdp_fallback()
+
+    async def _try_browser_cookies_token(self) -> tuple[str, dict[str, str]] | None:
+        """Try extracting cookies from Waterfox/Firefox and fetching access token via API."""
+        try:
+            browser_cookies = extract_firefox_cookies(
+                browser_dir=self._browser_dir,
+                domains=("chatgpt.com", "openai.com"),
+            )
+        except FileNotFoundError as e:
+            logger.warning(f"Browser cookie extraction failed: {e}")
+            return None
+
+        cookie_header = cookie_header_for_url(browser_cookies, f"{LOGIN_URL}/api/auth/session")
+        if not cookie_header:
+            logger.warning("No ChatGPT cookies found for configured browser")
+            return None
+
+        cookies = cookies_to_dict(browser_cookies)
+
+        logger.info("Fetching access token from /api/auth/session using browser cookies...")
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.get(
+                    f"{LOGIN_URL}/api/auth/session",
+                    headers={
+                        **BROWSER_HEADERS,
+                        "cookie": cookie_header,
+                        "referer": LOGIN_URL,
+                    },
+                    follow_redirects=True,
+                )
+            if resp.status_code != 200:
+                logger.warning(f"Session API returned {resp.status_code}, cannot fetch token")
+                return None
+
+            data = resp.json()
+            token = data.get("accessToken")
+            if not token:
+                logger.warning("Session API returned no accessToken")
+                return None
+
+            try:
+                AUTH_DIR.mkdir(parents=True, exist_ok=True)
+                path = auth_path(self.source_id)
+                existing = {}
+                if path.exists():
+                    existing = json.loads(path.read_text())
+                existing["access_token"] = token
+                existing["cookies"] = browser_cookies
+                path.write_text(json.dumps(existing))
+                logger.info("Saved fresh token from browser cookies")
+            except Exception as e:
+                logger.warning(f"Failed to save token: {e}")
+
+            return token, cookies
+        except Exception as e:
+            logger.warning(f"Failed to fetch token via browser cookies: {e}")
+            return None
+
+    async def _get_token_via_cdp_fallback(self) -> tuple[str, dict[str, str]]:
+        """Fall back to Chrome CDP for token/cookie extraction."""
+        logger.warning("Fetching via Chrome CDP...")
 
         from playwright.async_api import async_playwright
 
@@ -519,7 +617,6 @@ class ChatGPTIngestor(BaseIngestor):
 
                 await browser.close()
 
-                # Persist fresh token so next sync doesn't need CDP
                 try:
                     path = auth_path(self.source_id)
                     existing = {}
@@ -553,9 +650,7 @@ class ChatGPTIngestor(BaseIngestor):
                 await asyncio.sleep(delay)
 
             try:
-                req_start = datetime.now()
                 resp = await client.get(url, headers=headers)
-                req_duration = (datetime.now() - req_start).total_seconds()
                 self._message_limiter.update_request_time()
 
                 if resp.status_code == 429:

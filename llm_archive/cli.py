@@ -41,15 +41,30 @@ def main(verbose: bool):
 @click.option("--db-path", default=None, help="Override database path")
 @click.option("-f", "--force", is_flag=True, help="Force full resync (ignore last sync timestamp)")
 @click.option("-v", "--verbose", is_flag=True, help="Enable verbose logging")
-def sync(source: str | None, path: str | None, db_path: str | None, force: bool, verbose: bool):
+@click.option("--auth-mode", type=click.Choice(["cookies", "cdp"]), default=None, help="Override auth mode for this sync")
+@click.option("--use-cdp", is_flag=True, help="Use CDP for ChatGPT auth")
+def sync(
+    source: str | None,
+    path: str | None,
+    db_path: str | None,
+    force: bool,
+    verbose: bool,
+    auth_mode: str | None,
+    use_cdp: bool,
+):
     """Sync sources. Performs first-time setup automatically when needed."""
     if verbose:
         set_verbose(True)
-    _run(_sync(source, db_path, path, force))
+    _run(_sync(source, db_path, path, force, auth_mode, use_cdp))
 
 
 async def _sync(
-    source: str | None, db_path_str: str | None, path: str | None = None, force: bool = False
+    source: str | None,
+    db_path_str: str | None,
+    path: str | None = None,
+    force: bool = False,
+    auth_mode: str | None = None,
+    use_cdp: bool = False,
 ):
     con = db.connect(Path(db_path_str) if db_path_str else db.DB_PATH)
     sources = [source] if source else list(INGESTORS)
@@ -59,9 +74,17 @@ async def _sync(
         if since is not None and _source_thread_count(con, src) == 0:
             since = None
         ingestor = get_ingestor(src)
+        if src == source and hasattr(ingestor, "_auth_mode") and (auth_mode or use_cdp):
+            ingestor._auth_mode = "cdp" if use_cdp else auth_mode
+            ingestor._use_cdp = ingestor._auth_mode == "cdp"
         if path and hasattr(ingestor, "path") and src == source:
             ingestor.path = Path(path)
-        db.upsert_source(con, src, {"path": path} if path and src == source else {})
+        source_config = {}
+        if path and src == source:
+            source_config["path"] = path
+        if src == source and auth_mode:
+            source_config["mode"] = auth_mode
+        db.upsert_source(con, src, source_config)
         console.print(f"[bold]Syncing:[/bold] {src}")
 
         try:
