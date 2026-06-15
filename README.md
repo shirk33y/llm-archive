@@ -47,6 +47,8 @@ llm-archive disable deepseek
 
 Config lives in the standard user config directory:
 
+It is created automatically on first run with safe disabled defaults and any obvious browser profile root.
+
 ```toml
 [ingestors.chatgpt]
 enabled = true
