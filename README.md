@@ -5,8 +5,8 @@ Local archive for AI chats. Syncs web and file-based providers into SQLite, then
 ## Quickstart
 
 ```sh
-brew tap shirk33y/tap
-brew install llm-archive
+brew tap shirk33y/llm-archive
+brew install llm-archive --HEAD
 llm-archive enable chatgpt
 llm-archive sync chatgpt
 llm-archive search "that thing I forgot"
