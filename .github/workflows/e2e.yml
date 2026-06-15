@@ -92,6 +92,8 @@ jobs:
               sleep 2
             done
             echo "::error::poll timed out ($mode)"
+            echo "service pid: $(cat "$RUNNER_TEMP/svc.pid" 2>/dev/null)"
+            kill -0 "$(cat "$RUNNER_TEMP/svc.pid" 2>/dev/null)" 2>&1 && echo "service alive" || echo "service DEAD"
             "$LA" status --json || true
             python3 /tmp/check.py "$mode" || true
             return 1
@@ -105,6 +107,8 @@ jobs:
           write_config false
           "$LA" service > "$RUNNER_TEMP/svc.log" 2>&1 &
           echo $! > "$RUNNER_TEMP/svc.pid"
+          sleep 3
+          echo "service started pid=$(cat "$RUNNER_TEMP/svc.pid")"
           poll disabled 20
 
           # Phase 2: enable. Service must pick up the live config change.
