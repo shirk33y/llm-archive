@@ -695,7 +695,7 @@ def show(thread: str, db_path: str | None):
             if not part["visible"]:
                 continue
             data = _part_data(part["data"])
-            label = _part_label(part["kind"], data)
+            label = _part_label(part["kind"], data, part)
             if label:
                 lines.append(f"  {label}")
             if part["text"]:
@@ -921,11 +921,11 @@ def _render_markdown(text: str) -> Markdown:
     return Markdown(text)
 
 
-def _part_label(kind: str, data: dict) -> str:
+def _part_label(kind: str, data: dict, part: dict | None = None) -> str:
     if kind == "tool_call":
         if data.get("tag"):
             return f"[{data['tag']}]"
-        name = data.get("name")
+        name = data.get("name") or (part and part.get("tool_name"))
         return f"[Tool: {name}]" if name else "[tool_call]"
     if kind == "tool_result":
         return "[Tool result]"
