@@ -208,6 +208,12 @@ CREATE TABLE IF NOT EXISTS message_parts (
     data             TEXT,
     visible          INTEGER NOT NULL,
     searchable       INTEGER NOT NULL,
+    tool_use_id      TEXT,
+    tool_name        TEXT,
+    tool_input       TEXT,
+    tool_result      TEXT,
+    tool_result_timestamp INTEGER,
+    tool_is_error    INTEGER DEFAULT 0,
     PRIMARY KEY (message_id, ord),
     FOREIGN KEY (message_id) REFERENCES messages(id)
 );
@@ -381,9 +387,23 @@ def save_thread(con: sqlite3.Connection, thread: IngestedThread, force: bool = F
             if part.data and part.searchable:
                 data_str = json.dumps(part.data, ensure_ascii=False)
                 search_text += " " + clean_content(data_str)
+            # Add tool call data to search_text
+            if part.tool_call and part.searchable:
+                tc = part.tool_call
+                search_text += f" {tc.name}"
+                if tc.input:
+                    search_text += f" {json.dumps(tc.input, ensure_ascii=False)}"
+                if tc.result:
+                    search_text += f" {tc.result}"
+            tool_use_id = part.tool_call.tool_use_id if part.tool_call else None
+            tool_name = part.tool_call.name if part.tool_call else None
+            tool_input = json.dumps(part.tool_call.input) if part.tool_call and part.tool_call.input else None
+            tool_result = part.tool_call.result if part.tool_call else None
+            tool_result_ts = part.tool_call.resultTimestamp if part.tool_call else None
+            tool_is_error = 1 if part.tool_call and part.tool_call.is_error else 0
             con.execute(
-                "INSERT OR REPLACE INTO message_parts(message_id, ord, kind, text, search_text, data, visible, searchable) "
-                "VALUES(?,?,?,?,?,?,?,?)",
+                "INSERT OR REPLACE INTO message_parts(message_id, ord, kind, text, search_text, data, visible, searchable, tool_use_id, tool_name, tool_input, tool_result, tool_result_timestamp, tool_is_error) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     msg.id,
                     i,
@@ -393,6 +413,12 @@ def save_thread(con: sqlite3.Connection, thread: IngestedThread, force: bool = F
                     json.dumps(part.data) if part.data else None,
                     1 if part.visible else 0,
                     1 if part.searchable else 0,
+                    tool_use_id,
+                    tool_name,
+                    tool_input,
+                    tool_result,
+                    tool_result_ts,
+                    tool_is_error,
                 ),
             )
             if part.searchable and search_text:
