@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import AsyncIterator
 
 from llm_archive.ingestors.base import BaseIngestor
-from llm_archive.schema import IngestedMessage, IngestedThread
+from llm_archive.schema import IngestedMessage, IngestedPart, IngestedThread, ToolCall
 
 DEFAULT_ROOT = Path.home() / ".claude" / "projects"
 
@@ -65,6 +65,86 @@ def _flatten_content(content) -> str:
     return "\n\n".join(p for p in parts if p.strip())
 
 
+def _process_content_blocks(
+    blocks, pending_tool_uses: dict[str, dict]
+) -> tuple[str, list[IngestedPart]]:
+    """Process content blocks into flat text + structured parts with ToolCall linking.
+
+    pending_tool_uses tracks tool_use_ids across message entries for tool_use→result linking.
+    """
+    if isinstance(blocks, str):
+        return blocks, [IngestedPart(kind="text", text=blocks)]
+    if not isinstance(blocks, list):
+        return str(blocks), [IngestedPart(kind="text", text=str(blocks))]
+
+    parts: list[IngestedPart] = []
+    text_chunks: list[str] = []
+
+    for block in blocks:
+        if not isinstance(block, dict):
+            chunk = str(block)
+            text_chunks.append(chunk)
+            parts.append(IngestedPart(kind="text", text=chunk))
+            continue
+
+        btype = block.get("type", "")
+
+        if btype == "text":
+            text = block.get("text", "")
+            if text and text.strip():
+                text_chunks.append(text)
+                parts.append(IngestedPart(kind="text", text=text))
+
+        elif btype == "thinking":
+            thinking = block.get("thinking", "")
+            if thinking and thinking.strip():
+                text_chunks.append(f"[Thinking]\n{thinking}")
+                parts.append(
+                    IngestedPart(kind="reasoning", text=thinking, visible=True, searchable=False)
+                )
+
+        elif btype == "tool_use":
+            tool_id = block.get("id", "")
+            name = block.get("name", "tool")
+            inp = block.get("input", {})
+            pending_tool_uses[tool_id] = {"name": name, "input": inp}
+
+            cmd = inp.get("command", inp.get("code", json.dumps(inp, ensure_ascii=False)[:200]))
+            text_chunks.append(f"[Tool: {name}]\n{cmd}")
+
+            tc = ToolCall(tool_use_id=tool_id, name=name, input=inp)
+            parts.append(IngestedPart(kind="tool_call", text=cmd, tool_call=tc))
+
+        elif btype == "tool_result":
+            tool_id = block.get("tool_use_id", "")
+            content = block.get("content", "")
+            is_error = block.get("is_error", False)
+
+            if isinstance(content, list):
+                result_text = _flatten_content(content)
+            else:
+                result_text = str(content) if content is not None else ""
+
+            tc = ToolCall(tool_use_id=tool_id, result=result_text, is_error=bool(is_error))
+            if tool_id in pending_tool_uses:
+                tc.name = pending_tool_uses[tool_id]["name"]
+                tc.input = pending_tool_uses[tool_id]["input"]
+
+            text_chunks.append(f"[Tool result]\n{result_text[:500]}")
+            parts.append(IngestedPart(kind="tool_result", text=result_text, tool_call=tc))
+
+        else:
+            for key in ("text", "content", "output"):
+                val = block.get(key)
+                if val and isinstance(val, str):
+                    text_chunks.append(val)
+                    parts.append(IngestedPart(kind="text", text=val))
+                    break
+
+    content = "\n\n".join(p for p in text_chunks if p.strip())
+    return content, parts
+
+
 def _load_sessions_index(project_dir: Path) -> dict[str, dict]:
     index_path = project_dir / "sessions-index.json"
     if not index_path.exists():
@@ -104,6 +184,7 @@ def _parse_jsonl(path: Path, index_meta: dict | None = None) -> IngestedThread |
     messages: list[IngestedMessage] = []
     created_at = None
     updated_at = None
+    pending_tool_uses: dict[str, dict] = {}
 
     for entry in lines:
         etype = entry.get("type")
@@ -118,7 +199,7 @@ def _parse_jsonl(path: Path, index_meta: dict | None = None) -> IngestedThread |
         if role not in ("user", "assistant"):
             continue
 
-        content = _flatten_content(msg_data.get("content", ""))
+        content, parts = _process_content_blocks(msg_data.get("content", ""), pending_tool_uses)
         if not content.strip():
             continue
 
@@ -145,6 +226,7 @@ def _parse_jsonl(path: Path, index_meta: dict | None = None) -> IngestedThread |
             content=content,
             created_at=ts,
             metadata=metadata,
+            parts=parts,
         ))
 
     if not messages:

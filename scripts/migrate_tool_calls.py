@@ -40,11 +40,60 @@ def migrate():
 
     for idx_sql in indexes:
         cur.execute(idx_sql)
-        print(f"Created index")
+        print("Created index")
+
+    con.commit()
+
+    # Backfill tool_name from existing data for local sources
+    backfill_tool_names(cur)
+    backfill_error_status(cur)
 
     con.commit()
     con.close()
     print("Migration complete")
+
+
+def backfill_tool_names(cur: sqlite3.Cursor):
+    # Backfill from data.name (windsurf, opencode)
+    cur.execute("""
+        UPDATE message_parts
+        SET tool_name = json_extract(data, '$.name')
+        WHERE kind = 'tool_call'
+          AND data IS NOT NULL
+          AND json_valid(data)
+          AND json_extract(data, '$.name') IS NOT NULL
+          AND tool_name IS NULL
+    """)
+    if cur.rowcount:
+        print(f"Backfilled {cur.rowcount} tool_name from data.name")
+
+    # Backfill from [Tool: Name] tag (claudecode, codex legacy)
+    cur.execute("""
+        UPDATE message_parts
+        SET tool_name = SUBSTR(text, 8, INSTR(text, ']') - 8)
+        WHERE kind = 'tool_call'
+          AND text LIKE '[Tool: %]%'
+          AND tool_name IS NULL
+    """)
+    if cur.rowcount:
+        print(f"Backfilled {cur.rowcount} tool_name from [Tool: Name] tags")
+
+
+def backfill_error_status(cur: sqlite3.Cursor):
+    # Mark tool results with error content as is_error=1
+    cur.execute("""
+        UPDATE message_parts
+        SET tool_is_error = 1
+        WHERE kind = 'tool_result'
+          AND (
+               text LIKE '%Error%'
+            OR text LIKE '%exit code%'
+            OR text LIKE '%failed%'
+          )
+          AND tool_is_error = 0
+    """)
+    if cur.rowcount:
+        print(f"Backfilled {cur.rowcount} tool_is_error=1 from result text")
 
 
 if __name__ == "__main__":
