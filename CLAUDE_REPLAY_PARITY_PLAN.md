@@ -19,7 +19,7 @@ llm-archive currently flattens everything to text with 500-char truncation, losi
 
 ---
 
-## Stage 0: Test Migration (Foundation)
+## ✅ Stage 0: Test Migration (Foundation) — Done
 
 ### 0.1 Copy claude-replay Test Fixtures
 **File**: `tests/fixtures/claude-replay/`
@@ -134,7 +134,7 @@ Expected: Some tests fail (tool_call is None, truncated results)
 
 ---
 
-## Stage 1: Schema Extensions
+## ✅ Stage 1: Schema Extensions — Done
 
 ### 1.1 Extend IngestedPart Schema
 **File**: `llm_archive/schema.py`
@@ -179,7 +179,7 @@ Update `save_thread()` to populate new columns.
 
 ---
 
-## Stage 2: Claude Code Ingestor
+## ✅ Stage 2: Claude Code Ingestor — Done
 
 ### 2.1 Parse Structured Tool Calls
 **File**: `llm_archive/ingestors/claudecode.py`
@@ -281,7 +281,7 @@ Expected: Passes
 
 ---
 
-## Stage 3: Codex Ingestor
+## ✅ Stage 3: Codex Ingestor — Done
 
 ### 3.1 Add New Format Support
 **File**: `llm_archive/ingestors/codex.py`
@@ -462,7 +462,7 @@ Expected: Passes
 
 ---
 
-## Stage 4: OpenCode Ingestor
+## ✅ Stage 4: OpenCode Ingestor — Done
 
 ### 4.1 Add Tool Name Mapping
 **File**: `llm_archive/ingestors/opencode.py`
@@ -571,7 +571,7 @@ Expected: Passes
 
 ---
 
-## Stage 5: Database Migration
+## ✅ Stage 5: Database Migration — Done
 
 ### 5.1 Create Migration Script
 **File**: `scripts/migrate_tool_calls.py`
@@ -989,7 +989,7 @@ Expected: Gemini source appears in list
 
 ---
 
-## Stage 8: Search and Display
+## ✅ Stage 8: Search and Display — Done
 
 ### 8.1 Update Search to Include Tool Data
 **File**: `llm_archive/mcp_server.py`
@@ -1029,7 +1029,7 @@ def _format_part(part: dict) -> str:
 
 ---
 
-## Stage 9: Testing
+## ✅ Stage 9: Testing — Done
 
 ### 9.1 Run All Parity Tests
 ```bash
@@ -1171,7 +1171,7 @@ Document all ingestors:
 
 ---
 
-## Stage 11: Backward Compatibility
+## ✅ Stage 11: Backward Compatibility — Done
 
 ### 11.1 Fallback to Text Format
 **File**: `llm_archive/db.py`
@@ -1341,18 +1341,18 @@ python scripts/verify_parity.py
 
 ## Implementation Order
 
-1. **Stage 0**: Test migration (foundation, correctness) - 4h P0
-2. **Stage 1**: Schema extensions (foundation) - 4h P0
-3. **Stage 2**: Claude Code ingestor (easiest, most complete) - 6h P0
-4. **Stage 5**: Database migration (enable storage) - 2h P0
-5. **Stage 3**: Codex ingestor (medium complexity) - 8h P0
-6. **Stage 4**: OpenCode ingestor (medium complexity) - 4h P0
-7. **Stage 6**: Cursor ingestor (new source) - 6h P1
-8. **Stage 7**: Gemini ingestor (new source) - 8h P1
-9. **Stage 8**: Search and display (user-facing) - 4h P1
-10. **Stage 9**: Testing (validation) - 6h P1
-11. **Stage 10**: Documentation (knowledge transfer) - 2h P2
-12. **Stage 11**: Backward compatibility (safety) - 4h P1
+1. ✅ **Stage 0**: Test migration — Done
+2. ✅ **Stage 1**: Schema extensions — Done
+3. ✅ **Stage 2**: Claude Code ingestor — Done
+4. ✅ **Stage 5**: Database migration — Done
+5. ✅ **Stage 3**: Codex ingestor — Done
+6. ✅ **Stage 4**: OpenCode ingestor — Done
+7. ✅ **Stage 8**: Search and display — Done
+8. ✅ **Stage 9**: Testing — Done
+9. ✅ **Stage 11**: Backward compatibility — Done
+10. **Stage 6**: Cursor ingestor (new source) - 6h P1
+11. **Stage 7**: Gemini ingestor (new source) - 8h P1
+12. **Stage 10**: Documentation (knowledge transfer) - 2h P2
 13. **Stage 12**: Performance optimization (nice-to-have) - 4h P2
 14. **Stage 13**: Verification (confidence) - 2h P1
 15. **Stage 14**: Release (shipping) - 1h P2
@@ -1361,37 +1361,40 @@ python scripts/verify_parity.py
 
 ## Estimated Effort
 
-| Stage | Effort | Priority |
-|-------|--------|----------|
-| Stage 0: Test Migration | 4h | P0 |
-| Stage 1: Schema | 4h | P0 |
-| Stage 2: Claude Code | 6h | P0 |
-| Stage 3: Codex | 8h | P0 |
-| Stage 4: OpenCode | 4h | P0 |
-| Stage 5: Migration | 2h | P0 |
-| Stage 6: Cursor (New) | 6h | P1 |
-| Stage 7: Gemini (New) | 8h | P1 |
-| Stage 8: Search/Display | 4h | P1 |
-| Stage 9: Testing | 6h | P1 |
-| Stage 10: Documentation | 2h | P2 |
-| Stage 11: Backward Compat | 4h | P1 |
-| Stage 12: Performance | 4h P2 |
-| Stage 13: Verification | 2h | P1 |
-| Stage 14: Release | 1h | P2 |
-| **Total** | **69h** | |
+| Stage | Effort | Priority | Status |
+|-------|--------|----------|--------|
+| Stage 0: Test Migration | 4h | P0 | ✅ |
+| Stage 1: Schema | 4h | P0 | ✅ |
+| Stage 2: Claude Code | 6h | P0 | ✅ |
+| Stage 3: Codex | 8h | P0 | ✅ |
+| Stage 4: OpenCode | 4h | P0 | ✅ |
+| Stage 5: Migration | 2h | P0 | ✅ |
+| Stage 8: Search/Display | 4h | P1 | ✅ |
+| Stage 9: Testing | 6h | P1 | ✅ |
+| Stage 11: Backward Compat | 4h | P1 | ✅ |
+| Stage 6: Cursor (New) | 6h | P1 | |
+| Stage 7: Gemini (New) | 8h | P1 | |
+| Stage 10: Documentation | 2h | P2 | |
+| Stage 12: Performance | 4h | P2 | |
+| Stage 13: Verification | 2h | P1 | |
+| Stage 14: Release | 1h | P2 | |
+| **Total** | **69h** | | **41h done** |
 
 ---
 
 ## Success Criteria
 
-- ✅ All 5 local ingestors preserve full tool call structure
-- ✅ Cursor and Gemini sources added (match claude-replay coverage)
-- ✅ Tool use IDs link calls to results
+- ✅ Claude Code ingestor preserves full tool call structure
+- ✅ Codex ingestor preserves full tool call structure (new + legacy formats)
+- ✅ OpenCode ingestor preserves full tool call structure
+- ❌ Cursor ingestor (not started)
+- ❌ Gemini ingestor (not started)
+- ✅ Tool use IDs link calls to results (Claude Code, Codex, OpenCode)
 - ✅ No 500-char truncation anywhere
 - ✅ Tool names normalized across platforms
-- ✅ Patches/diffs preserved (not flattened)
-- ✅ Error status tracked and searchable
-- ✅ Verification script passes for all sources
-- ✅ Backward compatibility maintained
-- ✅ No performance regression
-- ✅ Test coverage matches claude-replay
+- ✅ Patches/diffs parsed for Edit/Write structure
+- ✅ Error status tracked (status/exit code)
+- ✅ Backward compatibility maintained (legacy flat content fallback)
+- ✅ Test coverage: 283 tests passing
+- ❌ Verification script (not implemented)
+- ❌ Performance optimization (not started)
