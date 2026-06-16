@@ -64,7 +64,7 @@ def _parse_codex_function_call(name: str, args: str, call_id: str) -> ToolCall |
             input_data = parsed
         else:
             input_data = _parse_codex_patch(args)
-    elif parsed:
+    elif parsed is not None:
         input_data = parsed
 
     return ToolCall(
