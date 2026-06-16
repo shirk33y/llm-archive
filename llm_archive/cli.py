@@ -420,41 +420,55 @@ def status(db_path: str | None, verbose: bool, json_output: bool):
         )
         return
 
-    _print_service_status(service_state)
-    _print_backup_status(backup_state)
+    lines = []
+    if not service_state or not service_state.get("heartbeat_at"):
+        lines.append("SERVICE stopped  (brew services start llm-archive)")
+    else:
+        age = int(time.time() * 1000) - int(service_state["heartbeat_at"])
+        if age > 90_000:
+            lines.append(f"SERVICE stale  pid {service_state.get('pid')}, heart {_relative_time(service_state['heartbeat_at'])} ago  (brew services restart)")
+        else:
+            lines.append(f"SERVICE up  pid {service_state.get('pid')}, heart {format_duration_ms(age)} ago")
 
-    if not stats:
-        console.print("No sources synced yet. Run `llm-archive enable <source>`.")
+    if not backup_state or not backup_state.get("last_success_at"):
+        lines.append("BACKUP never")
+    elif backup_state.get("last_error"):
+        lines.append(f"BACKUP failed  {backup_state['last_error']}")
+    else:
+        last = _fmt_ts(backup_state["last_success_at"])
+        nxt = _until(backup_state.get("next_backup_at"))
+        lines.append(f"BACKUP ok  last {last}, next {nxt}")
 
-    table = Table(title="llm-archive status")
-    table.add_column("Source", style="bold")
-    table.add_column("State")
-    table.add_column("Threads", justify="right")
-    table.add_column("Messages", justify="right")
-    table.add_column("Last sync")
-    table.add_column("Next")
-    table.add_column("Notes")
+    lines.append("")
+    col_src = max((len(s) for s in set(by_source) | set(states)), default=6) if (by_source := {r["id"]: r for r in stats}) else 6
+    col_src = max(col_src, 6)
+    hdr = f"{'SOURCE':<{col_src}}  {'STATE':<9}  {'THR':>3}  {'MSG':>4}  {'LAST SYNC':<7}  NEXT"
+    lines.append(hdr)
+    lines.append("-" * len(hdr.rstrip()))
 
     by_source = {row["id"]: row for row in stats}
     for source_id in sorted(set(by_source) | set(states)):
         row = by_source.get(source_id, {})
         state = states.get(source_id, {})
         last = row.get("last_sync")
-        last_str = _fmt_ts(last) if last else "[dim]never[/dim]"
+        last_str = _relative_time(last) if last else "-"
         next_sync = state.get("next_sync_at")
         next_str = _until(next_sync) if next_sync else "-"
-        state_str, notes = _provider_status(state)
-        table.add_row(
-            source_id,
-            state_str,
-            str(row.get("thread_count", 0)),
-            str(row.get("message_count", 0)),
-            last_str,
-            next_str,
-            notes,
-        )
+        thr = row.get("thread_count", 0)
+        msg = row.get("message_count", 0)
+        if not state.get("enabled"):
+            st = "off"
+        elif state.get("last_error"):
+            st = "err"
+        elif state.get("stale_since"):
+            st = "stale"
+        else:
+            st = "ok"
+        lines.append(f"{source_id:<{col_src}}  {st:<9}  {thr:>3}  {msg:>4}  {last_str:<19}  {next_str}")
 
-    console.print(table)
+    for line in lines:
+        console.print(line)
+
     if verbose:
         _print_verbose_status(states, jobs)
 
@@ -778,45 +792,6 @@ def _until(ms: int) -> str:
     if remaining <= 0:
         return "due"
     return format_duration_ms(remaining)
-
-
-def _print_service_status(state: dict | None) -> None:
-    if not state or not state.get("heartbeat_at"):
-        console.print("service: stopped")
-        console.print("hint: brew services start llm-archive")
-        return
-    age = int(time.time() * 1000) - int(state["heartbeat_at"])
-    if age > 90_000:
-        console.print(f"service: stale heartbeat {_relative_time(state['heartbeat_at'])} ago")
-        console.print("hint: brew services restart llm-archive")
-        return
-    console.print(f"service: running pid {state.get('pid')}, heartbeat {format_duration_ms(age)} ago")
-
-
-def _print_backup_status(state: dict | None) -> None:
-    if not state:
-        console.print("backup: never")
-        return
-    if state.get("last_error"):
-        console.print(f"backup: failed {state['last_error']}")
-        return
-    last = state.get("last_success_at")
-    next_backup = state.get("next_backup_at")
-    last_text = _fmt_ts(last) if last else "never"
-    next_text = _until(next_backup) if next_backup else "-"
-    console.print(f"backup: ok, last {last_text}, next {next_text}")
-
-
-def _provider_status(state: dict) -> tuple[str, str]:
-    if not state:
-        return "[dim]unknown[/dim]", ""
-    if not state.get("enabled"):
-        return "[dim]disabled[/dim]", ""
-    if state.get("last_error"):
-        return "[red]blocked[/red]", str(state["last_error"])[:80]
-    if state.get("stale_since"):
-        return "[yellow]stale[/yellow]", f"{state.get('pending_events', 0)} pending"
-    return "[green]ok[/green]", ""
 
 
 def _print_verbose_status(states: dict[str, dict], jobs: list[dict]) -> None:
