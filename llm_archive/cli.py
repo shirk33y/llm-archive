@@ -440,13 +440,9 @@ def status(db_path: str | None, verbose: bool, json_output: bool):
         lines.append(f"BACKUP ok  last {last}, next {nxt}")
 
     lines.append("")
-    col_src = max((len(s) for s in set(by_source) | set(states)), default=6) if (by_source := {r["id"]: r for r in stats}) else 6
-    col_src = max(col_src, 6)
-    hdr = f"{'SOURCE':<{col_src}}  {'STATE':<9}  {'THR':>3}  {'MSG':>4}  {'LAST SYNC':<7}  NEXT"
-    lines.append(hdr)
-    lines.append("-" * len(hdr.rstrip()))
 
     by_source = {row["id"]: row for row in stats}
+    rows: list[tuple[str, str, int, int, str, str]] = []
     for source_id in sorted(set(by_source) | set(states)):
         row = by_source.get(source_id, {})
         state = states.get(source_id, {})
@@ -454,8 +450,8 @@ def status(db_path: str | None, verbose: bool, json_output: bool):
         last_str = _relative_time(last) if last else "-"
         next_sync = state.get("next_sync_at")
         next_str = _until(next_sync) if next_sync else "-"
-        thr = row.get("thread_count", 0)
-        msg = row.get("message_count", 0)
+        thr = str(row.get("thread_count", 0))
+        msg = str(row.get("message_count", 0))
         if not state.get("enabled"):
             st = "off"
         elif state.get("last_error"):
@@ -464,7 +460,17 @@ def status(db_path: str | None, verbose: bool, json_output: bool):
             st = "stale"
         else:
             st = "ok"
-        lines.append(f"{source_id:<{col_src}}  {st:<9}  {thr:>3}  {msg:>4}  {last_str:<19}  {next_str}")
+        rows.append((source_id, st, thr, msg, last_str, next_str))
+
+    w_src = max(max((len(r[0]) for r in rows), default=0), len("SOURCE"), 6)
+    w_st = max(max((len(r[1]) for r in rows), default=0), len("STATE"), 5)
+    w_thr = max(max((len(r[2]) for r in rows), default=0), len("THR"), 3)
+    w_msg = max(max((len(r[3]) for r in rows), default=0), len("MSG"), 3)
+    w_lst = max(max((len(r[4]) for r in rows), default=0), len("LAST"), 5)
+    hdr = f"{'SOURCE':<{w_src}}  {('STATE'):<{w_st}}  {('THR'):>{w_thr}}  {('MSG'):>{w_msg}}  {('LAST'):<{w_lst}}  NEXT"
+    lines.append(hdr)
+    for src, st, thr, msg, lst, nxt in rows:
+        lines.append(f"{src:<{w_src}}  {st:<{w_st}}  {thr:>{w_thr}}  {msg:>{w_msg}}  {lst:<{w_lst}}  {nxt}")
 
     for line in lines:
         console.print(line)
