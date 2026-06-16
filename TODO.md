@@ -12,3 +12,4 @@
 - [ ] Explore sqlite-vec for semantic search
 - [ ] Design TUI
 - [ ] Investigate openchronicle
+- [ ] Store/download images and other artifacts uploaded or produced by AI
