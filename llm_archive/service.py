@@ -51,7 +51,15 @@ async def _mark_file_changes(con, config: AppConfig, seen_mtimes: dict[str, floa
         if not full_config.enabled or not full_config.watch:
             continue
         paths = [Path(full_config.path).expanduser()] if full_config.path else list(provider_paths(source_id))
-        for path in paths:
+        existing = [p for p in paths if p.exists()]
+        missing = set(paths) - set(existing)
+        if missing and existing:
+            logger.info("watch: %s missing %d of %d paths, watching %d",
+                        source_id, len(missing), len(paths), len(existing))
+        if not existing:
+            logger.info("watch: %s no paths available, falling back to poll", source_id)
+            continue
+        for path in existing:
             mtime = _path_mtime(path)
             if mtime is None:
                 continue
