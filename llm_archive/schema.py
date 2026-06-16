@@ -3,12 +3,23 @@ from dataclasses import dataclass, field
 
 
 @dataclass
+class ToolCall:
+    tool_use_id: str = ""
+    name: str = ""
+    input: dict | None = None
+    result: str | None = None
+    resultTimestamp: int | None = None
+    is_error: bool = False
+
+
+@dataclass
 class IngestedPart:
     kind: str
     text: str = ""
     data: dict = field(default_factory=dict)
     visible: bool = True
     searchable: bool = True
+    tool_call: ToolCall | None = None
 
 
 @dataclass
