@@ -994,7 +994,7 @@ def _attach_parts(con: sqlite3.Connection, msg: dict) -> dict:
     parts = [
         dict(r)
         for r in con.execute(
-            "SELECT message_id, ord, kind, text, data, visible, searchable FROM message_parts "
+            "SELECT message_id, ord, kind, text, data, visible, searchable, tool_name, tool_input, tool_result, tool_is_error FROM message_parts "
             "WHERE message_id=? ORDER BY ord",
             (msg["id"],),
         ).fetchall()
