@@ -1263,47 +1263,28 @@ def save_thread(con: sqlite3.Connection, thread: IngestedThread, force: bool = F
 
 ---
 
-## Stage 13: Verification
+## ✅ Stage 13: Verification — Done
 
 ### 13.1 Compare with claude-replay Output
 **File**: `scripts/verify_parity.py`
 
-Parse a session with both tools and compare:
+Run the verification script against all ingestors that produce tool calls.
 
-```python
-import json
-from pathlib import Path
+**Scope**: Only local file-based ingestors that parse tool calls are verified:
+- ✅ ClaudeCode (JSONL with content blocks)
+- ✅ Codex (JSONL with function_call/function_call_output or thread.started/item.completed)
+- ✅ OpenCode (SQLite with tool-type parts)
 
-def verify_claudecode_session(session_path: Path):
-    # Parse with llm-archive
-    from llm_archive.ingestors.claudecode import _parse_jsonl
-    thread_llm = _parse_jsonl(session_path)
-    
-    # Parse with claude-replay
-    from claude_replay import parseTranscriptFromText
-    turns_cr = parseTranscriptFromText(session_path.read_text())
-    
-    # Compare tool call counts
-    llm_tools = sum(1 for msg in thread_llm.messages for p in msg.parts if p.kind == "tool_use")
-    cr_tools = sum(1 for turn in turns_cr for b in turn.blocks if b.kind == "tool_use")
-    
-    assert llm_tools == cr_tools, f"Tool count mismatch: {llm_tools} vs {cr_tools}"
-    
-    # Compare tool names
-    llm_names = {p.tool_call.name for msg in thread_llm.messages for p in msg.parts if p.kind == "tool_use"}
-    cr_names = {b.tool_call.name for turn in turns_cr for b in turn.blocks if b.kind == "tool_use"}
-    
-    assert llm_names == cr_names, f"Tool names mismatch: {llm_names} vs {cr_names}"
-    
-    print("✅ Tool call parity verified")
+**Out of scope** (no structured tool calls to verify):
+- ChatGPT, Claude, DeepSeek — web scrapers, conversations stored as flattened text
+- Windsurf — protobuf format (WIP)
+- Cursor, Gemini — not yet implemented
 
-if __name__ == "__main__":
-    verify_claudecode_session(Path.home() / ".claude/projects/-*/session-*.jsonl")
-```
+The script validates per-tool-call: tool_use_id, name, input, is_error, result completeness.
 
 ### 13.2 Run Verification
 ```bash
-python scripts/verify_parity.py
+python scripts/verify_tool_call_parity.py
 ```
 
 ---
@@ -1354,7 +1335,7 @@ python scripts/verify_parity.py
 11. **Stage 7**: Gemini ingestor (new source) - 8h P1
 12. **Stage 10**: Documentation (knowledge transfer) - 2h P2
 13. **Stage 12**: Performance optimization (nice-to-have) - 4h P2
-14. **Stage 13**: Verification (confidence) - 2h P1
+14. ✅ **Stage 13**: Verification — Done
 15. **Stage 14**: Release (shipping) - 1h P2
 
 ---
@@ -1376,9 +1357,9 @@ python scripts/verify_parity.py
 | Stage 7: Gemini (New) | 8h | P1 | |
 | Stage 10: Documentation | 2h | P2 | |
 | Stage 12: Performance | 4h | P2 | |
-| Stage 13: Verification | 2h | P1 | |
+| Stage 13: Verification | 2h | P1 | ✅ | |
 | Stage 14: Release | 1h | P2 | |
-| **Total** | **69h** | | **41h done** |
+| **Total** | **69h** | | **43h done** |
 
 ---
 
@@ -1396,5 +1377,5 @@ python scripts/verify_parity.py
 - ✅ Error status tracked (status/exit code)
 - ✅ Backward compatibility maintained (legacy flat content fallback)
 - ✅ Test coverage: 283 tests passing
-- ❌ Verification script (not implemented)
+- ✅ Verification script passing for ClaudeCode, Codex, OpenCode (web scrapers out of scope — no tool calls)
 - ❌ Performance optimization (not started)
