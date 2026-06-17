@@ -254,3 +254,123 @@ async def test_run_due_backup_records_failure(tmp_path):
     state = db.get_backup_state(con)
     assert state["last_error"] is not None
     assert "backup failed" in state["last_error"]
+
+
+@pytest.mark.asyncio
+async def test_watched_provider_skips_timer_when_not_stale(tmp_path):
+    con = db.connect(tmp_path / "archive.db")
+    db.ensure_provider_state(con, "claudecode")
+    con.execute(
+        "UPDATE provider_state SET last_success_at=5000, next_sync_at=1 WHERE source_id='claudecode'"
+    ).connection.commit()
+
+    config = AppConfig(
+        ingestors={
+            "claudecode": IngestorConfig(
+                enabled=True,
+                sync_interval_ms=10_000,
+                min_sync_interval_ms=10_000,
+                watch=True,
+            )
+        }
+    )
+
+    with patch("llm_archive.service.run_sync_job", new_callable=AsyncMock) as mock_job:
+        await _run_due_syncs(con, config, AsyncMock(), None)
+        mock_job.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_watched_provider_syncs_when_stale(tmp_path):
+    con = db.connect(tmp_path / "archive.db")
+    db.ensure_provider_state(con, "claudecode")
+    db.mark_provider_stale(con, "claudecode")
+    con.execute(
+        "UPDATE provider_state SET last_success_at=5000, next_sync_at=9999999999999 WHERE source_id='claudecode'"
+    ).connection.commit()
+
+    config = AppConfig(
+        ingestors={
+            "claudecode": IngestorConfig(
+                enabled=True,
+                sync_interval_ms=10_000,
+                min_sync_interval_ms=10_000,
+                watch=True,
+            )
+        }
+    )
+
+    with patch("llm_archive.service.run_sync_job", new_callable=AsyncMock) as mock_job:
+        await _run_due_syncs(con, config, AsyncMock(), None)
+        mock_job.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_watched_provider_syncs_initial_run(tmp_path):
+    con = db.connect(tmp_path / "archive.db")
+
+    config = AppConfig(
+        ingestors={
+            "claudecode": IngestorConfig(
+                enabled=True,
+                sync_interval_ms=10_000,
+                min_sync_interval_ms=10_000,
+                watch=True,
+            )
+        }
+    )
+
+    with patch("llm_archive.service.run_sync_job", new_callable=AsyncMock) as mock_job:
+        await _run_due_syncs(con, config, AsyncMock(), None)
+        mock_job.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_non_watched_provider_syncs_on_timer(tmp_path):
+    con = db.connect(tmp_path / "archive.db")
+    db.ensure_provider_state(con, "chatgpt")
+    con.execute(
+        "UPDATE provider_state SET last_success_at=5000, next_sync_at=1 WHERE source_id='chatgpt'"
+    ).connection.commit()
+
+    config = AppConfig(
+        ingestors={
+            "chatgpt": IngestorConfig(
+                mode="cookies",
+                enabled=True,
+                sync_interval_ms=1_800_000,
+                min_sync_interval_ms=1_800_000,
+                watch=False,
+            )
+        }
+    )
+
+    with patch("llm_archive.service.run_sync_job", new_callable=AsyncMock) as mock_job:
+        await _run_due_syncs(con, config, AsyncMock(), None)
+        mock_job.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_watched_provider_skips_after_successful_sync_not_stale(tmp_path):
+    con = db.connect(tmp_path / "archive.db")
+    db.ensure_provider_state(con, "claudecode")
+    recent = db.now_ms()
+    con.execute(
+        "UPDATE provider_state SET last_success_at=?, next_sync_at=? WHERE source_id='claudecode'",
+        (recent, recent + 10_000),
+    ).connection.commit()
+
+    config = AppConfig(
+        ingestors={
+            "claudecode": IngestorConfig(
+                enabled=True,
+                sync_interval_ms=10_000,
+                min_sync_interval_ms=10_000,
+                watch=True,
+            )
+        }
+    )
+
+    with patch("llm_archive.service.run_sync_job", new_callable=AsyncMock) as mock_job:
+        await _run_due_syncs(con, config, AsyncMock(), None)
+        mock_job.assert_not_awaited()

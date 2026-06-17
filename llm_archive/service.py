@@ -134,19 +134,29 @@ async def _run_due_syncs(con, config: AppConfig, runner: SyncRunner, db_path: Pa
         if not provider_config.enabled:
             continue
         state = states.get(source_id, {})
+        is_stale = bool(state.get("stale_since"))
         due_at = state.get("next_sync_at")
         last_success = state.get("last_success_at") or db.get_last_sync(con, source_id)
         if due_at is None and last_success:
             due_at = int(last_success) + (provider_config.sync_interval_ms or 0)
             db.set_provider_next_sync(con, source_id, due_at)
-        if state.get("stale_since") or due_at is None or int(due_at) <= db.now_ms():
-            await run_sync_job(
-                source_id,
-                config=config,
-                runner=runner,
-                db_path=db_path,
-                wait=False,
-            )
+        is_due = due_at is None or int(due_at) <= db.now_ms()
+        has_synced = bool(state.get("last_success_at")) or bool(db.get_last_sync(con, source_id))
+        watched = provider_config.watch and provider_kind(source_id) == "file"
+
+        if watched and has_synced:
+            if not is_stale:
+                continue
+        elif not is_due and not is_stale:
+            continue
+
+        await run_sync_job(
+            source_id,
+            config=config,
+            runner=runner,
+            db_path=db_path,
+            wait=False,
+        )
 
 
 async def _run_due_backup(con, db_path: Path | None) -> None:
