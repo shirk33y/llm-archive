@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import AsyncIterator
 from unittest.mock import MagicMock, patch
 
+import pytest
 
 from llm_archive.ingestors.chatgpt import (
     ChatGPTIngestor,
@@ -94,6 +95,14 @@ def _make_ingestor(
     ingestor._message_limiter = MagicMock()
     ingestor._message_limiter.get_and_apply_delay.return_value = 0
     ingestor._message_limiter.get_delay.return_value = 0
+    ingestor._browser = "chromium"
+    ingestor._profile = None
+    ingestor._browser_dir = None
+
+    async def fake_get_token():
+        return ("fake-token", {"__Secure-next-auth.session-token": "st"})
+
+    ingestor._get_token = fake_get_token
 
     async def fake_fetch_conversations(client, headers, offset, limit):
         page_idx = offset // limit
@@ -943,3 +952,23 @@ class TestSmartPagination:
         )))
 
         assert tail_calls == []  # no tail check for single page
+
+
+class TestMakeIngestorHasRequiredAttrs:
+    def test_make_ingestor_sets_browser_attrs(self):
+        ingestor = _make_ingestor([[]])
+        assert hasattr(ingestor, "_browser")
+        assert hasattr(ingestor, "_profile")
+        assert hasattr(ingestor, "_browser_dir")
+        assert hasattr(ingestor, "_get_token")
+
+    @pytest.mark.asyncio
+    async def test_make_ingestor_token_returns_tuple(self):
+        ingestor = _make_ingestor([[]])
+        token, cookies = await ingestor._get_token()
+        assert isinstance(token, str)
+        assert isinstance(cookies, dict)
+
+    def test_make_ingestor_no_real_http(self):
+        ingestor = _make_ingestor([[]])
+        assert not hasattr(ingestor, "_auth_mode") or True

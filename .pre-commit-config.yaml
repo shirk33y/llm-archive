@@ -9,6 +9,6 @@ repos:
         pass_filenames: false
       - id: unit-tests
         name: unit tests
-        entry: uv run pytest -q
+        entry: uv run pytest -q --cov-fail-under=70
         language: system
         pass_filenames: false
