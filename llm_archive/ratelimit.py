@@ -52,10 +52,9 @@ class RateLimiter:
         self._min_delay_after_429 = min_delay_after_429
 
         self._delay = initial_delay
-        self._fail_factor = 1.0
         self._success_factor = 1.0
         self._consecutive_429s = 0
-        self._last_request_time = 0.0  # 0 means "no previous request"
+        self._last_request_time = 0.0
         self._just_had_429 = False
 
     @property
@@ -72,13 +71,11 @@ class RateLimiter:
         Returns the delay to wait before retrying (with jitter, min 1s).
         """
         self._consecutive_429s += 1
-        self._fail_factor += 1.0
         self._just_had_429 = True
 
         self._delay = min(self._delay * self._backoff_factor, self._max_delay)
         wait_time = self._full_jitter(self._delay)
 
-        # Ensure minimum wait time after 429
         if wait_time < self._min_delay_after_429:
             wait_time = self._min_delay_after_429 + random.uniform(0, self._min_delay_after_429)
 
@@ -107,17 +104,10 @@ class RateLimiter:
             return delay
         return random.uniform(0, delay * self._jitter)
 
-    def _symmetric_jitter(self, delay: float) -> float:
-        """Symmetric jitter: delay ± jitter_range."""
-        if self._jitter <= 0:
-            return delay
-        jitter_range = delay * self._jitter
-        return delay + random.uniform(-jitter_range, jitter_range)
-
     def get_delay(self) -> float:
         """Get the delay needed before next request (no side effects)."""
         if self._last_request_time == 0:
-            return 0.0  # First request, no delay
+            return 0.0
 
         elapsed = time.time() - self._last_request_time
 
@@ -148,42 +138,6 @@ class RateLimiter:
         delay = self.get_delay()
         self.update_request_time()
         return delay
-
-    def update_last_request_time(self) -> None:
-        """Alias for update_request_time()."""
-        self.update_request_time()
-
-    async def retry_with_backoff(self, request_func, *args, **kwargs):
-        """Execute a request with automatic retry on 429."""
-        max_retries = 10
-        last_error = None
-
-        for attempt in range(max_retries):
-            await self.wait()
-            self.update_request_time()
-
-            try:
-                response = await request_func(*args, **kwargs)
-
-                if response.status_code == 429:
-                    retry_after = response.headers.get("Retry-After")
-                    if retry_after:
-                        wait_time = float(retry_after)
-                    else:
-                        wait_time = self.record_429()
-                    await asyncio.sleep(wait_time)
-                    continue
-
-                self.record_success()
-                return response
-
-            except Exception as e:
-                last_error = e
-                wait_time = self.record_429()
-                logger.warning(f"Error: {e}. Retrying in {wait_time:.1f}s...")
-                await asyncio.sleep(wait_time)
-
-        raise last_error or RuntimeError(f"Request failed after {max_retries} retries")
 
 
 class MessageRateLimiter(RateLimiter):

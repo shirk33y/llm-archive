@@ -26,11 +26,20 @@ dev = [
     "pre-commit>=3.7",
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
+    "pytest-cov>=5.0",
     "ruff>=0.4",
 ]
 
 [project.scripts]
 llm-archive = "llm_archive.cli:main"
+
+[tool.coverage.run]
+source = ["llm_archive"]
+omit = ["*/tests/*", "*/__main__.py", "llm_archive/tui.py", "llm_archive/ingestors/windsurf.py", "llm_archive/mcp_server.py"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["llm_archive"]

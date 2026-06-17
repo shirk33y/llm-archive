@@ -7,16 +7,16 @@ from pathlib import Path
 import pytest
 
 from llm_archive import db
-from llm_archive.ids import to_base53
+from llm_archive.ids import from_base53, to_base53
 from llm_archive.ingestors.claudecode import ClaudeCodeIngestor, _parse_jsonl, _flatten_content
 from llm_archive.ingestors.deepseek import (
     DeepseekIngestor,
     _flatten_fragments,
     _message_content,
     _metadata,
-    _parse_ts,
     _role,
 )
+from llm_archive.ingestors.web import parse_timestamp
 from llm_archive.ingestors.opencode import OpenCodeIngestor
 from llm_archive.schema import IngestedMessage, IngestedThread, IngestedPart, ToolCall
 
@@ -208,11 +208,11 @@ def test_deepseek_role_mapping():
     assert _role("SYSTEM") is None
 
 
-def test_deepseek_parse_ts():
-    assert _parse_ts(1.5) == 1500
-    assert _parse_ts("2.25") == 2250
-    assert _parse_ts(None) is None
-    assert _parse_ts("nope") is None
+def test_parse_timestamp():
+    assert parse_timestamp(1.5) == 1500
+    assert parse_timestamp("2.25") == 2250
+    assert parse_timestamp(None) is None
+    assert parse_timestamp("nope") is None
 
 
 def test_deepseek_metadata():
@@ -874,18 +874,14 @@ def test_claude_flatten_list_content():
 
 
 def test_claude_parse_timestamp():
-    from llm_archive.ingestors.claude import _parse_claude_ts
-
-    ts = _parse_claude_ts("2024-03-27T04:26:48.000Z")
+    ts = parse_timestamp("2024-03-27T04:26:48.000Z")
     assert ts is not None
     assert ts > 1711510000000
 
 
 def test_claude_parse_timestamp_none():
-    from llm_archive.ingestors.claude import _parse_claude_ts
-
-    assert _parse_claude_ts(None) is None
-    assert _parse_claude_ts("") is None
+    assert parse_timestamp(None) is None
+    assert parse_timestamp("") is None
 
 
 @pytest.mark.asyncio
@@ -1498,7 +1494,7 @@ def test_message_rate_limiter_get_and_apply_delay():
     delay = limiter.get_and_apply_delay()
     assert delay == 0.0
 
-    limiter.update_last_request_time()
+    limiter.update_request_time()
 
     delay = limiter.get_and_apply_delay()
     assert 1.9 <= delay <= 2.5  # May include random_extra
@@ -1604,3 +1600,34 @@ async def test_chatgpt_smart_sync_skips_existing():
 
     assert skipped == ["conv-1"]
     assert fetched == ["conv-2"]
+
+
+# --- Base53 ID encoding/decoding ---
+
+
+def test_to_base53_small_values():
+    assert to_base53(0) == "2"
+    assert to_base53(1) == "3"
+    assert to_base53(2) == "4"
+    assert to_base53(52) == "w"
+
+
+def test_to_base53_roundtrip():
+    for num in [0, 1, 52, 55, 100, 1000, 12345, 999999]:
+        encoded = to_base53(num)
+        decoded = from_base53(encoded)
+        assert decoded == num, f"Failed roundtrip: {num} -> {encoded} -> {decoded}"
+
+
+def test_from_base53_known():
+    assert from_base53("3") == 1
+    assert from_base53("4") == 2
+    assert from_base53("w") == 52
+    assert from_base53("34") == 55
+
+
+def test_from_base53_invalid_character():
+    with pytest.raises(ValueError):
+        from_base53("1")  # '1' is not in BASE53
+    with pytest.raises(ValueError):
+        from_base53("O0l")  # 'O', '0', 'l' not in BASE53

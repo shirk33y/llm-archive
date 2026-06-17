@@ -149,7 +149,7 @@ class TestRateLimiterTiming:
         from llm_archive.ratelimit import RateLimiter
 
         limiter = RateLimiter(initial_delay=2.0, jitter=0.0)
-        limiter.update_last_request_time()
+        limiter.update_request_time()
 
         delay = limiter.get_and_apply_delay()
         assert 1.9 <= delay <= 2.5  # May include random_extra
@@ -158,7 +158,7 @@ class TestRateLimiterTiming:
         from llm_archive.ratelimit import RateLimiter
 
         limiter = RateLimiter(initial_delay=0.5, jitter=0.0)
-        limiter.update_last_request_time()
+        limiter.update_request_time()
         time.sleep(0.6)
 
         delay = limiter.get_and_apply_delay()

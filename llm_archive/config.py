@@ -9,7 +9,6 @@ from typing import Any
 
 VALID_AUTH_MODES = {"cookies"}
 WEB_INGESTORS = {"chatgpt", "claude", "deepseek"}
-FILE_INGESTORS = {"claudecode", "codex", "cursor", "gemini", "opencode", "windsurf"}
 INGESTOR_ORDER = (
     "chatgpt", "claude", "deepseek", "claudecode", "codex",
     "cursor", "gemini", "opencode", "windsurf",
@@ -184,12 +183,6 @@ def read_config_text(path: Path | None = None) -> str:
     path = path or config_path()
     ensure_config(path)
     return path.read_text()
-
-
-def write_config_text(text: str, path: Path | None = None) -> None:
-    path = path or config_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text)
 
 
 def update_ingestor_config(source_id: str, values: dict[str, Any], path: Path | None = None) -> None:

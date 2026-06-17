@@ -22,7 +22,6 @@ import asyncio
 import base64
 import json
 import time
-from datetime import datetime
 from pathlib import Path
 from typing import AsyncIterator
 
@@ -35,6 +34,7 @@ from llm_archive.auth.browser_cookies import (
 )
 from llm_archive.config import VALID_AUTH_MODES, load_config
 from llm_archive.ingestors.base import BaseIngestor
+from llm_archive.ingestors.web import parse_timestamp as _parse_timestamp
 from llm_archive.logging import get_logger
 from llm_archive.ratelimit import MessageRateLimiter
 from llm_archive.schema import IngestedMessage, IngestedThread
@@ -79,7 +79,6 @@ class ChatGPTIngestor(BaseIngestor):
         self._browser = chatgpt_config.browser
         self._profile = chatgpt_config.profile
         self._browser_dir = browser_dir or chatgpt_config.browser_dir or config.browser_dir
-        self._browser_path = browser_path or chatgpt_config.browser_path or config.browser_path
 
     async def requires_auth(self) -> bool:
         return True
@@ -627,22 +626,6 @@ def _domain_matches(host: str, domains: tuple[str, ...]) -> bool:
     normalized = host.lstrip(".").lower()
     return any(normalized == domain or normalized.endswith(f".{domain}") for domain in domains)
 
-
-
-def _parse_timestamp(ts) -> int | None:
-    if ts is None:
-        return None
-    if isinstance(ts, (int, float)):
-        return int(ts * 1000)
-    if isinstance(ts, str):
-        try:
-            if ts.replace(".", "").replace("-", "").replace("+", "").isdigit():
-                return int(float(ts) * 1000)
-            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-            return int(dt.timestamp() * 1000)
-        except Exception:
-            return None
-    return None
 
 
 def _extract_message_text(msg: dict) -> str:

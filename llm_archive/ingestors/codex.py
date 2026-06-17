@@ -6,12 +6,11 @@ from pathlib import Path
 from typing import AsyncIterator
 
 from llm_archive.ingestors.base import BaseIngestor
+from llm_archive.ingestors.web import parse_timestamp
 from llm_archive.schema import IngestedMessage, IngestedPart, IngestedThread, ToolCall
 
 STATE_DB = Path.home() / ".codex" / "state_5.sqlite"
 SESSIONS_ROOT = Path.home() / ".codex" / "sessions"
-
-ROLLOUT_RE = re.compile(r"rollout-.*?-([a-f0-9-]+)\.jsonl$")
 
 TOOL_NAME_MAP = {
     "exec_command": "Bash",
@@ -171,17 +170,6 @@ def _find_session_file(sessions_root: Path, thread_id: str) -> Path | None:
     return None
 
 
-def _parse_ts(ts: str) -> int | None:
-    if not ts:
-        return None
-    from datetime import datetime
-    try:
-        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-        return int(dt.timestamp() * 1000)
-    except Exception:
-        return None
-
-
 def _extract_text(content) -> str:
     if isinstance(content, str):
         return content
@@ -235,7 +223,7 @@ def _parse_session(path: Path, thread_id: str, meta: dict) -> IngestedThread | N
             continue
 
         payload = entry.get("payload", {})
-        ts = _parse_ts(entry.get("timestamp", ""))
+        ts = parse_timestamp(entry.get("timestamp", ""))
         if ts:
             if first_ts is None:
                 first_ts = ts

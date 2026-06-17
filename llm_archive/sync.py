@@ -21,9 +21,7 @@ def set_console(c: Console) -> None:
     console = c
 
 
-def set_progress_console(c: Console) -> None:
-    global progress_console
-    progress_console = c
+
 
 
 def _run(coro):

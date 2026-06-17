@@ -7,6 +7,10 @@ import httpx
 from llm_archive.auth.browser_cookies import cookies_to_dict, extract_browser_cookies
 from llm_archive.config import VALID_AUTH_MODES, load_config
 from llm_archive.ingestors.base import BaseIngestor
+from llm_archive.ingestors.web import (
+    parse_timestamp,
+    should_skip_conversation,
+)
 from llm_archive.logging import get_logger
 from llm_archive.schema import IngestedMessage, IngestedThread
 
@@ -49,7 +53,6 @@ class ClaudeIngestor(BaseIngestor):
         self._browser = claude_config.browser
         self._profile = claude_config.profile
         self._browser_dir = browser_dir or claude_config.browser_dir or config.browser_dir
-        self._browser_path = browser_path or claude_config.browser_path or config.browser_path
 
     async def requires_auth(self) -> bool:
         return True
@@ -150,24 +153,26 @@ class ClaudeIngestor(BaseIngestor):
                 on_total(len(all_conversations))
 
             # Sort by updated_at descending to ensure smart sync works correctly
-            all_conversations.sort(key=lambda c: _parse_claude_ts(c.get("updated_at")) or 0, reverse=True)
+            all_conversations.sort(key=lambda c: parse_timestamp(c.get("updated_at")) or 0, reverse=True)
 
             for conv in all_conversations:
                 conv_id = conv.get("uuid") or conv.get("id")
                 if not conv_id:
                     continue
                 thread_id = f"claude:{conv_id}"
-                updated_at = _parse_claude_ts(conv.get("updated_at"))
-                
-                # Smart sync: skip conversations already in the DB
-                if thread_id in existing_thread_ids:
-                    if isinstance(existing_thread_ids, dict):
-                        db_updated_at = existing_thread_ids.get(thread_id)
-                        if db_updated_at is None or updated_at is None or db_updated_at >= updated_at:
-                            continue
-                        logger.info(f"Conversation {conv_id} was updated, re-fetching")
-                    else:
-                        continue
+                updated_at = parse_timestamp(conv.get("updated_at"))
+
+                if should_skip_conversation(thread_id, updated_at, existing_thread_ids):
+                    continue
+
+                if (
+                    isinstance(existing_thread_ids, dict)
+                    and thread_id in existing_thread_ids
+                    and existing_thread_ids[thread_id] is not None
+                    and updated_at is not None
+                    and existing_thread_ids[thread_id] < updated_at
+                ):
+                    logger.info(f"Conversation {conv_id} was updated, re-fetching")
                 
                 if since and updated_at and updated_at < since:
                     continue
@@ -206,7 +211,7 @@ class ClaudeIngestor(BaseIngestor):
             if not content.strip():
                 continue
 
-            ts = _parse_claude_ts(msg.get("created_at"))
+            ts = parse_timestamp(msg.get("created_at"))
             msg_id = msg.get("uuid", f"{conv_id}:{i}")
 
             metadata: dict = {}
@@ -230,25 +235,14 @@ class ClaudeIngestor(BaseIngestor):
             id=thread_id,
             source_id="claude",
             title=conv.get("name") or conv.get("title"),
-            created_at=_parse_claude_ts(conv.get("created_at")),
-            updated_at=_parse_claude_ts(conv.get("updated_at")),
+            created_at=parse_timestamp(conv.get("created_at")),
+            updated_at=parse_timestamp(conv.get("updated_at")),
             messages=messages,
         )
 
     async def _reauth(self) -> None:
         logger.warning("Session expired, re-authenticating")
         self._cookies = {}
-
-
-def _parse_claude_ts(ts: str | None) -> int | None:
-    if not ts:
-        return None
-    from datetime import datetime
-    try:
-        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-        return int(dt.timestamp() * 1000)
-    except Exception:
-        return None
 
 
 def _flatten_claude_content(content) -> str:

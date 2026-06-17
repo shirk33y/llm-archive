@@ -255,17 +255,6 @@ def _find_local_storage_value(text: str, key: str) -> str | None:
     return None
 
 
-def extract_cookies_from_firefox(
-    profile: str | None = None,
-    *,
-    browser_dir: str | None = None,
-    domains: tuple[str, ...] | None = None,
-) -> dict[str, str]:
-    return cookies_to_dict(
-        extract_firefox_cookies(profile, browser_dir=browser_dir, domains=domains)
-    )
-
-
 def cookies_to_dict(cookies: list[dict[str, Any]]) -> dict[str, str]:
     return {str(cookie["name"]): str(cookie["value"]) for cookie in cookies}
 
