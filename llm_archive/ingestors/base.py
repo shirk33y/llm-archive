@@ -10,7 +10,7 @@ class BaseIngestor(ABC):
 
     @abstractmethod
     async def requires_auth(self) -> bool:
-        """Return True if this source needs Playwright login."""
+        """Return True if this source needs authentication."""
         ...
 
     @abstractmethod

@@ -2,10 +2,10 @@
 
 - [ ] Extract sync logic from `llm_archive/ingestors/chatgpt.py` to `sync.py` and apply to other ingestors
 - [ ] Add VS Code Copilot ingestor
-- [ ] Ask user before auto-launching CDP browser (currently opens Chrome silently)
-- [ ] Configurable Chrome/Chromium path
-- [ ] Auto-download Chromium and launch it if no browser found
-- [ ] Explore embedded webview (e.g. pywebview) — keeps browser session alive, avoids CDP auto-close, self-contained login flow
+- [x] ~~Ask user before auto-launching CDP browser~~ (obsolete — CDP removed)
+- [x] ~~Configurable Chrome/Chromium path~~ (obsolete — CDP removed)
+- [x] ~~Auto-download Chromium and launch it if no browser found~~ (obsolete — CDP removed)
+- [x] ~~Explore embedded webview~~ (obsolete — CDP removed)
 - [ ] `llm-archive resume <source> <thread_id>` — hint or subcommand to resume a session in its original tool (e.g. `opencode run --session <id>`)
 - [ ] Summarize threads to db using cli tools like claude, opencode, ollama
 - [ ] Display resume URL or command

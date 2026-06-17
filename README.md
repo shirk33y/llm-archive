@@ -24,9 +24,9 @@ llm-archive status
 
 | Provider | Type | Auth/data |
 | --- | --- | --- |
-| `chatgpt` | web | browser cookies, fallback CDP |
-| `claude` | web | browser cookies, fallback CDP |
-| `deepseek` | web | browser cookies + localStorage token, fallback CDP |
+| `chatgpt` | web | browser cookies |
+| `claude` | web | browser cookies |
+| `deepseek` | web | browser cookies + localStorage token |
 | `claudecode` | file | local JSONL |
 | `codex` | file | local JSONL |
 | `cursor` | file | local JSONL |

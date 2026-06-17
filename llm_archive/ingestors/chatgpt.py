@@ -21,11 +21,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-import shutil
-import subprocess
-import tempfile
 import time
-import urllib.request
 from datetime import datetime
 from pathlib import Path
 from typing import AsyncIterator
@@ -37,7 +33,6 @@ from llm_archive.auth.browser_cookies import (
     cookies_to_dict,
     extract_browser_cookies,
 )
-from llm_archive.auth.playwright import AUTH_DIR, auth_path, login_with_detection
 from llm_archive.config import VALID_AUTH_MODES, load_config
 from llm_archive.ingestors.base import BaseIngestor
 from llm_archive.logging import get_logger
@@ -48,70 +43,13 @@ logger = get_logger("chatgpt")
 
 LOGIN_URL = "https://chatgpt.com"
 API_BASE = "https://chatgpt.com/backend-api"
-CDP_PORT = 9333
 COOKIE_DOMAINS = ("chatgpt.com", "openai.com")
 
-
-def _find_chrome_binary() -> list[str]:
-    """Find Chrome/Chromium binary. Returns command as list for subprocess."""
-    candidates = [
-        "google-chrome",
-        "google-chrome-stable",
-        "chromium",
-        "chromium-browser",
-        "/usr/bin/google-chrome",
-        "/usr/bin/chromium",
-        "/usr/bin/chromium-browser",
-        "/snap/bin/chromium",
-    ]
-    for c in candidates:
-        if shutil.which(c):
-            return [c]
-
-    if shutil.which("flatpak"):
-        for app_id in ("com.google.Chrome", "org.chromium.Chromium"):
-            result = subprocess.run(["flatpak", "info", app_id], capture_output=True)
-            if result.returncode == 0:
-                return ["flatpak", "run", "--share=network", "--filesystem=/tmp", app_id]
-
-    raise RuntimeError(
-        "Could not find Chrome or Chromium. Install one and try again.\n"
-        "e.g. flatpak install flathub org.chromium.Chromium"
-    )
+AUTH_DIR = Path.home() / ".llm-archive" / "auth"
 
 
-def _launch_chrome_with_cdp() -> tuple[subprocess.Popen, int]:
-    """Launch Chrome with CDP debugging enabled. Returns (process, port)."""
-    chrome_cmd = _find_chrome_binary()
-
-    user_data_dir = Path(tempfile.mkdtemp(prefix="llm-archive-chrome-"))
-
-    proc = subprocess.Popen(
-        [
-            *chrome_cmd,
-            f"--remote-debugging-port={CDP_PORT}",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--password-store=basic",
-            "--ozone-platform=x11",
-            f"--user-data-dir={user_data_dir}",
-        ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-
-    time.sleep(2)
-
-    return proc, CDP_PORT
-
-
-def _cleanup_chrome_proc(proc: subprocess.Popen | None, user_data_dir: Path | None) -> None:
-    """Clean up Chrome process and temp profile."""
-    if proc:
-        proc.terminate()
-        proc.wait(timeout=5)
-    if user_data_dir and user_data_dir.exists():
-        shutil.rmtree(user_data_dir, ignore_errors=True)
+def _auth_path(source_id: str) -> Path:
+    return AUTH_DIR / f"{source_id}.json"
 
 
 BROWSER_HEADERS = {
@@ -129,13 +67,10 @@ class ChatGPTIngestor(BaseIngestor):
         auth_mode: str | None = None,
         browser_dir: str | None = None,
         browser_path: str | None = None,
-        use_cdp: bool = False,
     ):
         config = load_config()
         chatgpt_config = config.ingestor(self.source_id)
         mode = auth_mode or chatgpt_config.mode or "cookies"
-        if use_cdp:
-            mode = "cdp"
         if mode not in VALID_AUTH_MODES:
             valid = ", ".join(sorted(VALID_AUTH_MODES))
             raise ValueError(f"Invalid ChatGPT auth mode: {mode!r}. Expected: {valid}")
@@ -145,20 +80,15 @@ class ChatGPTIngestor(BaseIngestor):
         self._profile = chatgpt_config.profile
         self._browser_dir = browser_dir or chatgpt_config.browser_dir or config.browser_dir
         self._browser_path = browser_path or chatgpt_config.browser_path or config.browser_path
-        self._use_cdp = mode == "cdp"
 
     async def requires_auth(self) -> bool:
         return True
 
     async def init(self, **kwargs) -> None:
-        if self._auth_mode == "cdp":
-            if not auth_path(self.source_id).exists() or kwargs.get("reauth"):
-                await _login()
-        else:
-            if kwargs.get("reauth"):
-                p = auth_path(self.source_id)
-                if p.exists():
-                    p.unlink()
+        if kwargs.get("reauth"):
+            p = _auth_path(self.source_id)
+            if p.exists():
+                p.unlink()
 
     def _build_headers(self, token: str, cookies: dict[str, str]) -> dict[str, str]:
         """Build request headers with browser-like headers."""
@@ -203,7 +133,7 @@ class ChatGPTIngestor(BaseIngestor):
             else {tid: None for tid in existing_thread_ids}
         )
 
-        token, cookies = await self._get_token_via_cdp()
+        token, cookies = await self._get_token()
         headers = self._build_headers(token, cookies)
 
         sha1_stop = False
@@ -437,7 +367,7 @@ class ChatGPTIngestor(BaseIngestor):
 
     def _load_stored_token(self) -> tuple[str, dict[str, str]] | None:
         """Load access token and cookies from stored auth file if token is still valid."""
-        path = auth_path(self.source_id)
+        path = _auth_path(self.source_id)
         if not path.exists():
             return None
 
@@ -475,22 +405,19 @@ class ChatGPTIngestor(BaseIngestor):
             logger.info("Using stored access token")
         return token, cookies
 
-    async def _get_token_via_cdp(self) -> tuple[str, dict[str, str]]:
-        """Get access token and cookies — tries stored auth, then browser cookies, then CDP."""
+    async def _get_token(self) -> tuple[str, dict[str, str]]:
+        """Get access token and cookies — tries stored auth, then browser cookies."""
         stored = self._load_stored_token()
         if stored:
             return stored
 
-        if self._auth_mode == "cookies":
-            token = await self._try_browser_cookies_token()
-            if token:
-                return token
-            raise RuntimeError(
-                "No valid stored token and browser cookie extraction failed. "
-                "Set ingestors.chatgpt.mode = \"cdp\" to use CDP, or login in the configured browser."
-            )
-
-        return await self._get_token_via_cdp_fallback()
+        token = await self._try_browser_cookies_token()
+        if token:
+            return token
+        raise RuntimeError(
+            "No valid stored token and browser cookie extraction failed. "
+            "Login in the configured browser."
+        )
 
     async def _try_browser_cookies_token(self) -> tuple[str, dict[str, str]] | None:
         """Try extracting cookies from Waterfox/Firefox and fetching access token via API."""
@@ -536,7 +463,7 @@ class ChatGPTIngestor(BaseIngestor):
 
             try:
                 AUTH_DIR.mkdir(parents=True, exist_ok=True)
-                path = auth_path(self.source_id)
+                path = _auth_path(self.source_id)
                 existing = {}
                 if path.exists():
                     existing = json.loads(path.read_text())
@@ -551,94 +478,6 @@ class ChatGPTIngestor(BaseIngestor):
         except Exception as e:
             logger.warning(f"Failed to fetch token via browser cookies: {e}")
             return None
-
-    async def _get_token_via_cdp_fallback(self) -> tuple[str, dict[str, str]]:
-        """Fall back to Chrome CDP for token/cookie extraction."""
-        logger.warning("Fetching via Chrome CDP...")
-
-        from playwright.async_api import async_playwright
-
-        chrome_proc = None
-        user_data_dir = None
-        cdp_port = None
-
-        for port in [CDP_PORT, 9444, 9555]:
-            try:
-                resp = urllib.request.urlopen(f"http://localhost:{port}/json/version", timeout=1)
-                if resp.status == 200:
-                    cdp_port = port
-                    break
-            except Exception:
-                continue
-
-        if not cdp_port:
-            logger.info("No Chrome with CDP found, launching Chrome...")
-            chrome_proc, cdp_port = _launch_chrome_with_cdp()
-            user_data_dir = (
-                Path(chrome_proc.args[-1].split("=")[1])
-                if "--user-data-dir=" in " ".join(chrome_proc.args)
-                else None
-            )
-
-        try:
-            async with async_playwright() as p:
-                browser = await p.chromium.connect_over_cdp(f"http://localhost:{cdp_port}")
-                ctx = browser.contexts[0]
-
-                page = None
-                for pg in ctx.pages:
-                    if "chatgpt.com" in pg.url:
-                        page = pg
-                        break
-
-                if not page:
-                    page = await ctx.new_page()
-                    await page.goto(LOGIN_URL, wait_until="domcontentloaded")
-
-                if "chatgpt.com" not in page.url:
-                    await page.goto(LOGIN_URL, wait_until="domcontentloaded")
-
-                logger.info("Waiting for login... Please login at chatgpt.com if needed")
-                for _ in range(300):
-                    try:
-                        result = await page.evaluate("""async () => {
-                            const resp = await fetch('/api/auth/session', {credentials: 'include'});
-                            if (resp.ok) {
-                                const data = await resp.json();
-                                return data.accessToken || null;
-                            }
-                            return null;
-                        }""")
-                        if result:
-                            break
-                    except Exception:
-                        pass
-                    await asyncio.sleep(1)
-                else:
-                    raise RuntimeError("Login timeout - please login at chatgpt.com")
-
-                cookies = await ctx.cookies()
-                relevant_cookies = _relevant_cookie_cache(cookies)
-                cookie_dict = {c["name"]: c["value"] for c in relevant_cookies}
-
-                await browser.close()
-
-                try:
-                    path = auth_path(self.source_id)
-                    existing = {}
-                    if path.exists():
-                        existing = json.loads(path.read_text())
-                    existing["access_token"] = result
-                    existing["cookies"] = relevant_cookies
-                    path.write_text(json.dumps(existing))
-                    logger.info("Saved fresh token to auth file")
-                except Exception as e:
-                    logger.warning(f"Failed to save token: {e}")
-
-                return result, cookie_dict
-        finally:
-            _cleanup_chrome_proc(chrome_proc, user_data_dir)
-
 
     async def _request_with_message_with_retry(
         self,
@@ -788,57 +627,6 @@ def _domain_matches(host: str, domains: tuple[str, ...]) -> bool:
     normalized = host.lstrip(".").lower()
     return any(normalized == domain or normalized.endswith(f".{domain}") for domain in domains)
 
-
-async def _login() -> None:
-    AUTH_DIR.mkdir(parents=True, exist_ok=True)
-    out = auth_path("chatgpt")
-
-    async def detect_login(ctx, page):
-        """Detect ChatGPT login by checking for access token."""
-        for i in range(300):
-            url = page.url
-            if "login" in url.lower():
-                if i % 10 == 0:
-                    logger.debug("Still on login page...")
-                await asyncio.sleep(1)
-                continue
-
-            cookies = await ctx.cookies()
-            cookie_names = {c["name"] for c in cookies}
-            auth_cookies = cookie_names & {
-                "auth_token",
-                "access_token",
-                "__Secure-next-auth.session-token",
-                "csrf_token",
-            }
-            if auth_cookies:
-                logger.info(f"Login detected via cookies: {auth_cookies}")
-                return True
-
-            try:
-                result = await page.evaluate("""async () => {
-                    try {
-                        const resp = await fetch('/api/auth/session', {credentials: 'include'});
-                        const data = await resp.json();
-                        return {ok: resp.ok, hasToken: !!data.accessToken};
-                    } catch(e) {
-                        return {ok: false, error: e.message};
-                    }
-                }""")
-                if result.get("hasToken"):
-                    logger.info("Login detected!")
-                    return True
-                if i % 10 == 0:
-                    logger.debug(f"Checking login... URL: {url[:60]}")
-            except Exception as e:
-                if i % 10 == 0:
-                    logger.warning(f"Error checking login: {e}")
-
-            await asyncio.sleep(1)
-        logger.warning("Login timeout")
-        return False
-
-    await login_with_detection("chatgpt", LOGIN_URL, detect_login, out)
 
 
 def _parse_timestamp(ts) -> int | None:

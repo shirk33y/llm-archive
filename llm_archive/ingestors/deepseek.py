@@ -1,9 +1,5 @@
 from __future__ import annotations
-import asyncio
 import json
-import subprocess
-import time
-from pathlib import Path
 
 import httpx
 
@@ -45,7 +41,7 @@ class DeepseekIngestor(BaseIngestor):
     ):
         config = load_config()
         deepseek_config = config.ingestor(self.source_id)
-        mode = auth_mode or deepseek_config.mode or "cdp"
+        mode = auth_mode or deepseek_config.mode or "cookies"
         if mode not in VALID_AUTH_MODES:
             valid = ", ".join(sorted(VALID_AUTH_MODES))
             raise ValueError(f"Invalid DeepSeek auth mode: {mode!r}. Expected: {valid}")
@@ -61,17 +57,8 @@ class DeepseekIngestor(BaseIngestor):
         return True
 
     async def init(self, **kwargs) -> None:
-        from llm_archive.auth.playwright import auth_path
-        logger.info("Checking auth state")
-        if self._auth_mode == "cookies":
-            self._token = None
-            self._cookies = {}
-            return
-        if not auth_path(self.source_id).exists() or kwargs.get("reauth"):
-            logger.info("Auth missing or reauth requested, starting browser login")
-            await _login()
-            logger.info("Login completed and auth state saved")
         self._token = None
+        self._cookies = {}
 
     async def threads(self, since: int | None = None, existing_thread_ids: set[str] | None = None, on_total = None):
         logger.debug("Acquiring auth token")
@@ -210,42 +197,9 @@ class DeepseekIngestor(BaseIngestor):
         if self._token:
             return self._token
 
-        if self._auth_mode == "cookies":
-            self._token = self._get_token_from_browser_storage()
-            logger.debug("Extracted bearer token from browser storage")
-            return self._token
-
-        from llm_archive.auth.playwright import auth_path
-
-        path = auth_path(self.source_id)
-        if not path.exists():
-            raise FileNotFoundError("No auth found for 'deepseek'. Run `llm-archive sync deepseek' first.")
-
-        # Try to extract bearer token directly from storage state (localStorage)
-        import json
-        state = json.loads(path.read_text())
-        origins = state.get("origins", [])
-        
-        # Look for bearer token in localStorage
-        for origin in origins:
-            if origin.get("origin") == "https://chat.deepseek.com":
-                for item in origin.get("localStorage", []):
-                    if item.get("name") in ("accessToken", "token", "userToken"):
-                        token = item.get("value")
-                        if token:
-                            # Token might be JSON-encoded
-                            try:
-                                parsed = json.loads(token)
-                                if isinstance(parsed, dict) and "value" in parsed:
-                                    token = parsed["value"]
-                            except (json.JSONDecodeError, TypeError):
-                                pass
-                            self._token = token
-                            logger.debug("Extracted bearer token from storage state")
-                            return self._token
-
-        # If not found in localStorage, fall back to Chrome extraction
-        return await self._get_token_via_chrome(path)
+        self._token = self._get_token_from_browser_storage()
+        logger.debug("Extracted bearer token from browser storage")
+        return self._token
 
     async def _get_cookies(self) -> dict[str, str]:
         if not self._cookies and self._auth_mode == "cookies":
@@ -278,95 +232,9 @@ class DeepseekIngestor(BaseIngestor):
             raise FileNotFoundError("No DeepSeek userToken found in browser localStorage")
         return token
 
-    async def _get_token_via_chrome(self, path: Path) -> str:
-        """Fallback: extract bearer token by launching Chrome and intercepting request."""
-        from llm_archive.auth.playwright import _find_chrome
-        from playwright.async_api import async_playwright
-
-        # Use CDP to connect to Chrome with saved storage state
-        chrome = _find_chrome()
-        chrome_args = chrome if isinstance(chrome, list) else [chrome]
-        chrome_profile = path.parent / "chrome-profile"
-        chrome_profile.mkdir(parents=True, exist_ok=True)
-
-        proc = subprocess.Popen([
-            *chrome_args,
-            "--remote-debugging-port=9222",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--password-store=basic",
-            "--ozone-platform=x11",
-            "--log-level=3",
-            f"--user-data-dir={chrome_profile}",
-        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-        time.sleep(2)
-
-        try:
-            async with async_playwright() as p:
-                logger.debug("Connecting to Chrome via CDP")
-                browser = await p.chromium.connect_over_cdp("http://localhost:9222")
-                ctx = browser.contexts[0]
-                import json
-                state = json.loads(path.read_text())
-                await ctx.add_cookies(state.get("cookies", []))
-                page = await ctx.new_page()
-                fut = asyncio.get_running_loop().create_future()
-
-                async def on_request(req):
-                    if "/api/v0/" not in req.url:
-                        return
-                    auth = req.headers.get("authorization")
-                    if auth and auth.startswith("Bearer ") and not fut.done():
-                        fut.set_result(auth.removeprefix("Bearer ").strip())
-
-                page.on("request", on_request)
-                await page.goto(LOGIN_URL, wait_until="domcontentloaded")
-                self._token = await asyncio.wait_for(fut, timeout=120)
-                await browser.close()
-                logger.debug("Extracted bearer token from browser session")
-        finally:
-            proc.terminate()
-
-        return self._token
-
     async def _reauth(self) -> None:
         self._token = None
         self._cookies = {}
-        if self._auth_mode == "cookies":
-            return
-        logger.info("Reauthenticating")
-        await _login()
-
-
-async def _login() -> None:
-    from llm_archive.auth.playwright import AUTH_DIR, auth_path, login_with_detection
-
-    AUTH_DIR.mkdir(parents=True, exist_ok=True)
-    out = auth_path("deepseek")
-
-    async def detect_login(ctx, page):
-        """Detect DeepSeek login by checking for Bearer token in API requests."""
-        fut = asyncio.get_running_loop().create_future()
-        done = False
-
-        async def on_request(req):
-            nonlocal done
-            if done or fut.done():
-                return
-            if "/api/v0/users/current" not in req.url and "/api/v0/chat_session/fetch_page" not in req.url:
-                return
-            auth = req.headers.get("authorization")
-            if not auth or not auth.startswith("Bearer "):
-                return
-            done = True
-            fut.set_result(True)
-
-        page.on("request", on_request)
-        return await asyncio.wait_for(fut, timeout=300)
-
-    await login_with_detection("deepseek", LOGIN_URL, detect_login, out)
-
 
 def _role(role: str | None) -> str | None:
     if role == "USER":

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-VALID_AUTH_MODES = {"cookies", "cdp"}
+VALID_AUTH_MODES = {"cookies"}
 WEB_INGESTORS = {"chatgpt", "claude", "deepseek"}
 FILE_INGESTORS = {"claudecode", "codex", "cursor", "gemini", "opencode", "windsurf"}
 INGESTOR_ORDER = (

@@ -11,7 +11,7 @@ import json
 import time
 from pathlib import Path
 from typing import AsyncIterator
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 
 from llm_archive.ingestors.chatgpt import (
@@ -134,7 +134,6 @@ def _make_ingestor(
             messages=messages,
         )
 
-    ingestor._get_token_via_cdp = AsyncMock(return_value=("fake-token", {}))
     ingestor._fetch_conversations = fake_fetch_conversations
     ingestor._fetch_thread = fake_fetch_thread
     return ingestor
@@ -659,7 +658,7 @@ class TestLoadStoredToken:
 
         ingestor = ChatGPTIngestor.__new__(ChatGPTIngestor)
 
-        with patch("llm_archive.ingestors.chatgpt.auth_path", return_value=auth_file):
+        with patch("llm_archive.ingestors.chatgpt._auth_path", return_value=auth_file):
             result = ingestor._load_stored_token()
 
         assert result is not None
@@ -674,7 +673,7 @@ class TestLoadStoredToken:
 
         ingestor = ChatGPTIngestor.__new__(ChatGPTIngestor)
 
-        with patch("llm_archive.ingestors.chatgpt.auth_path", return_value=auth_file):
+        with patch("llm_archive.ingestors.chatgpt._auth_path", return_value=auth_file):
             result = ingestor._load_stored_token()
 
         assert result is None
@@ -684,7 +683,7 @@ class TestLoadStoredToken:
 
         ingestor = ChatGPTIngestor.__new__(ChatGPTIngestor)
 
-        with patch("llm_archive.ingestors.chatgpt.auth_path", return_value=auth_file):
+        with patch("llm_archive.ingestors.chatgpt._auth_path", return_value=auth_file):
             result = ingestor._load_stored_token()
 
         assert result is None
@@ -695,7 +694,7 @@ class TestLoadStoredToken:
 
         ingestor = ChatGPTIngestor.__new__(ChatGPTIngestor)
 
-        with patch("llm_archive.ingestors.chatgpt.auth_path", return_value=auth_file):
+        with patch("llm_archive.ingestors.chatgpt._auth_path", return_value=auth_file):
             result = ingestor._load_stored_token()
 
         assert result is None
@@ -711,7 +710,7 @@ class TestLoadStoredToken:
 
         ingestor = ChatGPTIngestor.__new__(ChatGPTIngestor)
 
-        with patch("llm_archive.ingestors.chatgpt.auth_path", return_value=auth_file):
+        with patch("llm_archive.ingestors.chatgpt._auth_path", return_value=auth_file):
             result = ingestor._load_stored_token()
 
         assert result is not None

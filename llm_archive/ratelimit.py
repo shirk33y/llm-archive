@@ -10,7 +10,7 @@ Features:
 - Full jitter (AWS recommended) to avoid thundering herd and detection
 - Track consecutive successes to determine when to reduce delay
 - Configurable delays and caps
-- Generic enough to work with any web ingestor (httpx, playwright, etc.)
+- Generic enough to work with any web ingestor (httpx, etc.)
 """
 
 from __future__ import annotations

@@ -39,7 +39,7 @@ class ClaudeIngestor(BaseIngestor):
     ):
         config = load_config()
         claude_config = config.ingestor(self.source_id)
-        mode = auth_mode or claude_config.mode or "cdp"
+        mode = auth_mode or claude_config.mode or "cookies"
         if mode not in VALID_AUTH_MODES:
             valid = ", ".join(sorted(VALID_AUTH_MODES))
             raise ValueError(f"Invalid Claude auth mode: {mode!r}. Expected: {valid}")
@@ -55,12 +55,6 @@ class ClaudeIngestor(BaseIngestor):
         return True
 
     async def init(self, **kwargs) -> None:
-        from llm_archive.auth.playwright import auth_path, login_headful
-        if self._auth_mode == "cookies":
-            self._cookies = {}
-            return
-        if not auth_path("claude").exists() or kwargs.get("reauth"):
-            await login_headful("claude", LOGIN_URL)
         self._cookies = {}
 
     async def _get_cookies(self) -> dict[str, str]:
@@ -73,9 +67,7 @@ class ClaudeIngestor(BaseIngestor):
                     domains=("claude.ai",),
                 )
                 self._cookies = cookies_to_dict(browser_cookies)
-            else:
-                from llm_archive.auth.playwright import load_cookies
-                self._cookies = await load_cookies("claude")
+
         return self._cookies
 
     async def _get(self, client: httpx.AsyncClient, url: str, params: dict | None = None) -> dict:
@@ -244,12 +236,8 @@ class ClaudeIngestor(BaseIngestor):
         )
 
     async def _reauth(self) -> None:
-        from llm_archive.auth.playwright import login_headful
         logger.warning("Session expired, re-authenticating")
         self._cookies = {}
-        if self._auth_mode == "cookies":
-            return
-        await login_headful("claude", LOGIN_URL)
 
 
 def _parse_claude_ts(ts: str | None) -> int | None:

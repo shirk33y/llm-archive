@@ -45,8 +45,7 @@ def main(verbose: bool):
 @click.option("--db-path", default=None, help="Override database path")
 @click.option("-f", "--force", is_flag=True, help="Force full resync (ignore last sync timestamp)")
 @click.option("-v", "--verbose", is_flag=True, help="Enable verbose logging")
-@click.option("--auth-mode", type=click.Choice(["cookies", "cdp"]), default=None, help="Override auth mode for this sync")
-@click.option("--use-cdp", is_flag=True, help="Use CDP for ChatGPT auth")
+@click.option("--auth-mode", type=click.Choice(["cookies"]), default=None, help="Override auth mode for this sync")
 @click.option("--no-wait", is_flag=True, help="Do not wait if source already syncing")
 @click.option("--json", "json_output", is_flag=True, help="Print JSON")
 def sync(
@@ -56,14 +55,13 @@ def sync(
     force: bool,
     verbose: bool,
     auth_mode: str | None,
-    use_cdp: bool,
     no_wait: bool,
     json_output: bool,
 ):
     """Sync sources. Performs first-time setup automatically when needed."""
     if verbose:
         set_verbose(True)
-    _run(_sync_command(source, db_path, path, force, auth_mode, use_cdp, no_wait, json_output))
+    _run(_sync_command(source, db_path, path, force, auth_mode, no_wait, json_output))
 
 
 async def _sync_command(
@@ -72,7 +70,6 @@ async def _sync_command(
     path: str | None,
     force: bool,
     auth_mode: str | None,
-    use_cdp: bool,
     no_wait: bool,
     json_output: bool,
 ):
@@ -80,7 +77,7 @@ async def _sync_command(
     sources = [source] if source else list(INGESTORS)
 
     async def runner(src: str, job_force: bool) -> bool:
-        return await _sync_one(src, db_path, path if src == source else None, job_force, auth_mode, use_cdp)
+        return await _sync_one(src, db_path, path if src == source else None, job_force, auth_mode)
 
     results = []
     for src in sources:
@@ -115,7 +112,6 @@ async def _sync(
     path: str | None = None,
     force: bool = False,
     auth_mode: str | None = None,
-    use_cdp: bool = False,
 ):
     con = db.connect(Path(db_path_str) if db_path_str else db.DB_PATH)
     sources = [source] if source else list(INGESTORS)
@@ -125,9 +121,6 @@ async def _sync(
         if since is not None and _source_thread_count(con, src) == 0:
             since = None
         ingestor = get_ingestor(src)
-        if src == source and hasattr(ingestor, "_auth_mode") and (auth_mode or use_cdp):
-            ingestor._auth_mode = "cdp" if use_cdp else auth_mode
-            ingestor._use_cdp = ingestor._auth_mode == "cdp"
         if path and hasattr(ingestor, "path") and src == source:
             ingestor.path = Path(path)
         source_config = {}
@@ -157,16 +150,12 @@ async def _sync_one(
     path: str | None = None,
     force: bool = False,
     auth_mode: str | None = None,
-    use_cdp: bool = False,
 ) -> bool:
     con = db.connect(Path(db_path_str) if db_path_str else db.DB_PATH)
     since = None if force else db.get_last_sync(con, source)
     if since is not None and _source_thread_count(con, source) == 0:
         since = None
     ingestor = get_ingestor(source)
-    if hasattr(ingestor, "_auth_mode") and (auth_mode or use_cdp):
-        ingestor._auth_mode = "cdp" if use_cdp else auth_mode
-        ingestor._use_cdp = ingestor._auth_mode == "cdp"
     if path and hasattr(ingestor, "path"):
         ingestor.path = Path(path)
     db.upsert_source(con, source, {"path": path} if path else {})
@@ -379,7 +368,7 @@ def enable(
     )
     console.print(setup_summary(source, values))
     if not dry_run:
-        _run(_sync_command(source, None, path, True, None, False, False, False))
+        _run(_sync_command(source, None, path, True, None, False, False))
 
 
 @main.command()
@@ -497,8 +486,8 @@ def sources():
         "claudecode": "~/.claude/projects/**/*.jsonl",
         "opencode": "~/.local/share/opencode/opencode.db",
         "windsurf": "~/.codeium/windsurf/cascade/ (encrypted, WIP)",
-        "claude": "claude.ai REST API (requires Playwright login)",
-        "deepseek": "chat.deepseek.com web API (requires Playwright login)",
+        "claude": "claude.ai REST API",
+        "deepseek": "chat.deepseek.com web API",
     }
 
     for src in INGESTORS:
@@ -532,7 +521,7 @@ def search(
         config = load_config()
 
         async def runner(src: str, job_force: bool) -> bool:
-            return await _sync_one(src, db_path, None, job_force, None, False)
+            return await _sync_one(src, db_path, None, job_force, None)
 
         source_ids = [provider_filter] if provider_filter else list(INGESTORS)
         _run(
@@ -1092,7 +1081,7 @@ def service():
     from llm_archive.service import run_service
 
     async def runner(src: str, job_force: bool) -> bool:
-        return await _sync_one(src, None, None, job_force, None, False)
+        return await _sync_one(src, None, None, job_force, None)
 
     _run(run_service(runner=runner))
 
