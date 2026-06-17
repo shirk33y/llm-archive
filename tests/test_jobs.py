@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import pytest
 
@@ -191,6 +192,70 @@ async def test_ensure_fresh_runs_stale_provider(tmp_path):
     assert [result.status for result in results] == ["success"]
     assert calls == [("chatgpt", False)]
     assert db.provider_states(con)["chatgpt"]["stale_since"] is None
+
+
+@pytest.mark.asyncio
+async def test_sync_job_returns_running_when_no_wait(tmp_path):
+    db_path = tmp_path / "archive.db"
+    con = db.connect(db_path)
+    job_id = db.create_job(con, "sync", "chatgpt")
+
+    async def runner(source_id: str, force: bool) -> bool:
+        raise AssertionError("runner should not be called")
+
+    result = await run_sync_job(
+        "chatgpt",
+        config=_config(),
+        runner=runner,
+        db_path=db_path,
+        wait=False,
+    )
+
+    assert result.status == "running"
+    assert "already syncing" in result.reason
+    assert result.job_id == job_id
+
+
+@pytest.mark.asyncio
+async def test_sync_job_logs_wait_message(tmp_path, caplog):
+    db_path = tmp_path / "archive.db"
+    con = db.connect(db_path)
+    job_id = db.create_job(con, "sync", "chatgpt")
+
+    async def runner(source_id: str, force: bool) -> bool:
+        raise AssertionError("runner should not be called")
+
+    async def finish_job():
+        await asyncio.sleep(0.1)
+        db.update_job(con, job_id, status="success", finish=True)
+
+    task = asyncio.create_task(finish_job())
+    with caplog.at_level(logging.INFO):
+        result = await run_sync_job(
+            "chatgpt",
+            config=_config(),
+            runner=runner,
+            db_path=db_path,
+            wait=True,
+        )
+    await task
+
+    assert result.status == "joined"
+    assert any("waiting for running job" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_wait_for_job_times_out(tmp_path):
+    db_path = tmp_path / "archive.db"
+    con = db.connect(db_path)
+    job_id = db.create_job(con, "sync", "chatgpt")
+
+    from llm_archive.jobs import _wait_for_job
+    await _wait_for_job(con, job_id, timeout=0.05)
+
+    row = con.execute("SELECT status, reason FROM jobs WHERE id=?", (job_id,)).fetchone()
+    assert row["status"] == "failed"
+    assert row["reason"] == "stale"
 
 
 def test_reap_stale_jobs_marks_old_jobs_failed(tmp_path):

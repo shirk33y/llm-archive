@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Awaitable, Callable
 
 from llm_archive import db
 from llm_archive.config import AppConfig, format_duration_ms
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -42,7 +45,8 @@ async def run_sync_job(
     active = db.active_job(con, "sync", source_id)
     if active:
         if not wait:
-            return JobResult(source_id, "running", "already running", active["id"])
+            return JobResult(source_id, "running", f"already syncing (job {active['id']})", active["id"])
+        logger.info(f"{source_id}: waiting for running job {active['id']} to complete")
         await _wait_for_job(con, active["id"])
         return JobResult(source_id, "joined", "already running, joined", active["id"], True)
 
@@ -129,6 +133,7 @@ def _due_for_search(state: dict, provider_config) -> bool:
 
 async def _wait_for_job(con, job_id: int, timeout: float = 300) -> None:
     deadline = asyncio.get_event_loop().time() + timeout
+    logger.info(f"waiting for job {job_id} to complete (timeout {int(timeout)}s)")
     while True:
         row = con.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
         if not row or row["status"] != "running":

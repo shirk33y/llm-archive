@@ -59,8 +59,14 @@ async def _sync_command(
         results.append(result)
         if result.status == "failed":
             console.print(f"  [red]{src}:[/red] {result.reason}")
-        elif result.status not in {"success", "joined"}:
-            logger.debug(f"  {src}: {result.reason}")
+        elif result.status == "running":
+            console.print(f"  [yellow]{src}:[/yellow] {result.reason}")
+        elif result.status == "joined":
+            console.print(f"  {src}: synced (joined running job)")
+        elif result.status == "throttled":
+            console.print(f"  {src}: {result.reason}")
+        elif result.status == "skipped":
+            logger.info(f"  {src}: {result.reason}")
     if json_output:
         console.print_json(
             data=[

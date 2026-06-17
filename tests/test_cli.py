@@ -637,3 +637,31 @@ def test_search_sorts_newest_messages_within_thread_first(tmp_path):
     late_pos = result.output.find("findme late")
     early_pos = result.output.find("findme early")
     assert late_pos < early_pos, "Later message should appear before earlier message within same thread"
+
+
+def test_sync_running_job_message_format():
+    from llm_archive.jobs import JobResult
+    r = JobResult("claudecode", "running", "already syncing (job 42)", 42)
+    assert r.status == "running"
+    assert "already syncing" in r.reason
+
+
+def test_sync_throttled_message_format():
+    from llm_archive.jobs import JobResult
+    r = JobResult("claudecode", "throttled", "throttled 25m left", 1)
+    assert r.status == "throttled"
+    assert "throttled" in r.reason
+
+
+def test_sync_joined_message_format():
+    from llm_archive.jobs import JobResult
+    r = JobResult("claudecode", "joined", "already running, joined", 42, True)
+    assert r.status == "joined"
+    assert r.waited is True
+
+
+def test_sync_failed_message_format():
+    from llm_archive.jobs import JobResult
+    r = JobResult("chatgpt", "failed", "auth_failed", 1)
+    assert r.status == "failed"
+    assert "auth_failed" in r.reason
