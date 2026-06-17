@@ -25,44 +25,7 @@
 
 ---
 
-## 2. Rename `auth/` to `browser.py`
-
-**Move**: `llm_archive/auth/playwright.py` → `llm_archive/browser.py`
-
-**Keep**: `llm_archive/auth/__init__.py` (may add other auth methods later)
-
-### Rationale
-
-- Name reflects functionality (browser-based auth)
-- `auth/` is too generic
-
----
-
-## 3. Move `windsurf_protocol/` into `ingestors/windsurf/`
-
-**Move**: `llm_archive/windsurf_protocol/*.py` → `llm_archive/ingestors/windsurf/`
-
-### New Structure
-
-```
-llm_archive/ingestors/windsurf/
-├── __init__.py
-├── ingestor.py       # (renamed from windsurf.py)
-├── extract_csrf_auto.py
-├── extract_csrf_safe.py
-├── extract_csrf_from_request.py
-└── intercept_requests.py
-```
-
-### Rationale
-
-- `windsurf_protocol/` is an awkward name
-- `ingestors/windsurf/` follows existing pattern
-- Keep helper modules for now (may consolidate later)
-
----
-
-## 4. Create `sync.py` for Orchestration
+## 2. Create `sync.py` for Orchestration
 
 **New**: `llm_archive/sync.py`
 
@@ -83,7 +46,7 @@ Keep in `cli.py`:
 
 ---
 
-## 5. Extract Shared Web Ingestor Logic (Future)
+## 3. Extract Shared Web Ingestor Logic (Future)
 
 ### Duplication Found
 
@@ -118,7 +81,7 @@ Only if it simplifies things, not for its own sake. Different APIs have quirks.
 
 ---
 
-## 6. Public API in `__init__.py`
+## 4. Public API in `__init__.py`
 
 **Add to**: `llm_archive/__init__.py`
 
@@ -133,7 +96,7 @@ from llm_archive import sync, connect, get_ingestor
 
 ---
 
-## 7. CLI Organization
+## 5. CLI Organization
 
 **Decision**: Keep single `cli.py` for now.
 
@@ -144,51 +107,61 @@ Split when:
 
 ---
 
-## Final Structure
+## Final Structure (aspirational)
 
 ```
 llm_archive/
 ├── __init__.py           # Public API
 ├── db.py                 # Database operations
 ├── schema.py             # Data models (IngestedThread, etc.)
-├── text.py               # Content cleaning, parsing
-├── ids.py                # ID encoding (base53)
-├── sync.py               # Sync orchestration
-├── browser.py            # Playwright utilities
+├── text.py               # (to extract) Content cleaning, parsing
+├── ids.py                # (to extract) ID encoding (base53)
+├── sync.py               # (to extract) Sync orchestration
 │
 ├── ingestors/
 │   ├── __init__.py
 │   ├── base.py           # BaseIngestor
+│   ├── web_utils.py      # (future) shared sync/timestamp logic
 │   ├── chatgpt.py
 │   ├── claude.py
 │   ├── deepseek.py
 │   ├── claudecode.py
-│   ├── opencode.py
-│   └── windsurf/         # (from windsurf_protocol/)
-│       ├── __init__.py
-│       ├── ingestor.py
-│       └── ...
+│   └── opencode.py
 │
-├── cli/
+├── auth/
 │   ├── __init__.py
-│   └── commands.py       # (future split, not now)
+│   └── browser_cookies.py
 │
-└── tui/                  # (future)
-    └── ...
-
-scripts/                  # (future: windsurf helpers move here)
+├── cli.py                # Click commands (keep until split needed)
+├── config.py
+├── mcp_server.py
+├── tui.py
+├── backup.py
+├── browser_profiles.py
+├── embed.py
+├── jobs.py
+├── logging.py
+├── providers.py
+├── ratelimit.py
+├── service.py
+├── setup.py
+├── unicode.py
+│
+└── scripts/              # Standalone helper scripts
+    ├── windsurf_extract_csrf_auto.py
+    ├── windsurf_extract_csrf_safe.py
+    ├── windsurf_extract_csrf_from_request.py
+    └── windsurf_intercept_requests.py
 ```
 
 ---
 
 ## Implementation Order
 
-1. **Low risk**: Extract `text.py`, `ids.py`
-2. **Rename**: `auth/` → `browser.py`
-3. **Move**: `windsurf_protocol/` → `ingestors/windsurf/`
-4. **Extract**: `sync.py` from `cli.py`
-5. **Add**: Public API in `__init__.py`
-6. **Phase 2**: Web ingestor utils extraction
+1. **Extract**: `text.py`, `ids.py` from `db.py`
+2. **Extract**: `sync.py` from `cli.py`
+3. **Add**: Public API in `__init__.py`
+4. **Phase 2**: Web ingestor utils extraction
 
 ---
 
