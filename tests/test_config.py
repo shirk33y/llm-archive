@@ -79,5 +79,5 @@ def test_ensure_config_creates_default_disabled_providers(monkeypatch, tmp_path)
     assert "[ingestors.chatgpt]" in text
     assert "[ingestors.claudecode]" in text
     assert config.ingestor("chatgpt").enabled is False
-    assert config.ingestor("chatgpt").sync_interval_ms == 60_000
+    assert config.ingestor("chatgpt").sync_interval_ms == 1_800_000
     assert config.ingestor("claudecode").watch is True

@@ -280,9 +280,9 @@ def save_thread(con: sqlite3.Connection, thread: IngestedThread, force: bool = F
     existing = con.execute("SELECT sha1 FROM threads WHERE id=?", (thread.id,)).fetchone()
     if existing:
         if existing["sha1"] == sha1:
-            logger.info(f"sha1 match {thread.id} — skipping")
+            logger.debug(f"sha1 match {thread.id} — skipping")
         else:
-            logger.info(f"sha1 changed {thread.id} — old={existing['sha1']} new={sha1}")
+            logger.debug(f"sha1 changed {thread.id} — old={existing['sha1']} new={sha1}")
     now_ms = int(time.time() * 1000)
     if not force and existing and existing["sha1"] == sha1:
         # Content unchanged — bump updated_at if API has a newer timestamp,
@@ -515,6 +515,7 @@ def provider_states(con: sqlite3.Connection) -> dict[str, dict]:
 
 
 def active_job(con: sqlite3.Connection, kind: str, source_id: str | None) -> dict | None:
+    reap_stale_jobs(con)
     row = con.execute(
         """
         SELECT * FROM jobs
@@ -525,6 +526,23 @@ def active_job(con: sqlite3.Connection, kind: str, source_id: str | None) -> dic
         (kind, source_id, source_id),
     ).fetchone()
     return dict(row) if row else None
+
+
+STALE_JOB_MS = 5 * 60 * 1000
+
+
+def reap_stale_jobs(con: sqlite3.Connection) -> int:
+    """Mark running jobs with no heartbeat for > 5 minutes as failed."""
+    threshold = now_ms() - STALE_JOB_MS
+    cur = con.execute(
+        """
+        UPDATE jobs SET status='failed', reason='stale', finished_at=?
+        WHERE status='running' AND heartbeat_at < ?
+        """,
+        (now_ms(), threshold),
+    )
+    con.commit()
+    return cur.rowcount
 
 
 def create_job(

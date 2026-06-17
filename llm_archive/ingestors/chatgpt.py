@@ -167,12 +167,12 @@ class ChatGPTIngestor(BaseIngestor):
             # --- Tail check: find last page and verify oldest known thread ---
             if tail_check and db_updated_at and has_multiple_pages:
                 db_count = len(db_updated_at)
-                logger.info("Looking for last page")
+                logger.debug("Looking for last page")
                 tail_result = await self._find_tail_page(client, headers, db_count, limit)
                 if tail_result:
                     tail_offset, tail_items = tail_result
                     total = tail_offset + len(tail_items)
-                    logger.info(f"Found {total} conversations")
+                    logger.debug(f"Found {total} conversations")
                     if on_total:
                         on_total(total)
 
@@ -192,7 +192,7 @@ class ChatGPTIngestor(BaseIngestor):
                                     total_fetched += 1
                                     if tail_check(thread):
                                         tail_verified = True
-                                        logger.info(f"Tail verified: {conv_id} sha1 matches — history is complete")
+                                        logger.debug(f"Tail verified: {conv_id} sha1 matches — history is complete")
                                 break
                 else:
                     logger.warning("Could not determine total (tail search failed), proceeding with pagination")
@@ -264,7 +264,7 @@ class ChatGPTIngestor(BaseIngestor):
                             saved = store_thread(thread)
                             if saved is False and not sha1_stop:
                                 sha1_stop = True
-                                logger.info(
+                                logger.debug(
                                     f"sha1 match on {conv_id} — skipping detail fetches for remaining known threads"
                                 )
                         yield thread
@@ -278,14 +278,14 @@ class ChatGPTIngestor(BaseIngestor):
                 next_offset = offset + len(items)
 
                 if sha1_stop and tail_verified:
-                    logger.info("sha1 stop + tail verified — stopping pagination")
+                    logger.debug("sha1 stop + tail verified — stopping pagination")
                     break
 
                 if len(items) < limit and not sha1_stop:
                     break
 
                 if not sha1_stop and page_all_old_and_known:
-                    logger.info("All conversations already in database, stopping")
+                    logger.debug("All conversations already in database, stopping")
                     break
 
     async def _find_tail_page(
@@ -399,9 +399,9 @@ class ChatGPTIngestor(BaseIngestor):
 
         cookies = {c["name"]: c["value"] for c in state.get("cookies", [])}
         if exp_days is not None:
-            logger.info(f"Using stored access token (expires in {exp_days:.0f} days)")
+            logger.debug(f"Using stored access token (expires in {exp_days:.0f} days)")
         else:
-            logger.info("Using stored access token")
+            logger.debug("Using stored access token")
         return token, cookies
 
     async def _get_token(self) -> tuple[str, dict[str, str]]:
@@ -438,7 +438,7 @@ class ChatGPTIngestor(BaseIngestor):
 
         cookies = cookies_to_dict(browser_cookies)
 
-        logger.info("Fetching access token from /api/auth/session using browser cookies...")
+        logger.debug("Fetching access token from /api/auth/session using browser cookies...")
         try:
             async with httpx.AsyncClient(timeout=30) as client:
                 resp = await client.get(
@@ -469,7 +469,7 @@ class ChatGPTIngestor(BaseIngestor):
                 existing["access_token"] = token
                 existing["cookies"] = _relevant_cookie_cache(browser_cookies)
                 path.write_text(json.dumps(existing))
-                logger.info("Saved fresh token from browser cookies")
+                logger.debug("Saved fresh token from browser cookies")
             except Exception as e:
                 logger.warning(f"Failed to save token: {e}")
 

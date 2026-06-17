@@ -19,6 +19,7 @@ dependencies = [
     "mcp>=0.6.0",
     "sqlite-vec>=0.1.9",
     "yt-dlp>=2025.12.8",
+    "watchdog>=6.0.0",
 ]
 
 [project.optional-dependencies]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -8,7 +9,13 @@ import pytest
 
 from llm_archive import db
 from llm_archive.config import AppConfig, IngestorConfig
-from llm_archive.service import _config_hash, _mark_file_changes, _path_mtime, _run_due_backup, _run_due_syncs
+from llm_archive.service import (
+    _FileChangeHandler,
+    _config_hash,
+    _path_mtime,
+    _run_due_backup,
+    _run_due_syncs,
+)
 
 
 def test_path_mtime_file(tmp_path):
@@ -71,6 +78,35 @@ def test_config_hash_handles_read_error():
     assert h == expected
 
 
+def test_file_change_handler_debounce():
+    calls = []
+    handler = _FileChangeHandler("test", debounce_s=0.05, callback=lambda: calls.append(1))
+
+    handler._mark()
+    assert len(calls) == 1
+
+    handler._mark()
+    assert len(calls) == 1
+
+    time.sleep(0.06)
+    handler._mark()
+    assert len(calls) == 2
+
+
+def test_file_change_handler_flush():
+    calls = []
+    handler = _FileChangeHandler("test", debounce_s=100, callback=lambda: calls.append(1))
+
+    handler._mark()
+    assert len(calls) == 1
+
+    handler._mark()
+    assert len(calls) == 1
+
+    handler._flush()
+    assert len(calls) == 2
+
+
 def _config(*, enabled=True, watch=False, path=None) -> AppConfig:
     return AppConfig(
         ingestors={
@@ -84,85 +120,6 @@ def _config(*, enabled=True, watch=False, path=None) -> AppConfig:
             )
         }
     )
-
-
-@pytest.mark.asyncio
-async def test_mark_file_changes_skips_disabled(tmp_path):
-    con = db.connect(tmp_path / "archive.db")
-    config = _config(enabled=False, watch=True)
-    seen = {}
-    await _mark_file_changes(con, config, seen)
-    assert con.execute("SELECT count(*) FROM provider_state").fetchone()[0] == 0
-
-
-@pytest.mark.asyncio
-async def test_mark_file_changes_skips_unwatched(tmp_path):
-    con = db.connect(tmp_path / "archive.db")
-    config = _config(enabled=True, watch=False)
-    seen = {}
-    await _mark_file_changes(con, config, seen)
-    assert con.execute("SELECT count(*) FROM provider_state").fetchone()[0] == 0
-
-
-@pytest.mark.asyncio
-async def test_mark_file_changes_no_paths_available(tmp_path):
-    con = db.connect(tmp_path / "archive.db")
-    config = _config(enabled=True, watch=True, path=str(tmp_path / "nonexistent"))
-    seen = {}
-    await _mark_file_changes(con, config, seen)
-    assert con.execute("SELECT count(*) FROM provider_state").fetchone()[0] == 0
-
-
-@pytest.mark.asyncio
-async def test_mark_file_changes_detects_change(tmp_path):
-    con = db.connect(tmp_path / "archive.db")
-    con.execute("INSERT INTO sources(id) VALUES ('test_provider')")
-    con.commit()
-
-    f = tmp_path / "watched.txt"
-    f.write_text("initial")
-    config = _config(enabled=True, watch=True, path=str(f))
-    seen = {}
-    await _mark_file_changes(con, config, seen)
-
-    # First pass: no stale because mtime was first seen
-    row = con.execute(
-        "SELECT stale_since FROM provider_state WHERE source_id='test_provider'"
-    ).fetchone()
-    assert row is None
-
-    f.write_text("updated")
-    await _mark_file_changes(con, config, seen)
-    stale_since = con.execute(
-        "SELECT stale_since FROM provider_state WHERE source_id='test_provider'"
-    ).fetchone()[0]
-    assert stale_since is not None
-
-
-@pytest.mark.asyncio
-async def test_mark_file_changes_skips_when_mtime_unchanged(tmp_path):
-    con = db.connect(tmp_path / "archive.db")
-    con.execute("INSERT INTO sources(id) VALUES ('test_provider')")
-    con.commit()
-
-    f = tmp_path / "watched.txt"
-    f.write_text("stable")
-    config = _config(enabled=True, watch=True, path=str(f))
-    seen = {}
-
-    await _mark_file_changes(con, config, seen)
-    row1 = con.execute(
-        "SELECT stale_since FROM provider_state WHERE source_id='test_provider'"
-    ).fetchone()
-    # First pass: no stale yet (just recorded initial mtime)
-    assert row1 is None
-
-    await _mark_file_changes(con, config, seen)
-    row2 = con.execute(
-        "SELECT stale_since FROM provider_state WHERE source_id='test_provider'"
-    ).fetchone()
-    # Still no stale because mtime hasn't changed
-    assert row2 is None
 
 
 @pytest.mark.asyncio

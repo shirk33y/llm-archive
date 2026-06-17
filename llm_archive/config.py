@@ -161,20 +161,20 @@ def default_ingestor_config(source_id: str) -> IngestorConfig:
     if source_id == "deepseek":
         return IngestorConfig(
             mode="cookies",
-            sync_interval_ms=parse_duration_ms("2m"),
-            min_sync_interval_ms=parse_duration_ms("2m"),
+            sync_interval_ms=parse_duration_ms("30m"),
+            min_sync_interval_ms=parse_duration_ms("10m"),
             watch=False,
         )
     if source_id in WEB_INGESTORS:
         return IngestorConfig(
             mode="cookies",
-            sync_interval_ms=parse_duration_ms("1m"),
-            min_sync_interval_ms=parse_duration_ms("1m"),
+            sync_interval_ms=parse_duration_ms("30m"),
+            min_sync_interval_ms=parse_duration_ms("30m"),
             watch=False,
         )
     return IngestorConfig(
-        sync_interval_ms=parse_duration_ms("1s"),
-        min_sync_interval_ms=parse_duration_ms("1s"),
+        sync_interval_ms=parse_duration_ms("10s"),
+        min_sync_interval_ms=parse_duration_ms("10s"),
         watch=True,
     )
 

@@ -4,18 +4,57 @@ import asyncio
 import hashlib
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Awaitable, Callable
+
+from watchdog.events import FileSystemEventHandler, FileSystemEvent
+from watchdog.observers import Observer
 
 from llm_archive import db
 from llm_archive.backup import run_backup
 from llm_archive.config import AppConfig, config_path, load_config, read_config_text
 from llm_archive.jobs import run_sync_job
-from llm_archive.providers import provider_paths
+from llm_archive.providers import provider_kind, provider_paths
 
 logger = logging.getLogger("llm_archive.service")
 
 SyncRunner = Callable[[str, bool], Awaitable[bool]]
+
+FILE_SYNC_INTERVAL_MS = 10_000
+FILE_MIN_SYNC_MS = 10_000
+WEB_SYNC_INTERVAL_MS = 1_800_000
+WEB_MIN_SYNC_MS = 10_000
+
+
+class _FileChangeHandler(FileSystemEventHandler):
+    def __init__(self, source_id: str, debounce_s: float, callback: Callable[[], None]):
+        self.source_id = source_id
+        self._debounce_s = debounce_s
+        self._callback = callback
+        self._last_fire = 0.0
+        self._pending = False
+
+    def _mark(self) -> None:
+        now = time.monotonic()
+        elapsed = now - self._last_fire
+        if elapsed >= self._debounce_s:
+            self._last_fire = now
+            self._callback()
+            self._pending = False
+        else:
+            self._pending = True
+
+    def _flush(self) -> None:
+        if self._pending:
+            self._last_fire = time.monotonic()
+            self._callback()
+            self._pending = False
+
+    def on_any_event(self, event: FileSystemEvent) -> None:
+        if event.is_directory:
+            return
+        self._mark()
 
 
 async def run_service(
@@ -25,49 +64,67 @@ async def run_service(
     poll_interval: float = 1.0,
 ) -> None:
     started_at = db.now_ms()
-    seen_mtimes: dict[str, float] = {}
-    while True:
-        try:
-            config = load_config()
-            con = db.connect(db_path or db.DB_PATH)
-            db.heartbeat_service(
-                con,
-                pid=os.getpid(),
-                started_at=started_at,
-                version="0.1.0",
-                config_hash=_config_hash(),
-            )
-            await _mark_file_changes(con, config, seen_mtimes)
-            await _run_due_syncs(con, config, runner, db_path)
-            await _run_due_backup(con, db_path)
-        except Exception:
-            logger.exception("service loop error")
-        await asyncio.sleep(poll_interval)
 
+    observer = Observer()
+    handlers: dict[str, _FileChangeHandler] = {}
+    stale_flags: dict[str, bool] = {}
 
-async def _mark_file_changes(con, config: AppConfig, seen_mtimes: dict[str, float]) -> None:
+    def mark_stale(source_id: str) -> None:
+        stale_flags[source_id] = True
+
+    def _sync_file_handler(src: str) -> Callable[[], None]:
+        def cb() -> None:
+            stale_flags[src] = True
+        return cb
+
+    config = load_config()
     for source_id in config.ingestors or {}:
-        full_config = config.ingestor(source_id)
-        if not full_config.enabled or not full_config.watch:
+        ic = config.ingestor(source_id)
+        if not ic.enabled or not ic.watch:
             continue
-        paths = [Path(full_config.path).expanduser()] if full_config.path else list(provider_paths(source_id))
+        if provider_kind(source_id) != "file":
+            continue
+        paths = [Path(ic.path).expanduser()] if ic.path else list(provider_paths(source_id))
         existing = [p for p in paths if p.exists()]
-        missing = set(paths) - set(existing)
-        if missing and existing:
-            logger.info("watch: %s missing %d of %d paths, watching %d",
-                        source_id, len(missing), len(paths), len(existing))
-        if not existing:
-            logger.info("watch: %s no paths available, falling back to poll", source_id)
-            continue
-        for path in existing:
-            mtime = _path_mtime(path)
-            if mtime is None:
-                continue
-            key = f"{source_id}:{path}"
-            previous = seen_mtimes.setdefault(key, mtime)
-            if mtime > previous:
-                seen_mtimes[key] = mtime
-                db.mark_provider_stale(con, source_id)
+        for p in existing:
+            handler = handlers.get(source_id)
+            if handler is None:
+                handler = _FileChangeHandler(source_id, FILE_SYNC_INTERVAL_MS / 1000, _sync_file_handler(source_id))
+                handlers[source_id] = handler
+            observer.schedule(handler, str(p), recursive=True)
+    if handlers:
+        observer.daemon = True
+        observer.start()
+
+    try:
+        while True:
+            try:
+                config = load_config()
+                con = db.connect(db_path or db.DB_PATH)
+                db.heartbeat_service(
+                    con,
+                    pid=os.getpid(),
+                    started_at=started_at,
+                    version="0.1.0",
+                    config_hash=_config_hash(),
+                )
+                for source_id, flag in list(stale_flags.items()):
+                    if flag:
+                        stale_flags[source_id] = False
+                        for h in handlers.values():
+                            if h.source_id == source_id:
+                                h._flush()
+                                break
+                        db.mark_provider_stale(con, source_id)
+                await _run_due_syncs(con, config, runner, db_path)
+                await _run_due_backup(con, db_path)
+            except Exception:
+                logger.exception("service loop error")
+            await asyncio.sleep(poll_interval)
+    finally:
+        if observer.is_alive():
+            observer.stop()
+            observer.join(timeout=2)
 
 
 async def _run_due_syncs(con, config: AppConfig, runner: SyncRunner, db_path: Path | None) -> None:

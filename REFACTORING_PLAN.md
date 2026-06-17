@@ -8,45 +8,7 @@
 
 ---
 
-## 1. Extract Shared Utilities
-
-### New Files
-
-| File | Content | From |
-|------|---------|------|
-| `llm_archive/text.py` | Content cleaning, injection tags, `_parse_parts()` | `db.py` |
-| `llm_archive/ids.py` | `to_base53()`, `from_base53()` | `db.py` |
-
-### Rationale
-
-- `db.py` has unrelated utilities (ID encoding, text parsing)
-- Extract to clear, focused modules
-- No `utils/` directory - use domain-specific names
-
----
-
-## 2. Create `sync.py` for Orchestration
-
-**New**: `llm_archive/sync.py`
-
-Extract from `cli.py`:
-- `_sync()` function
-- `_do_ingest()` function
-- `_ingest_total()` function
-
-Keep in `cli.py`:
-- Click command definitions
-- Display formatting
-
-### Rationale
-
-- MCP server will need to trigger syncs
-- CLI and MCP should share sync logic
-- TUI display logic stays CLI-specific (will diverge)
-
----
-
-## 3. Extract Shared Web Ingestor Logic (Future)
+## Remaining: Shared Web Ingestor Logic
 
 ### Duplication Found
 
@@ -67,11 +29,9 @@ def should_skip_conversation(
     updated_at: int | None,
     existing_thread_ids: set[str] | dict[str, int],
 ) -> SkipReason:
-    """Check if conversation should be skipped (already synced and up-to-date)."""
     ...
 
 def parse_timestamp(value) -> int | None:
-    """Parse various timestamp formats to Unix ms."""
     ...
 ```
 
@@ -81,93 +41,8 @@ Only if it simplifies things, not for its own sake. Different APIs have quirks.
 
 ---
 
-## 4. Public API in `__init__.py`
-
-**Add to**: `llm_archive/__init__.py`
-
-```python
-from llm_archive import sync, connect, get_ingestor
-```
-
-### Rationale
-
-- Clean import for MCP: `from llm_archive import sync`
-- Hide internal structure
-
----
-
-## 5. CLI Organization
-
-**Decision**: Keep single `cli.py` for now.
-
-Split when:
-- 15+ commands
-- TUI needs shared code
-- Pain becomes real
-
----
-
-## Final Structure (aspirational)
-
-```
-llm_archive/
-├── __init__.py           # Public API
-├── db.py                 # Database operations
-├── schema.py             # Data models (IngestedThread, etc.)
-├── text.py               # (to extract) Content cleaning, parsing
-├── ids.py                # (to extract) ID encoding (base53)
-├── sync.py               # (to extract) Sync orchestration
-│
-├── ingestors/
-│   ├── __init__.py
-│   ├── base.py           # BaseIngestor
-│   ├── web_utils.py      # (future) shared sync/timestamp logic
-│   ├── chatgpt.py
-│   ├── claude.py
-│   ├── deepseek.py
-│   ├── claudecode.py
-│   └── opencode.py
-│
-├── auth/
-│   ├── __init__.py
-│   └── browser_cookies.py
-│
-├── cli.py                # Click commands (keep until split needed)
-├── config.py
-├── mcp_server.py
-├── tui.py
-├── backup.py
-├── browser_profiles.py
-├── embed.py
-├── jobs.py
-├── logging.py
-├── providers.py
-├── ratelimit.py
-├── service.py
-├── setup.py
-├── unicode.py
-│
-└── scripts/              # Standalone helper scripts
-    ├── windsurf_extract_csrf_auto.py
-    ├── windsurf_extract_csrf_safe.py
-    ├── windsurf_extract_csrf_from_request.py
-    └── windsurf_intercept_requests.py
-```
-
----
-
-## Implementation Order
-
-1. **Extract**: `text.py`, `ids.py` from `db.py`
-2. **Extract**: `sync.py` from `cli.py`
-3. **Add**: Public API in `__init__.py`
-4. **Phase 2**: Web ingestor utils extraction
-
----
-
 ## Non-Goals
 
 - Don't abstract rate limiting yet (too different across ingestors)
-- Don't split CLI until needed
 - Don't create `utils/` directory
 - Don't add TUI/MCP scaffolding preemptively

@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
 import inspect
+import logging
 import time
 from pathlib import Path
 
@@ -11,6 +12,8 @@ from llm_archive import db
 from llm_archive.config import load_config
 from llm_archive.ingestors import INGESTORS, get_ingestor
 from llm_archive.jobs import run_sync_job
+
+logger = logging.getLogger(__name__)
 
 console = Console()
 progress_console = Console()
@@ -54,8 +57,10 @@ async def _sync_command(
             wait=not no_wait,
         )
         results.append(result)
-        if result.status not in {"success", "joined"}:
-            console.print(f"  {src}: {result.reason}")
+        if result.status == "failed":
+            console.print(f"  [red]{src}:[/red] {result.reason}")
+        elif result.status not in {"success", "joined"}:
+            logger.debug(f"  {src}: {result.reason}")
     if json_output:
         console.print_json(
             data=[
@@ -93,7 +98,7 @@ async def _sync(
         if src == source and auth_mode:
             source_config["mode"] = auth_mode
         db.upsert_source(con, src, source_config)
-        console.print(f"[bold]Syncing:[/bold] {src}")
+        logger.info(f"Syncing: {src}")
 
         try:
             if since is None:
@@ -122,7 +127,7 @@ async def _sync_one(
     if path and hasattr(ingestor, "path"):
         ingestor.path = Path(path)
     db.upsert_source(con, source, {"path": path} if path else {})
-    console.print(f"[bold]Syncing:[/bold] {source}")
+    logger.info(f"Syncing: {source}")
     if since is None:
         await ingestor.init(path=path)
     if not await ingestor.prepare():

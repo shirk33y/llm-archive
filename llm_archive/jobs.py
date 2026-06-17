@@ -127,9 +127,13 @@ def _due_for_search(state: dict, provider_config) -> bool:
     return db.now_ms() - int(last) >= interval
 
 
-async def _wait_for_job(con, job_id: int) -> None:
+async def _wait_for_job(con, job_id: int, timeout: float = 300) -> None:
+    deadline = asyncio.get_event_loop().time() + timeout
     while True:
         row = con.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
         if not row or row["status"] != "running":
+            return
+        if asyncio.get_event_loop().time() > deadline:
+            db.update_job(con, job_id, status="failed", reason="stale", finish=True)
             return
         await asyncio.sleep(0.2)

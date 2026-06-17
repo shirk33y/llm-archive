@@ -190,33 +190,7 @@ def status(db_path: str | None, verbose: bool, json_output: bool):
         _print_verbose_status(states, jobs)
 
 
-@main.command()
-def sources():
-    """List all available sources and whether they have been synced."""
-    try:
-        con = db.connect(db.DB_PATH)
-        initialized = {r["id"] for r in db.source_stats(con)}
-    except Exception:
-        initialized = set()
 
-    table = Table(title="Available sources")
-    table.add_column("Source", style="bold")
-    table.add_column("Status")
-    table.add_column("Notes")
-
-    notes = {
-        "claudecode": "~/.claude/projects/**/*.jsonl",
-        "opencode": "~/.local/share/opencode/opencode.db",
-        "windsurf": "~/.codeium/windsurf/cascade/ (encrypted, WIP)",
-        "claude": "claude.ai REST API",
-        "deepseek": "chat.deepseek.com web API",
-    }
-
-    for src in INGESTORS:
-        status_str = "[green]synced[/green]" if src in initialized else "[dim]not synced[/dim]"
-        table.add_row(src, status_str, notes.get(src, ""))
-
-    console.print(table)
 
 
 @main.command()

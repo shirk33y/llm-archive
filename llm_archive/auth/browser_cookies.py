@@ -136,7 +136,7 @@ def extract_firefox_cookies(
 
         conn.close()
 
-    logger.info(f"Extracted {len(cookies)} cookies from browser")
+    logger.debug(f"Extracted {len(cookies)} cookies from browser")
     return cookies
 
 
@@ -173,7 +173,7 @@ def extract_browser_cookies(
                 "secure": cookie.secure,
             }
         )
-    logger.info(f"Extracted {len(cookies)} cookies from {browser}")
+    logger.debug(f"Extracted {len(cookies)} cookies from {browser}")
     return cookies
 
 

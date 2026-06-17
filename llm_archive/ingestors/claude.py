@@ -172,7 +172,7 @@ class ClaudeIngestor(BaseIngestor):
                     and updated_at is not None
                     and existing_thread_ids[thread_id] < updated_at
                 ):
-                    logger.info(f"Conversation {conv_id} was updated, re-fetching")
+                    logger.debug(f"Conversation {conv_id} was updated, re-fetching")
                 
                 if since and updated_at and updated_at < since:
                     continue
