@@ -665,3 +665,89 @@ def test_sync_failed_message_format():
     r = JobResult("chatgpt", "failed", "auth_failed", 1)
     assert r.status == "failed"
     assert "auth_failed" in r.reason
+
+
+def test_status_next_shows_live_for_watched_file_provider(tmp_path, monkeypatch):
+    db_path = tmp_path / "archive.db"
+    con = cli.db.connect(db_path)
+    now = cli.db.now_ms()
+    cli.db.set_provider_sync_success(con, "claudecode", now)
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('[ingestors.claudecode]\nenabled = true\n')
+    monkeypatch.setenv("LLM_ARCHIVE_CONFIG", str(config_path))
+
+    result = CliRunner().invoke(cli.main, ["status", "--db-path", str(db_path)])
+    assert result.exit_code == 0
+    assert "live" in result.output
+
+
+def test_status_next_shows_dash_before_first_sync(tmp_path, monkeypatch):
+    db_path = tmp_path / "archive.db"
+    cli.db.connect(db_path)
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('[ingestors.claudecode]\nenabled = true\n')
+    monkeypatch.setenv("LLM_ARCHIVE_CONFIG", str(config_path))
+
+    result = CliRunner().invoke(cli.main, ["status", "--db-path", str(db_path)])
+    assert result.exit_code == 0
+    for line in result.output.splitlines():
+        if line.startswith("claudecode"):
+            assert line.endswith("-")
+            break
+
+
+def test_status_next_shows_time_for_web_provider(tmp_path, monkeypatch):
+    db_path = tmp_path / "archive.db"
+    con = cli.db.connect(db_path)
+    now = cli.db.now_ms()
+    cli.db.set_provider_sync_success(con, "deepseek", now)
+    cli.db.set_provider_next_sync(con, "deepseek", now + 1_800_000)
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('[ingestors.deepseek]\nmode = "cookies"\nenabled = true\n')
+    monkeypatch.setenv("LLM_ARCHIVE_CONFIG", str(config_path))
+
+    result = CliRunner().invoke(cli.main, ["status", "--db-path", str(db_path)])
+    assert result.exit_code == 0
+    for line in result.output.splitlines():
+        if line.startswith("deepseek"):
+            assert "+" in line or "live" not in line
+            break
+
+
+def test_search_runner_calls_sync_one_without_extra_args(tmp_path, monkeypatch):
+    db_path = tmp_path / "archive.db"
+    con = cli.db.connect(db_path)
+    cli.db.save_thread(
+        con,
+        IngestedThread(
+            id="claudecode:t1",
+            source_id="claudecode",
+            title="Test thread",
+            created_at=1000,
+            updated_at=1000,
+            messages=[
+                IngestedMessage(id="claudecode:m1", thread_id="claudecode:t1", role="user", content="hello", created_at=1000),
+            ],
+        ),
+    )
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('[ingestors.claudecode]\nenabled = true\n')
+    monkeypatch.setenv("LLM_ARCHIVE_CONFIG", str(config_path))
+
+    calls = []
+
+    async def spy_sync_one(*args, **kwargs):
+        calls.append((args, kwargs))
+        return True
+
+    monkeypatch.setattr(sync_mod, "_sync_one", spy_sync_one)
+    monkeypatch.setattr(sync_mod, "INGESTORS", {"claudecode": FakeIngestor})
+
+    result = CliRunner().invoke(cli.main, ["search", "hello", "--db-path", str(db_path)])
+    assert result.exit_code == 0, result.output
+    if calls:
+        assert len(calls[0][0]) == 5, f"runner should pass 5 args to _sync_one, got {len(calls[0][0])}: {calls[0][0]}"

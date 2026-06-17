@@ -224,7 +224,7 @@ def search(
         config = load_config()
 
         async def runner(src: str, job_force: bool) -> bool:
-            return await _sync_one(src, db_path, None, job_force, None, False)
+            return await _sync_one(src, db_path, None, job_force, None)
 
         source_ids = [provider_filter] if provider_filter else list(INGESTORS)
         _run(
@@ -784,7 +784,7 @@ def service():
     from llm_archive.service import run_service
 
     async def runner(src: str, job_force: bool) -> bool:
-        return await _sync_one(src, None, None, job_force, None, False)
+        return await _sync_one(src, None, None, job_force, None)
 
     _run(run_service(runner=runner))
 
