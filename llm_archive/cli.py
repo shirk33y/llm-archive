@@ -796,7 +796,8 @@ def _fmt_ts(ms: int) -> str:
 def _until(ms: int) -> str:
     remaining = int(ms - time.time() * 1000)
     if remaining <= 0:
-        return "due"
+        overdue = format_duration_ms(-remaining)
+        return f"+{overdue}"
     return format_duration_ms(remaining)
 
 

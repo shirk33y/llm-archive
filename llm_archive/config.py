@@ -153,7 +153,7 @@ def format_duration_ms(ms: int | None) -> str:
         return "-"
     units = [("d", 86_400_000), ("h", 3_600_000), ("m", 60_000), ("s", 1000)]
     for suffix, factor in units:
-        if ms >= factor and ms % factor == 0:
+        if ms >= factor:
             return f"{ms // factor}{suffix}"
     return f"{ms}ms"
 

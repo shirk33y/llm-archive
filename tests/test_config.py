@@ -45,7 +45,7 @@ def test_duration_parse_and_format():
     assert parse_duration_ms("1.5s") == 1500
     assert parse_duration_ms("23h") == 82_800_000
     assert format_duration_ms(60_000) == "1m"
-    assert format_duration_ms(1500) == "1500ms"
+    assert format_duration_ms(1500) == "1s"
 
 
 def test_update_ingestor_config_writes_toml(tmp_path):
