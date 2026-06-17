@@ -5,6 +5,8 @@ import pytest
 from click.testing import CliRunner
 
 from llm_archive import cli
+from llm_archive import sync as sync_mod
+from llm_archive.ids import to_base53
 from llm_archive.schema import IngestedMessage, IngestedThread
 
 
@@ -75,12 +77,12 @@ async def test_sync_runs_init_on_first_sync(monkeypatch, tmp_path):
         return True
 
     monkeypatch.setattr(cli.db, "DB_PATH", tmp_path / "archive.db")
-    monkeypatch.setattr(cli, "get_ingestor", lambda source: ingestor)
-    monkeypatch.setattr(cli, "_do_ingest", do_ingest)
+    monkeypatch.setattr(sync_mod, "get_ingestor", lambda source: ingestor)
+    monkeypatch.setattr(sync_mod, "_do_ingest", do_ingest)
     monkeypatch.setattr(cli.db, "get_last_sync", lambda con, source: None)
     monkeypatch.setattr(cli.db, "set_last_sync", lambda con, source, ts: last.append((source, ts)))
 
-    await cli._sync("claudecode", None, "/tmp/foo")
+    await sync_mod._sync("claudecode", None, "/tmp/foo")
     assert ingestor.path == Path("/tmp/foo")
     assert ingestor.init_calls == [{"path": "/tmp/foo"}]
     assert saved == [("claudecode", None)]
@@ -98,13 +100,13 @@ async def test_sync_skips_init_after_first_sync(monkeypatch, tmp_path):
         return True
 
     monkeypatch.setattr(cli.db, "DB_PATH", tmp_path / "archive.db")
-    monkeypatch.setattr(cli, "get_ingestor", lambda source: ingestor)
-    monkeypatch.setattr(cli, "_do_ingest", do_ingest)
+    monkeypatch.setattr(sync_mod, "get_ingestor", lambda source: ingestor)
+    monkeypatch.setattr(sync_mod, "_do_ingest", do_ingest)
     monkeypatch.setattr(cli.db, "get_last_sync", lambda con, source: 1234)
     monkeypatch.setattr(cli.db, "set_last_sync", lambda con, source, ts: None)
-    monkeypatch.setattr(cli, "_source_thread_count", lambda con, source: 1)
+    monkeypatch.setattr(sync_mod, "_source_thread_count", lambda con, source: 1)
 
-    await cli._sync("claudecode", None, "/tmp/foo")
+    await sync_mod._sync("claudecode", None, "/tmp/foo")
     assert ingestor.path == Path("/tmp/foo")
     assert ingestor.init_calls == []
     assert saved == [("claudecode", 1234)]
@@ -119,12 +121,12 @@ async def test_sync_does_not_advance_last_sync_on_failed_ingest(monkeypatch, tmp
         return False
 
     monkeypatch.setattr(cli.db, "DB_PATH", tmp_path / "archive.db")
-    monkeypatch.setattr(cli, "get_ingestor", lambda source: ingestor)
-    monkeypatch.setattr(cli, "_do_ingest", do_ingest)
+    monkeypatch.setattr(sync_mod, "get_ingestor", lambda source: ingestor)
+    monkeypatch.setattr(sync_mod, "_do_ingest", do_ingest)
     monkeypatch.setattr(cli.db, "get_last_sync", lambda con, source: None)
     monkeypatch.setattr(cli.db, "set_last_sync", lambda con, source, ts: last.append((source, ts)))
 
-    await cli._sync("deepseek", None)
+    await sync_mod._sync("deepseek", None)
     assert ingestor.init_calls == [{"path": None}]
     assert last == []
 
@@ -140,13 +142,13 @@ async def test_sync_falls_back_to_full_sync_when_last_sync_exists_but_no_threads
         return True
 
     monkeypatch.setattr(cli.db, "DB_PATH", tmp_path / "archive.db")
-    monkeypatch.setattr(cli, "get_ingestor", lambda source: ingestor)
-    monkeypatch.setattr(cli, "_do_ingest", do_ingest)
+    monkeypatch.setattr(sync_mod, "get_ingestor", lambda source: ingestor)
+    monkeypatch.setattr(sync_mod, "_do_ingest", do_ingest)
     monkeypatch.setattr(cli.db, "get_last_sync", lambda con, source: 1234)
     monkeypatch.setattr(cli.db, "set_last_sync", lambda con, source, ts: None)
-    monkeypatch.setattr(cli, "_source_thread_count", lambda con, source: 0)
+    monkeypatch.setattr(sync_mod, "_source_thread_count", lambda con, source: 0)
 
-    await cli._sync("deepseek", None)
+    await sync_mod._sync("deepseek", None)
     assert ingestor.init_calls == [{"path": None}]
     assert saved == [("deepseek", None)]
 
@@ -154,7 +156,7 @@ async def test_sync_falls_back_to_full_sync_when_last_sync_exists_but_no_threads
 @pytest.mark.asyncio
 async def test_do_ingest_supports_count_threads(tmp_path):
     con = cli.db.connect(tmp_path / "archive.db")
-    ok = await cli._do_ingest(con, CountIngestor(), since=None)
+    ok = await sync_mod._do_ingest(con, CountIngestor(), since=None)
     assert ok is True
     assert con.execute("select count(*) from threads").fetchone()[0] == 2
 
@@ -166,13 +168,13 @@ async def test_do_ingest_processes_all_threads_regardless_of_since(tmp_path):
     
     # First sync to populate database
     ingestor = CountIngestor()
-    ok = await cli._do_ingest(con, ingestor, since=None)
+    ok = await sync_mod._do_ingest(con, ingestor, since=None)
     assert ok is True
     assert con.execute("select count(*) from threads").fetchone()[0] == 2
     
     # Second sync with since parameter - should still process all threads
     ingestor2 = CountIngestor()
-    ok2 = await cli._do_ingest(con, ingestor2, since=1234)
+    ok2 = await sync_mod._do_ingest(con, ingestor2, since=1234)
     assert ok2 is True
     # All threads should be processed (2 new + 0 skipped = 2 total)
     # Since they're already in database, they should be skipped
@@ -186,13 +188,13 @@ async def test_force_flag_updates_threads(tmp_path):
     
     # First sync to populate database
     ingestor = CountIngestor()
-    ok = await cli._do_ingest(con, ingestor, since=None)
+    ok = await sync_mod._do_ingest(con, ingestor, since=None)
     assert ok is True
     assert con.execute("select count(*) from threads").fetchone()[0] == 2
     
     # Second sync with force=True - should re-fetch and update threads
     ingestor2 = CountIngestor()
-    ok2 = await cli._do_ingest(con, ingestor2, since=None, force=True)
+    ok2 = await sync_mod._do_ingest(con, ingestor2, since=None, force=True)
     assert ok2 is True
     # Should still have 2 threads
     assert con.execute("select count(*) from threads").fetchone()[0] == 2
@@ -236,13 +238,13 @@ async def test_smart_sync_stops_at_existing_thread(tmp_path):
     
     # First sync to populate database
     ingestor = SmartSyncIngestor()
-    ok = await cli._do_ingest(con, ingestor, since=None)
+    ok = await sync_mod._do_ingest(con, ingestor, since=None)
     assert ok is True
     assert con.execute("select count(*) from threads").fetchone()[0] == 5
     
     # Second sync - should stop at first existing thread
     ingestor2 = SmartSyncIngestor()
-    ok2 = await cli._do_ingest(con, ingestor2, since=None)
+    ok2 = await sync_mod._do_ingest(con, ingestor2, since=None)
     assert ok2 is True
     # Should still have 5 threads (all skipped)
     assert con.execute("select count(*) from threads").fetchone()[0] == 5
@@ -255,7 +257,7 @@ async def test_smart_sync_refetches_updated_thread(tmp_path):
     
     # First sync - add threads with updated_at = 0, 1000, 2000, 3000, 4000
     ingestor = SmartSyncIngestor()
-    ok = await cli._do_ingest(con, ingestor, since=None)
+    ok = await sync_mod._do_ingest(con, ingestor, since=None)
     assert ok is True
     assert con.execute("select count(*) from threads").fetchone()[0] == 5
     
@@ -267,7 +269,7 @@ async def test_smart_sync_refetches_updated_thread(tmp_path):
     
     # Second sync - should re-fetch thread 0 (API has 0, DB has -100)
     ingestor2 = SmartSyncIngestor()
-    ok2 = await cli._do_ingest(con, ingestor2, since=None)
+    ok2 = await sync_mod._do_ingest(con, ingestor2, since=None)
     assert ok2 is True
     # Should still have 5 threads
     assert con.execute("select count(*) from threads").fetchone()[0] == 5
@@ -283,13 +285,13 @@ async def test_force_flag_disables_smart_sync(tmp_path):
     
     # First sync to populate database
     ingestor = SmartSyncIngestor()
-    ok = await cli._do_ingest(con, ingestor, since=None)
+    ok = await sync_mod._do_ingest(con, ingestor, since=None)
     assert ok is True
     assert con.execute("select count(*) from threads").fetchone()[0] == 5
     
     # Second sync with force=True - should fetch all threads (not stop at existing)
     ingestor2 = SmartSyncIngestor()
-    ok2 = await cli._do_ingest(con, ingestor2, since=None, force=True)
+    ok2 = await sync_mod._do_ingest(con, ingestor2, since=None, force=True)
     assert ok2 is True
     # Should still have 5 threads (all skipped since they're identical)
     assert con.execute("select count(*) from threads").fetchone()[0] == 5
@@ -543,7 +545,7 @@ def test_show_command_message_short_id(tmp_path):
     )
     # Find the short ID for m2
     msg_row = con.execute("SELECT rowid FROM messages WHERE id='claude:m2'").fetchone()
-    short_id = f"m{cli.db.to_base53(msg_row[0])}"
+    short_id = f"m{to_base53(msg_row[0])}"
     result = CliRunner().invoke(cli.main, ["show", short_id, "--db-path", str(tmp_path / "archive.db")])
     assert result.exit_code == 0
     assert "My Thread" in result.output

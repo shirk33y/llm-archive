@@ -190,7 +190,7 @@ def run_sync():
 
 
 def _ensure_fresh(source_ids: list[str] | None = None) -> None:
-    from llm_archive.cli import _sync_one
+    from llm_archive.sync import _sync_one
 
     async def runner(src: str, force: bool) -> bool:
         return await _sync_one(src, None, None, force, None, False)

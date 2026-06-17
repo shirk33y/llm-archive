@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from llm_archive import db
+from llm_archive.ids import to_base53
 from llm_archive.ingestors.claudecode import ClaudeCodeIngestor, _parse_jsonl, _flatten_content
 from llm_archive.ingestors.deepseek import (
     DeepseekIngestor,
@@ -1327,7 +1328,7 @@ def test_resolve_short_id_thread(tmp_path):
         ),
     )
     rowid = con.execute("SELECT rowid FROM threads WHERE id='test:t1'").fetchone()[0]
-    short_id = f"t{db.to_base53(rowid)}"
+    short_id = f"t{to_base53(rowid)}"
     result = db.resolve_short_id(con, short_id)
     assert result is not None
     assert result["thread"]["id"] == "test:t1"
@@ -1360,7 +1361,7 @@ def test_resolve_short_id_message(tmp_path):
         ),
     )
     rowid = con.execute("SELECT rowid FROM messages WHERE id='test:m2'").fetchone()[0]
-    short_id = f"m{db.to_base53(rowid)}"
+    short_id = f"m{to_base53(rowid)}"
     result = db.resolve_short_id(con, short_id)
     assert result is not None
     assert result["thread"]["id"] == "test:t1"
