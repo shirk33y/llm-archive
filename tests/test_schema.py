@@ -17,7 +17,7 @@ from llm_archive.ingestors.deepseek import (
     _role,
 )
 from llm_archive.ingestors.opencode import OpenCodeIngestor
-from llm_archive.schema import IngestedMessage, IngestedThread, IngestedPart
+from llm_archive.schema import IngestedMessage, IngestedThread, IngestedPart, ToolCall
 
 
 @pytest.fixture
@@ -497,6 +497,46 @@ def test_db_save_thread_preserves_explicit_parts(con):
     assert [tuple(row) for row in parts] == [("text", "answer", 1), ("search_result", "doc", 0)]
     raw = con.execute("select raw from message_raw where message_id='deepseek:m1'").fetchone()[0]
     assert json.loads(raw) == {"id": 1}
+
+
+def test_db_save_thread_sanitizes_lone_surrogates(con):
+    bad_text = "before \ud83e after"
+    db.save_thread(
+        con,
+        IngestedThread(
+            id="opencode:surrogate",
+            source_id="opencode",
+            title="surrogate",
+            created_at=1,
+            updated_at=2,
+            messages=[
+                IngestedMessage(
+                    id="opencode:surrogate:m1",
+                    thread_id="opencode:surrogate",
+                    role="assistant",
+                    content=bad_text,
+                    created_at=1,
+                    parts=[
+                        IngestedPart(
+                            kind="tool_result",
+                            text=bad_text,
+                            tool_call=ToolCall(name="bash", result=bad_text),
+                        )
+                    ],
+                )
+            ],
+        ),
+    )
+
+    row = con.execute(
+        "select content, content_clean from messages where id='opencode:surrogate:m1'"
+    ).fetchone()
+    part = con.execute(
+        "select text, search_text, tool_result from message_parts where message_id='opencode:surrogate:m1'"
+    ).fetchone()
+    assert row["content"] == "before � after"
+    assert row["content_clean"] == "before � after"
+    assert tuple(part) == ("before � after", "before � after bash before � after", "before � after")
 
 
 def test_db_search_messages_uses_normalized_parts(con):

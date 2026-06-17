@@ -9,6 +9,7 @@ from pathlib import Path
 
 from llm_archive.logging import get_logger
 from llm_archive.schema import IngestedThread, IngestedMessage, IngestedPart
+from llm_archive.unicode import sanitize_text
 
 logger = get_logger("db")
 
@@ -60,7 +61,7 @@ def clean_content(text: str) -> str:
     """
     if not text:
         return text
-    cleaned = _INJECTION_TAGS.sub("", text)
+    cleaned = _INJECTION_TAGS.sub("", sanitize_text(text))
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
@@ -273,7 +274,7 @@ def connect(path: Path = DB_PATH) -> sqlite3.Connection:
 
 def _thread_sha1(thread: IngestedThread) -> str:
     msgs_sorted = sorted(thread.messages, key=lambda m: (m.created_at or 0, m.id))
-    payload = thread.id + "".join(m.content for m in msgs_sorted)
+    payload = thread.id + "".join(sanitize_text(m.content) for m in msgs_sorted)
     return hashlib.sha1(payload.encode()).hexdigest()
 
 
@@ -348,7 +349,15 @@ def save_thread(con: sqlite3.Connection, thread: IngestedThread, force: bool = F
     con.execute(
         "INSERT OR REPLACE INTO threads(id, source_id, title, created_at, updated_at, sha1, content_checked_at) "
         "VALUES(?,?,?,?,?,?,?)",
-        (thread.id, thread.source_id, thread.title, thread.created_at, thread.updated_at, sha1, now_ms),
+        (
+            thread.id,
+            thread.source_id,
+            sanitize_text(thread.title) if thread.title else thread.title,
+            thread.created_at,
+            thread.updated_at,
+            sha1,
+            now_ms,
+        ),
     )
     ids = [
         row[0]
@@ -362,7 +371,8 @@ def save_thread(con: sqlite3.Connection, thread: IngestedThread, force: bool = F
     con.execute("DELETE FROM messages WHERE thread_id=?", (thread.id,))
     con.execute("DELETE FROM messages_fts WHERE thread_id=?", (thread.id,))
     for msg in thread.messages:
-        clean = clean_content(msg.content)
+        content = sanitize_text(msg.content)
+        clean = clean_content(content)
         con.execute(
             "INSERT OR REPLACE INTO messages(id, thread_id, role, content, content_clean, created_at, metadata) "
             "VALUES(?,?,?,?,?,?,?)",
@@ -370,7 +380,7 @@ def save_thread(con: sqlite3.Connection, thread: IngestedThread, force: bool = F
                 msg.id,
                 msg.thread_id,
                 msg.role,
-                msg.content,
+                content,
                 clean,
                 msg.created_at,
                 json.dumps(msg.metadata) if msg.metadata else None,
@@ -381,7 +391,7 @@ def save_thread(con: sqlite3.Connection, thread: IngestedThread, force: bool = F
             (msg.id, msg.thread_id, clean),
         )
         for i, part in enumerate(_message_parts(msg)):
-            text = _strip_content(part.text).strip()
+            text = sanitize_text(_strip_content(part.text).strip())
             search_text = clean_content(text) if part.searchable else ""
             # Also add data field content to search_text for better searchability
             if part.data and part.searchable:
@@ -390,15 +400,15 @@ def save_thread(con: sqlite3.Connection, thread: IngestedThread, force: bool = F
             # Add tool call data to search_text
             if part.tool_call and part.searchable:
                 tc = part.tool_call
-                search_text += f" {tc.name}"
+                search_text += f" {sanitize_text(tc.name)}"
                 if tc.input:
-                    search_text += f" {json.dumps(tc.input, ensure_ascii=False)}"
+                    search_text += f" {sanitize_text(json.dumps(tc.input, ensure_ascii=False))}"
                 if tc.result:
-                    search_text += f" {tc.result}"
+                    search_text += f" {sanitize_text(tc.result)}"
             tool_use_id = part.tool_call.tool_use_id if part.tool_call else None
-            tool_name = part.tool_call.name if part.tool_call else None
+            tool_name = sanitize_text(part.tool_call.name) if part.tool_call else None
             tool_input = json.dumps(part.tool_call.input) if part.tool_call and part.tool_call.input else None
-            tool_result = part.tool_call.result if part.tool_call else None
+            tool_result = sanitize_text(part.tool_call.result) if part.tool_call and part.tool_call.result else None
             tool_result_ts = part.tool_call.resultTimestamp if part.tool_call else None
             tool_is_error = 1 if part.tool_call and part.tool_call.is_error else 0
             con.execute(
@@ -492,7 +502,7 @@ def _part_flags(kind: str) -> tuple[bool, bool]:
 def _strip_content(text: str) -> str:
     if not text:
         return text
-    return _INJECTION_TAGS.sub("", text).strip()
+    return _INJECTION_TAGS.sub("", sanitize_text(text)).strip()
 
 
 def source_stats(con: sqlite3.Connection) -> list[dict]:

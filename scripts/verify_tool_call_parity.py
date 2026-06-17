@@ -5,7 +5,6 @@ claude-replay's expected format: tool_use_id, name, input, result, is_error,
 no truncation, error detection.
 """
 
-import json
 import sys
 import asyncio
 from pathlib import Path
@@ -100,7 +99,7 @@ async def _check_ingestor(name: str, ingestor, source_filter: str | None = None)
         print(f"  tool_use_id coverage: {pct:.1f}%")
 
     if stats['tool_calls'] == 0:
-        print(f"  FAIL: no tool calls found")
+        print("  FAIL: no tool calls found")
         issues.append(f"  [{name}] No tool calls found in any message")
 
     if issues:

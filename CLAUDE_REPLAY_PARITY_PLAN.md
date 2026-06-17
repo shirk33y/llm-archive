@@ -1,6 +1,8 @@
 # Claude Replay Parity Plan
 
-Goal: Bring llm-archive tool call parsing to parity with claude-replay's structured format.
+Goal: Bring llm-archive tool call parsing for file-based ingestors to parity with claude-replay's structured format.
+
+Scope: Claude Code, Codex, OpenCode, Cursor, and Gemini.
 
 ## Why This Matters
 
@@ -621,7 +623,7 @@ python scripts/migrate_tool_calls.py
 
 ---
 
-## Stage 6: Cursor Ingestor (New)
+## ✅ Stage 6: Cursor Ingestor (New) — Done
 
 ### 6.1 Create Cursor Ingestor
 **File**: `llm_archive/ingestors/cursor.py`
@@ -781,7 +783,7 @@ Expected: Cursor source appears in list
 
 ---
 
-## Stage 7: Gemini CLI Ingestor (New)
+## ✅ Stage 7: Gemini CLI Ingestor (New) — Done
 
 ### 7.1 Create Gemini Ingestor
 **File**: `llm_archive/ingestors/gemini.py`
@@ -1125,7 +1127,7 @@ Expected: All tests pass (or skip if no sessions)
 
 ---
 
-## Stage 10: Documentation
+## Stage 10: Documentation — Not Relevant to Parity Completion
 
 ### 10.1 Update Schema Docs
 **File**: `docs/SCHEMA.md`
@@ -1215,7 +1217,7 @@ def _display_message(msg: dict):
 
 ---
 
-## Stage 12: Performance Optimization
+## Stage 12: Performance Optimization — Not Relevant to Parity Completion
 
 ### 12.1 Index Tool Columns
 **File**: `llm_archive/db.py`
@@ -1278,7 +1280,7 @@ Run the verification script against all ingestors that produce tool calls.
 **Out of scope** (no structured tool calls to verify):
 - ChatGPT, Claude, DeepSeek — web scrapers, conversations stored as flattened text
 - Windsurf — protobuf format (WIP)
-- Cursor, Gemini — not yet implemented
+- Cursor, Gemini — covered by fixture tests; local verification depends on available local sessions
 
 The script validates per-tool-call: tool_use_id, name, input, is_error, result completeness.
 
@@ -1289,7 +1291,7 @@ python scripts/verify_tool_call_parity.py
 
 ---
 
-## Stage 14: Release Notes
+## Stage 14: Release Notes — Not Relevant to Parity Completion
 
 ### 14.1 Update CHANGELOG
 **File**: `CHANGELOG.md`
@@ -1331,12 +1333,12 @@ python scripts/verify_tool_call_parity.py
 7. ✅ **Stage 8**: Search and display — Done
 8. ✅ **Stage 9**: Testing — Done
 9. ✅ **Stage 11**: Backward compatibility — Done
-10. **Stage 6**: Cursor ingestor (new source) - 6h P1
-11. **Stage 7**: Gemini ingestor (new source) - 8h P1
-12. **Stage 10**: Documentation (knowledge transfer) - 2h P2
-13. **Stage 12**: Performance optimization (nice-to-have) - 4h P2
+10. ✅ **Stage 6**: Cursor ingestor (new source) — Done
+11. ✅ **Stage 7**: Gemini ingestor (new source) — Done
+12. **Stage 10**: Documentation — Not relevant to parity completion
+13. **Stage 12**: Performance optimization — Not relevant to parity completion
 14. ✅ **Stage 13**: Verification — Done
-15. **Stage 14**: Release (shipping) - 1h P2
+15. **Stage 14**: Release — Not relevant to parity completion
 
 ---
 
@@ -1353,13 +1355,13 @@ python scripts/verify_tool_call_parity.py
 | Stage 8: Search/Display | 4h | P1 | ✅ |
 | Stage 9: Testing | 6h | P1 | ✅ |
 | Stage 11: Backward Compat | 4h | P1 | ✅ |
-| Stage 6: Cursor (New) | 6h | P1 | |
-| Stage 7: Gemini (New) | 8h | P1 | |
-| Stage 10: Documentation | 2h | P2 | |
-| Stage 12: Performance | 4h | P2 | |
-| Stage 13: Verification | 2h | P1 | ✅ | |
-| Stage 14: Release | 1h | P2 | |
-| **Total** | **69h** | | **43h done** |
+| Stage 6: Cursor (New) | 6h | P1 | ✅ |
+| Stage 7: Gemini (New) | 8h | P1 | ✅ |
+| Stage 10: Documentation | 2h | P2 | N/A |
+| Stage 12: Performance | 4h | P2 | N/A |
+| Stage 13: Verification | 2h | P1 | ✅ |
+| Stage 14: Release | 1h | P2 | N/A |
+| **Total** | **69h** | | **57h done; non-parity stages excluded** |
 
 ---
 
@@ -1368,14 +1370,14 @@ python scripts/verify_tool_call_parity.py
 - ✅ Claude Code ingestor preserves full tool call structure
 - ✅ Codex ingestor preserves full tool call structure (new + legacy formats)
 - ✅ OpenCode ingestor preserves full tool call structure
-- ❌ Cursor ingestor (not started)
-- ❌ Gemini ingestor (not started)
+- ✅ Cursor ingestor parses local JSONL sessions
+- ✅ Gemini ingestor preserves tool calls, nested results, thoughts, timestamps, and error status
 - ✅ Tool use IDs link calls to results (Claude Code, Codex, OpenCode)
 - ✅ No 500-char truncation anywhere
 - ✅ Tool names normalized across platforms
 - ✅ Patches/diffs parsed for Edit/Write structure
 - ✅ Error status tracked (status/exit code)
 - ✅ Backward compatibility maintained (legacy flat content fallback)
-- ✅ Test coverage: 283 tests passing
+- ✅ Test coverage: Cursor and Gemini claude-replay fixtures ported and passing
 - ✅ Verification script passing for ClaudeCode, Codex, OpenCode (web scrapers out of scope — no tool calls)
-- ❌ Performance optimization (not started)
+- N/A Performance optimization (not relevant to parity completion)

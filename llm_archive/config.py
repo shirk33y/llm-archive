@@ -9,8 +9,11 @@ from typing import Any
 
 VALID_AUTH_MODES = {"cookies", "cdp"}
 WEB_INGESTORS = {"chatgpt", "claude", "deepseek"}
-FILE_INGESTORS = {"claudecode", "codex", "opencode", "windsurf"}
-INGESTOR_ORDER = ("chatgpt", "claude", "deepseek", "claudecode", "codex", "opencode", "windsurf")
+FILE_INGESTORS = {"claudecode", "codex", "cursor", "gemini", "opencode", "windsurf"}
+INGESTOR_ORDER = (
+    "chatgpt", "claude", "deepseek", "claudecode", "codex",
+    "cursor", "gemini", "opencode", "windsurf",
+)
 _DURATION_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)(ms|s|m|h|d)\s*$")
 
 
