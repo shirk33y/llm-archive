@@ -2,6 +2,8 @@
 
 Local archive for AI chats. Syncs web and file-based providers into SQLite, then searches them from CLI, TUI, or MCP.
 
+Related project: [`unbalancedparentheses/llm-archive`](https://github.com/unbalancedparentheses/llm-archive), an analytics-oriented archive for Claude Code and Codex conversation history.
+
 ## Quickstart
 
 ```sh
