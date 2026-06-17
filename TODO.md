@@ -13,3 +13,13 @@
 - [ ] Design TUI
 - [ ] Investigate openchronicle
 - [ ] Store/download images and other artifacts uploaded or produced by AI
+
+## Ideas from `unbalancedparentheses/llm-archive`
+
+- [ ] Add activity analytics commands: `hours`, `projects`, `timeline`, and `day`
+- [ ] Add bulk export command for Markdown and JSON conversations
+- [ ] Add optional idea mining over recent conversations, excluding tool noise and directives
+- [ ] Add optional weekly/recent summary generation with local Ollama fallback and cost confirmation
+- [ ] Add normalized token usage and cost reporting per provider, project, and time window
+- [ ] Add recurring-question detection for repeated user prompts or unresolved problems
+- [ ] Add lightweight topic extraction over searchable message parts, scoped by source/project/date
