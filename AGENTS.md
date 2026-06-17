@@ -1,5 +1,23 @@
 # llm-archive — AGENTS.md
 
+## Commit convention
+
+Use conventional commits: `type(scope): description`
+
+Types: `feat`, `fix`, `docs`, `refactor`, `test`, `ci`, `chore`, `style`, `perf`
+
+Scope is optional — use the module or area (e.g. `ingestors`, `deps`, `plan`, `cli`).
+
+Always lowercase. No period at end. Imperative mood.
+
+Examples:
+- `feat(cli): add --dry-run flag`
+- `refactor(ingestors): remove playwright, keep CDP for windsurf only`
+- `docs(plan): remove done items, update tree and order`
+- `fix: show overdue duration instead of opaque "due" in NEXT column`
+
+---
+
 ## Release process
 
 1. Bump version in `pyproject.toml` (`[project] version`)
