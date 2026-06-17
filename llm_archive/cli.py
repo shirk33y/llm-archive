@@ -22,6 +22,7 @@ from llm_archive.ids import to_base53
 from llm_archive.ingestors import INGESTORS
 from llm_archive.jobs import ensure_fresh
 from llm_archive.logging import set_console as set_log_console, set_verbose
+from llm_archive.providers import provider_kind
 from llm_archive.setup import disable_provider, enable_provider, setup_summary
 
 console = Console()
@@ -118,6 +119,7 @@ def status(db_path: str | None, verbose: bool, json_output: bool):
     service_state = db.get_service_state(con)
     backup_state = db.get_backup_state(con)
     jobs = db.recent_jobs(con, 10)
+    config = load_config()
 
     if json_output:
         console.print_json(
@@ -159,8 +161,13 @@ def status(db_path: str | None, verbose: bool, json_output: bool):
         state = states.get(source_id, {})
         last = row.get("last_sync")
         last_str = _relative_time(last) if last else "-"
-        next_sync = state.get("next_sync_at")
-        next_str = _until(next_sync) if next_sync else "-"
+        has_synced = bool(state.get("last_success_at")) or bool(last)
+        watched = config.ingestor(source_id).watch and provider_kind(source_id) == "file"
+        if watched and has_synced:
+            next_str = "live"
+        else:
+            next_sync = state.get("next_sync_at")
+            next_str = _until(next_sync) if next_sync else "-"
         thr = str(row.get("thread_count", 0))
         msg = str(row.get("message_count", 0))
         if not state.get("enabled"):

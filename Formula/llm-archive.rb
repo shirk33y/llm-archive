@@ -3,9 +3,9 @@ class LlmArchive < Formula
 
   desc "Local archive for AI chats — sync web and file providers into SQLite"
   homepage "https://github.com/shirk33y/llm-archive"
-  url "https://github.com/shirk33y/llm-archive/archive/refs/tags/v0.2.1.tar.gz"
-  sha256 "b6d849f038f02eb7a43e20c6f80321a88360679f7ace30b8a207d7782110b6d4"
-  version "0.2.1"
+  url "https://github.com/shirk33y/llm-archive/archive/refs/tags/v0.2.2.tar.gz"
+  sha256 "447b53e60ac2f195c8609cb8494b5abdc0b3b9e18bb1f969944a0336d5b13476"
+  version "0.2.2"
   head "https://github.com/shirk33y/llm-archive.git", branch: "main"
   license "All rights reserved"
 
