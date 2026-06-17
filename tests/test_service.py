@@ -43,10 +43,10 @@ def test_path_mtime_oserror_skips_bad_children(tmp_path):
 
     orig_stat = Path.stat
 
-    def bad_stat(self):
+    def bad_stat(self, **kwargs):
         if self == bad:
             raise OSError("permission denied")
-        return orig_stat(self)
+        return orig_stat(self, **kwargs)
 
     with patch.object(Path, "stat", bad_stat):
         mtime = _path_mtime(d)

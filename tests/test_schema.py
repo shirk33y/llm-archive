@@ -1119,9 +1119,6 @@ async def test_claude_v2_paginated():
 async def test_deepseek_smart_sync_continues_past_existing():
     """Regression: deepseek smart sync must continue past already-synced conversations, not break."""
     from llm_archive.ingestors.deepseek import DeepseekIngestor
-    from unittest.mock import patch, AsyncMock
-
-    ingestor = DeepseekIngestor()
 
     sessions = [
         {"id": "sess-1", "updated_at": 5},
@@ -1129,7 +1126,6 @@ async def test_deepseek_smart_sync_continues_past_existing():
         {"id": "sess-3", "updated_at": 3},
     ]
 
-    # sess-1 already in DB — should be skipped, sess-2 and sess-3 still yielded
     existing = {"deepseek:sess-1": 5000}
 
     thread2 = IngestedThread(
@@ -1149,19 +1145,32 @@ async def test_deepseek_smart_sync_continues_past_existing():
         messages=[],
     )
 
-    with patch.object(DeepseekIngestor, "_get_token", new_callable=AsyncMock, return_value="tok"):
-        with patch.object(
-            DeepseekIngestor, "_fetch_sessions", new_callable=AsyncMock, return_value=sessions
-        ):
-            with patch.object(
-                DeepseekIngestor,
-                "_fetch_thread",
-                new_callable=AsyncMock,
-                side_effect=[thread2, thread3],
-            ):
-                threads = []
-                async for t in ingestor.threads(existing_thread_ids=existing):
-                    threads.append(t)
+    ingestor = DeepseekIngestor.__new__(DeepseekIngestor)
+    ingestor._auth_mode = "cookies"
+
+    async def fake_get_token():
+        return "tok"
+
+    async def fake_get_cookies():
+        return {}
+
+    async def fake_fetch_sessions(client):
+        return sessions
+
+    async def fake_fetch_thread(client, sess, headers=None):
+        tid = f"deepseek:{sess['id']}"
+        if tid == thread2.id:
+            return thread2
+        return thread3
+
+    ingestor._get_token = fake_get_token
+    ingestor._get_cookies = fake_get_cookies
+    ingestor._fetch_sessions = fake_fetch_sessions
+    ingestor._fetch_thread = fake_fetch_thread
+
+    threads = []
+    async for t in ingestor.threads(existing_thread_ids=existing):
+        threads.append(t)
 
     assert len(threads) == 2
     assert threads[0].id == "deepseek:sess-2"
