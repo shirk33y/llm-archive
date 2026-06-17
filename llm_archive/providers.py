@@ -22,6 +22,16 @@ PROVIDERS: dict[str, ProviderInfo] = {
         "file",
         paths=(Path.home() / ".codex" / "state_5.sqlite", Path.home() / ".codex" / "sessions"),
     ),
+    "cursor": ProviderInfo(
+        "cursor",
+        "file",
+        paths=(Path.home() / ".cursor" / "projects",),
+    ),
+    "gemini": ProviderInfo(
+        "gemini",
+        "file",
+        paths=(Path.home() / ".gemini" / "tmp",),
+    ),
     "opencode": ProviderInfo(
         "opencode",
         "file",

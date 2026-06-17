@@ -4,10 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
 from llm_archive.ingestors.claudecode import _parse_jsonl, _process_content_blocks
-from llm_archive.schema import ToolCall
 
 FIXTURE = Path(__file__).parent / "fixture-claude-code.jsonl"
 

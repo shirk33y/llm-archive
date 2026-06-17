@@ -1,8 +1,6 @@
 from __future__ import annotations
-import json
 
 from llm_archive.ingestors.opencode import _map_tool_name, _parse_tool_part
-from llm_archive.schema import ToolCall
 
 
 def _make_tool_part(

@@ -6,13 +6,17 @@ from llm_archive.ingestors.claude import ClaudeIngestor
 from llm_archive.ingestors.claudecode import ClaudeCodeIngestor
 from llm_archive.ingestors.deepseek import DeepseekIngestor
 from llm_archive.ingestors.codex import CodexIngestor
+from llm_archive.ingestors.cursor import CursorIngestor
 from llm_archive.ingestors.dummy import DummyIngestor
+from llm_archive.ingestors.gemini import GeminiIngestor
 from llm_archive.ingestors.opencode import OpenCodeIngestor
 from llm_archive.ingestors.windsurf import WindsurfIngestor
 
 INGESTORS: dict[str, type[BaseIngestor]] = {
     "claudecode": ClaudeCodeIngestor,
     "codex": CodexIngestor,
+    "cursor": CursorIngestor,
+    "gemini": GeminiIngestor,
     "opencode": OpenCodeIngestor,
     "windsurf": WindsurfIngestor,
     "claude": ClaudeIngestor,

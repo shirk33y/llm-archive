@@ -30,6 +30,8 @@ llm-archive status
 | `deepseek` | web | browser cookies + localStorage token, fallback CDP |
 | `claudecode` | file | local JSONL |
 | `codex` | file | local JSONL |
+| `cursor` | file | local JSONL |
+| `gemini` | file | local JSON |
 | `opencode` | file | local SQLite |
 | `windsurf` | file/API | local app API |
 
