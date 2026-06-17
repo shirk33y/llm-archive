@@ -1,0 +1,11 @@
+name: Brew Install
+on: [push, pull_request]
+jobs:
+  install:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: homebrew/actions/setup-homebrew@master
+      - run: brew install shirk33y/tap/llm-archive
+      - run: llm-archive --help
+      - run: llm-archive sources
