@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from llm_archive.schema import IngestedMessage, IngestedPart, ToolCall
-from llm_archive.db import _message_parts, _parse_parts, _parse_part
+from llm_archive.db import _message_parts
+from llm_archive.text import _parse_parts, _parse_part
 from llm_archive.cli import _part_label, _part_data
 
 

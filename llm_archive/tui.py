@@ -9,6 +9,7 @@ from textual.reactive import reactive
 from rich.text import Text
 
 from llm_archive import db
+from llm_archive.ids import to_base53
 
 
 def _relative_time(ms: int) -> str:
@@ -50,7 +51,7 @@ class ThreadRow:
     
     def __init__(self, rowid: int, source: str, title: str, updated_at: int, expanded: bool = False, match_count: int = 0):
         self.rowid = rowid
-        self.short_id = f"t{db.to_base53(rowid)}"
+        self.short_id = f"t{to_base53(rowid)}"
         self.source = source
         self.title = title or "untitled"
         self.updated_at = updated_at
@@ -95,7 +96,7 @@ class MessageRow:
     
     def __init__(self, rowid: int, role: str, snippet: str, created_at: int, thread_rowid: int):
         self.rowid = rowid
-        self.short_id = f"m{db.to_base53(rowid)}"
+        self.short_id = f"m{to_base53(rowid)}"
         self.role = role
         self.snippet = snippet
         self.created_at = created_at
@@ -306,7 +307,7 @@ class ListScreen(Screen):
                 self._show_thread(row.short_id)
         else:
             # Message row - show parent thread
-            thread_id = f"t{db.to_base53(row.thread_rowid)}"
+            thread_id = f"t{to_base53(row.thread_rowid)}"
             self._show_thread(thread_id)
     
     def action_collapse(self):

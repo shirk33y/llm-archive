@@ -16,6 +16,7 @@ from rich.markdown import Markdown
 from rich.text import Text
 
 from llm_archive import db
+from llm_archive.ids import to_base53
 from llm_archive.backup import run_backup
 from llm_archive.config import config_path, format_duration_ms, load_config, read_config_text
 from llm_archive.ingestors import INGESTORS, get_ingestor
@@ -553,7 +554,7 @@ def search(
             if i:
                 formatted_rows.append(None)
             title = row["title"] or "untitled"
-            short_id = f"t{db.to_base53(row['thread_rowid'])}"
+            short_id = f"t{to_base53(row['thread_rowid'])}"
             rel_time = _relative_time(row["last_match_at"])
             formatted_rows.append(
                 {
@@ -602,7 +603,7 @@ def search(
         if key != last:
             if last is not None:
                 formatted_rows.append(None)
-            short_id = f"t{db.to_base53(row['thread_rowid'])}"
+            short_id = f"t{to_base53(row['thread_rowid'])}"
             rel_time = _relative_time(row["created_at"])
             formatted_rows.append(
                 {
@@ -619,7 +620,7 @@ def search(
         if msg_key in seen_msgs:
             continue
         seen_msgs.add(msg_key)
-        short_id = f"m{db.to_base53(row['message_rowid'])}"
+        short_id = f"m{to_base53(row['message_rowid'])}"
         rel_time = _relative_time(row["created_at"])
         snippet = _snippet(best_part.get(msg_key, row["content_clean"]), phrase)
         formatted_rows.append(
