@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import AsyncIterator
 
 from llm_archive.ingestors.base import BaseIngestor
-from llm_archive.ingestors.claudecode import _parse_timestamp
+from llm_archive.ingestors.web import parse_timestamp as _parse_timestamp
 from llm_archive.schema import IngestedMessage, IngestedPart, IngestedThread, ToolCall
 
 DEFAULT_ROOT = Path.home() / ".gemini" / "tmp"

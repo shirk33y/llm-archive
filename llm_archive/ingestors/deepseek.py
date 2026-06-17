@@ -10,6 +10,10 @@ from llm_archive.auth.browser_cookies import (
 )
 from llm_archive.config import VALID_AUTH_MODES, load_config
 from llm_archive.ingestors.base import BaseIngestor
+from llm_archive.ingestors.web import (
+    parse_timestamp,
+    should_skip_conversation,
+)
 from llm_archive.logging import get_logger
 from llm_archive.schema import IngestedMessage, IngestedThread
 
@@ -51,7 +55,6 @@ class DeepseekIngestor(BaseIngestor):
         self._browser = deepseek_config.browser
         self._profile = deepseek_config.profile
         self._browser_dir = browser_dir or deepseek_config.browser_dir or config.browser_dir
-        self._browser_path = browser_path or deepseek_config.browser_path or config.browser_path
 
     async def requires_auth(self) -> bool:
         return True
@@ -83,17 +86,19 @@ class DeepseekIngestor(BaseIngestor):
                 if not chat_id:
                     continue
                 thread_id = f"deepseek:{chat_id}"
-                updated_at = _parse_ts(sess.get("updated_at"))
-                
-                # Smart sync: skip conversations already in the DB
-                if thread_id in existing_thread_ids:
-                    if isinstance(existing_thread_ids, dict):
-                        db_updated_at = existing_thread_ids.get(thread_id)
-                        if db_updated_at is None or updated_at is None or db_updated_at >= updated_at:
-                            continue
-                        logger.info(f"Conversation {chat_id} was updated, re-fetching")
-                    else:
-                        continue
+                updated_at = parse_timestamp(sess.get("updated_at"))
+
+                if should_skip_conversation(thread_id, updated_at, existing_thread_ids):
+                    continue
+
+                if (
+                    isinstance(existing_thread_ids, dict)
+                    and thread_id in existing_thread_ids
+                    and existing_thread_ids[thread_id] is not None
+                    and updated_at is not None
+                    and existing_thread_ids[thread_id] < updated_at
+                ):
+                    logger.info(f"Conversation {chat_id} was updated, re-fetching")
                 
                 if since and updated_at and updated_at < since:
                     continue
@@ -176,7 +181,7 @@ class DeepseekIngestor(BaseIngestor):
                 thread_id=thread_id,
                 role=role,
                 content=content,
-                created_at=_parse_ts(row.get("inserted_at")),
+                created_at=parse_timestamp(row.get("inserted_at")),
                 metadata=_metadata(row),
             ))
 
@@ -188,8 +193,8 @@ class DeepseekIngestor(BaseIngestor):
             id=thread_id,
             source_id=self.source_id,
             title=chat.get("title"),
-            created_at=_parse_ts(chat.get("inserted_at")),
-            updated_at=_parse_ts(chat.get("updated_at")),
+            created_at=parse_timestamp(chat.get("inserted_at")),
+            updated_at=parse_timestamp(chat.get("updated_at")),
             messages=messages,
         )
 
@@ -242,15 +247,6 @@ def _role(role: str | None) -> str | None:
     if role == "ASSISTANT":
         return "assistant"
     return None
-
-
-def _parse_ts(value) -> int | None:
-    if value is None:
-        return None
-    try:
-        return int(float(value) * 1000)
-    except Exception:
-        return None
 
 
 def _metadata(row: dict) -> dict:

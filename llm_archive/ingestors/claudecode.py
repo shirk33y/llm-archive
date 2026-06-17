@@ -4,28 +4,10 @@ from pathlib import Path
 from typing import AsyncIterator
 
 from llm_archive.ingestors.base import BaseIngestor
+from llm_archive.ingestors.web import parse_timestamp as _parse_timestamp
 from llm_archive.schema import IngestedMessage, IngestedPart, IngestedThread, ToolCall
 
 DEFAULT_ROOT = Path.home() / ".claude" / "projects"
-
-
-def _parse_timestamp(ts) -> int | None:
-    if ts is None:
-        return None
-    if isinstance(ts, (int, float)):
-        return int(ts) if ts > 1e12 else int(ts * 1000)
-    if isinstance(ts, str):
-        from datetime import datetime
-        try:
-            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-            return int(dt.timestamp() * 1000)
-        except Exception:
-            try:
-                v = float(ts)
-                return int(v) if v > 1e12 else int(v * 1000)
-            except Exception:
-                return None
-    return None
 
 
 def _flatten_content(content) -> str:
