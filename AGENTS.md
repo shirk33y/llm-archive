@@ -20,7 +20,7 @@ Tag push triggers `.github/workflows/release.yml` (auto GitHub Release).
 
 ```
 brew tap shirk33y/llm-archive https://github.com/shirk33y/llm-archive
-brew trust --formula shirk33y/llm-archive/llm-archive   # Homebrew ≥ 5.2
+brew trust --formula shirk33y/llm-archive/llm-archive
 brew install llm-archive
 ```
 

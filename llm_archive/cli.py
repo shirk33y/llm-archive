@@ -229,6 +229,7 @@ def status(db_path: str | None, verbose: bool, json_output: bool):
 @click.option("--limit", default=200, show_default=True, help="Maximum matches to show")
 @click.option("--provider", "provider_filter", type=click.Choice(list(INGESTORS)), default=None)
 @click.option("--sync", "do_sync", is_flag=True, help="Trigger sync before searching")
+@click.option("-s", "--semantic", is_flag=True, help="Semantic search via embeddings (needs ollama)")
 @click.option("--json", "json_output", is_flag=True, help="Print JSON")
 @click.option(
     "-t", "threads_only", is_flag=True, help="Only show matching threads and match counts"
@@ -239,10 +240,11 @@ def search(
     limit: int,
     provider_filter: str | None,
     do_sync: bool,
+    semantic: bool,
     json_output: bool,
     threads_only: bool,
 ):
-    """Search all indexed messages across providers."""
+    """Search all indexed messages across providers. Use --semantic for vector similarity search."""
     if do_sync:
         config = load_config()
 
@@ -259,6 +261,53 @@ def search(
             )
         )
     con = db.connect(Path(db_path) if db_path else db.DB_PATH)
+    if semantic:
+        from llm_archive import embed as embed_mod
+
+        has_vec = db.init_embeddings(con)
+        if not has_vec:
+            console.print("[red]sqlite-vec not installed.[/red] Run: [bold]pip install sqlite-vec[/bold]")
+            raise SystemExit(1)
+        try:
+            vector = embed_mod.embed_text(phrase)
+        except Exception as exc:
+            console.print(
+                f"[red]Embedding failed[/red] — is ollama running with nomic-embed-text?\n{exc}"
+            )
+            raise SystemExit(1)
+        blob = embed_mod.serialize(vector)
+        rows = db.semantic_search_threads(con, blob, limit=limit, source_id=provider_filter)
+        if json_output:
+            console.print_json(data={"query": phrase, "results": rows, "count": len(rows)})
+            return
+        if not rows:
+            console.print("No matches.")
+            return
+        formatted_rows = []
+        for i, row in enumerate(rows):
+            if i:
+                formatted_rows.append(None)
+            title = row["title"] or "untitled"
+            short_id = f"t{to_base53(row['thread_rowid'])}"
+            rel_time = _relative_time(row["updated_at"])
+            dist = f"{row['distance']:.3f}"
+            formatted_rows.append(
+                {"id": short_id, "time": rel_time, "source": row["source_id"], "text": title, "dist": dist}
+            )
+        max_id_width = max((len(r["id"]) for r in formatted_rows if r is not None), default=0)
+        max_time_width = max((len(r["time"]) for r in formatted_rows if r is not None), default=0)
+        lines: list[Text | str] = []
+        for row in formatted_rows:
+            if row is None:
+                lines.append("")
+            else:
+                line = _search_thread_line(
+                    row["id"], row["time"], row["source"], row["text"], max_id_width, max_time_width
+                )
+                line.append(f"  {row['dist']}", style="dim cyan")
+                lines.append(line)
+        _print_lines(lines)
+        return
     rows = (
         db.search_threads(con, phrase, limit=limit)
         if threads_only

@@ -744,7 +744,7 @@ def semantic_search_threads(
     exists = con.execute("SELECT 1 FROM sqlite_master WHERE name='vec_threads'").fetchone()
     if not exists:
         return []
-    k = limit if limit is not None else 9999
+    k = min(limit if limit is not None else 200, 4096)
     if source_id:
         rows = con.execute(
             """
@@ -753,11 +753,10 @@ def semantic_search_threads(
             FROM vec_threads v
             JOIN thread_embeddings te ON te.rowid = v.rowid
             JOIN threads t ON t.id = te.thread_id
-            WHERE v.embedding MATCH ? AND t.source_id = ?
+            WHERE v.embedding MATCH ? AND k = ? AND t.source_id = ?
             ORDER BY v.distance
-            LIMIT ?
             """,
-            (query_vector, source_id, k),
+            (query_vector, k, source_id),
         ).fetchall()
     else:
         rows = con.execute(
@@ -767,9 +766,8 @@ def semantic_search_threads(
             FROM vec_threads v
             JOIN thread_embeddings te ON te.rowid = v.rowid
             JOIN threads t ON t.id = te.thread_id
-            WHERE v.embedding MATCH ?
+            WHERE v.embedding MATCH ? AND k = ?
             ORDER BY v.distance
-            LIMIT ?
             """,
             (query_vector, k),
         ).fetchall()

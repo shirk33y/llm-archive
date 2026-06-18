@@ -177,6 +177,20 @@ push_formula() {
   run git push origin main
 }
 
+# ── 7. Verify brew install ────────────────────────────────────────────
+verify_brew() {
+  echo ""
+  echo "Verifying brew install..."
+
+  # Re-tap to pick up new formula
+  run brew untap shirk33y/llm-archive --force 2>/dev/null || true
+  run brew tap shirk33y/llm-archive https://github.com/shirk33y/llm-archive
+  run brew trust --formula shirk33y/llm-archive/llm-archive
+  run brew install llm-archive || err "brew install failed"
+  run brew test llm-archive || err "brew test failed"
+  info "brew install verified"
+}
+
 # ── Main ──────────────────────────────────────────────────────────────────
 main() {
   if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
@@ -207,6 +221,7 @@ main() {
   fetch_sha
   update_formula
   push_formula
+  verify_brew
 
   echo ""
   info "Released ${NEXT_TAG} 🚀"
@@ -217,8 +232,9 @@ main() {
   echo "When CI passes, the release workflow will auto-publish:"
   echo "  https://github.com/shirk33y/llm-archive/releases"
   echo ""
-  echo "Next version already has formula committed. To install:"
-  echo "  brew update && brew upgrade llm-archive"
+  echo "Verify the install:"
+  echo "  brew trust --formula shirk33y/llm-archive/llm-archive"
+  echo "  brew upgrade llm-archive"
 }
 
 main "$@"

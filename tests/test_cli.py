@@ -1,4 +1,5 @@
 from __future__ import annotations
+import json
 from pathlib import Path
 
 import pytest
@@ -1248,3 +1249,141 @@ class TestEnable:
         result = CliRunner().invoke(cli.main, ["enable", "codex", "chatgpt"])
         assert result.exit_code == 0
         assert results == ["codex", "chatgpt"]
+
+
+class TestSearchSemantic:
+    def _setup_db(self, tmp_path):
+        con = cli.db.connect(tmp_path / "archive.db")
+        cli.db.save_thread(
+            con,
+            IngestedThread(
+                id="chatgpt:t1",
+                source_id="chatgpt",
+                title="CPU architecture discussion",
+                created_at=1000,
+                updated_at=2000,
+                messages=[
+                    IngestedMessage(
+                        id="chatgpt:m1",
+                        thread_id="chatgpt:t1",
+                        role="user",
+                        content="How does branch prediction work in modern processors",
+                        created_at=1000,
+                    ),
+                    IngestedMessage(
+                        id="chatgpt:m2",
+                        thread_id="chatgpt:t1",
+                        role="assistant",
+                        content="Branch prediction uses historical patterns to guess outcomes",
+                        created_at=1500,
+                    ),
+                ],
+            ),
+        )
+        cli.db.save_thread(
+            con,
+            IngestedThread(
+                id="claude:t2",
+                source_id="claude",
+                title="Cooking pasta recipes",
+                created_at=3000,
+                updated_at=4000,
+                messages=[
+                    IngestedMessage(
+                        id="claude:m3",
+                        thread_id="claude:t2",
+                        role="user",
+                        content="Best way to cook al dente pasta",
+                        created_at=3000,
+                    ),
+                ],
+            ),
+        )
+        return con
+
+    def _insert_embedding(self, con, thread_id, vector, model="nomic-embed-text"):
+        import struct
+
+        dims = len(vector)
+        has_vec = cli.db.init_embeddings(con, dims)
+        assert has_vec, "sqlite-vec not available in test env"
+        blob = struct.pack(f"{dims}f", *vector)
+        cli.db.upsert_thread_embedding(con, thread_id, model, blob, 5000)
+
+    def test_semantic_no_sqlite_vec(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cli.db, "_load_vec", lambda con: False)
+        result = CliRunner().invoke(
+            cli.main, ["search", "-s", "processor", "--db-path", str(tmp_path / "archive.db")]
+        )
+        assert result.exit_code == 1
+        assert "sqlite-vec not installed" in result.output
+
+    def test_semantic_ollama_failure(self, tmp_path, monkeypatch):
+        self._setup_db(tmp_path)
+
+        def boom(*a, **kw):
+            raise RuntimeError("ollama not running")
+
+        monkeypatch.setattr("llm_archive.embed.embed_text", boom)
+        result = CliRunner().invoke(
+            cli.main, ["search", "--semantic", "test query", "--db-path", str(tmp_path / "archive.db")]
+        )
+        assert result.exit_code == 1
+        assert "Embedding failed" in result.output
+
+    def test_semantic_no_embeddings_returns_no_matches(self, tmp_path, monkeypatch):
+        self._setup_db(tmp_path)
+        vector = [0.1] * 768
+        monkeypatch.setattr("llm_archive.embed.embed_text", lambda *a, **kw: vector)
+        monkeypatch.setattr("llm_archive.embed.get_dims", lambda *a, **kw: 768)
+        result = CliRunner().invoke(
+            cli.main, ["search", "-s", "processor", "--db-path", str(tmp_path / "archive.db")]
+        )
+        assert result.exit_code == 0
+        assert "No matches" in result.output
+
+    def test_semantic_returns_results_with_distance(self, tmp_path, monkeypatch):
+        con = self._setup_db(tmp_path)
+        self._insert_embedding(con, "chatgpt:t1", [0.9] * 768)
+        self._insert_embedding(con, "claude:t2", [0.1] * 768)
+
+        query_vector = [0.85] * 768
+        monkeypatch.setattr("llm_archive.embed.embed_text", lambda *a, **kw: query_vector)
+        result = CliRunner().invoke(
+            cli.main, ["search", "-s", "processor", "--db-path", str(tmp_path / "archive.db")]
+        )
+        assert result.exit_code == 0, result.output
+        assert "CPU architecture discussion" in result.output
+        assert "0." in result.output
+
+    def test_semantic_provider_filter(self, tmp_path, monkeypatch):
+        con = self._setup_db(tmp_path)
+        self._insert_embedding(con, "chatgpt:t1", [0.9] * 768)
+        self._insert_embedding(con, "claude:t2", [0.1] * 768)
+
+        query_vector = [0.85] * 768
+        monkeypatch.setattr("llm_archive.embed.embed_text", lambda *a, **kw: query_vector)
+        result = CliRunner().invoke(
+            cli.main,
+            ["search", "-s", "processor", "--provider", "chatgpt", "--db-path", str(tmp_path / "archive.db")],
+        )
+        assert result.exit_code == 0, result.output
+        assert "CPU architecture discussion" in result.output
+        assert "Cooking pasta recipes" not in result.output
+
+    def test_semantic_json_output(self, tmp_path, monkeypatch):
+        con = self._setup_db(tmp_path)
+        self._insert_embedding(con, "chatgpt:t1", [0.9] * 768)
+
+        query_vector = [0.85] * 768
+        monkeypatch.setattr("llm_archive.embed.embed_text", lambda *a, **kw: query_vector)
+        result = CliRunner().invoke(
+            cli.main,
+            ["search", "-s", "processor", "--json", "--db-path", str(tmp_path / "archive.db")],
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["query"] == "processor"
+        assert len(data["results"]) == 1
+        assert data["results"][0]["thread_id"] == "chatgpt:t1"
+        assert "distance" in data["results"][0]

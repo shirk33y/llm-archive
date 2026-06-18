@@ -10,10 +10,9 @@ Related project: [`unbalancedparentheses/llm-archive`](https://github.com/unbala
 
 ```sh
 brew tap shirk33y/llm-archive https://github.com/shirk33y/llm-archive
-brew install llm-archive          # installs Python 3.13 alongside
+brew trust --formula shirk33y/llm-archive/llm-archive
+brew install llm-archive
 ```
-
-> On Homebrew ≥ 5.2, run `brew trust --formula shirk33y/llm-archive/llm-archive` after the first `brew install`.
 
 **pipx** (uses your existing Python ≥ 3.11):
 
@@ -88,7 +87,7 @@ Durations use `ms`, `s`, `m`, `h`, or `d`.
 llm-archive enable <provider> [<provider> ...]
 llm-archive disable <provider> [<provider> ...]
 llm-archive sync [<provider> ...] [--force]
-llm-archive search [--sync] [--provider provider] <phrase>
+llm-archive search [--sync] [-s] [--provider provider] <phrase>
 llm-archive resume <thread-id>
 llm-archive show <thread>
 llm-archive status [--verbose]
@@ -99,6 +98,8 @@ llm-archive mcp
 ```
 
 `service` runs the scheduler in the foreground. Homebrew runs it with `brew services`; no extra service subcommands.
+
+`search -s` uses vector similarity via sqlite-vec + ollama (nomic-embed-text). Run `llm-archive embed` first to generate embeddings.
 
 ## Freshness
 
