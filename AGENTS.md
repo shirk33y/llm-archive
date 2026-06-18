@@ -25,3 +25,13 @@ brew install llm-archive
 ```
 
 pipx: `pipx install git+https://github.com/shirk33y/llm-archive.git` (Python ≥ 3.11)
+
+## Embeddings
+
+- fastembed only (BAAI/bge-small-en-v1.5, 384d), no ollama
+- Auto-embed after sync by default (`[embed] auto = true` in config)
+- `auto_embed()` skips if no embeddings exist yet (user hasn't bootstrapped)
+- sqlite-vec KNN requires `AND k = ?` syntax (not `LIMIT ?`) with JOINs
+- Dimension mismatch: warns user, requires `--force` to rebuild
+- Thread-level embeddings with role prefixes (`title:`, `user:`, `assistant:`)
+- Batch embedding (256 per batch) via fastembed

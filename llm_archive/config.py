@@ -39,10 +39,16 @@ class IngestorConfig:
 
 
 @dataclass(frozen=True)
+class EmbedConfig:
+    auto: bool = True
+
+
+@dataclass(frozen=True)
 class AppConfig:
     browser_path: str | None = None
     browser_dir: str | None = None
     ingestors: dict[str, IngestorConfig] | None = None
+    embed: EmbedConfig | None = None
 
     def ingestor(self, source_id: str) -> IngestorConfig:
         defaults = default_ingestor_config(source_id)
@@ -99,6 +105,7 @@ def load_config(path: Path | None = None) -> AppConfig:
         browser_path=_optional_str(data.get("browser_path"), "browser_path"),
         browser_dir=_optional_str(data.get("browser_dir"), "browser_dir"),
         ingestors=ingestors,
+        embed=_parse_embed(data.get("embed")),
     )
 
 
@@ -119,6 +126,17 @@ def _optional_str(value: Any, name: str) -> str | None:
     if not isinstance(value, str):
         raise ValueError(f"{name} must be a string")
     return value
+
+
+def _parse_embed(value: Any) -> EmbedConfig | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("embed must be a TOML table")
+    auto = value.get("auto")
+    if auto is not None and not isinstance(auto, bool):
+        raise ValueError("embed.auto must be a boolean")
+    return EmbedConfig(auto=auto if auto is not None else True)
 
 
 def _optional_bool(value: Any, name: str) -> bool | None:
@@ -215,10 +233,11 @@ def ensure_config(path: Path | None = None) -> Path:
 
 def _default_raw_config() -> dict[str, Any]:
     return {
+        "embed": {"auto": True},
         "ingestors": {
             source_id: _default_ingestor_table(source_id)
             for source_id in INGESTOR_ORDER
-        }
+        },
     }
 
 
@@ -272,10 +291,16 @@ def _write_raw_config(data: dict[str, Any], path: Path) -> None:
 def _toml(data: dict[str, Any]) -> str:
     lines: list[str] = []
     for key, value in data.items():
-        if key == "ingestors" or isinstance(value, dict):
+        if key in ("ingestors", "embed") or isinstance(value, dict):
             continue
         lines.append(f"{key} = {_toml_value(value)}")
     if lines:
+        lines.append("")
+    embed = data.get("embed")
+    if isinstance(embed, dict):
+        lines.append("[embed]")
+        for key, value in embed.items():
+            lines.append(f"{key} = {_toml_value(value)}")
         lines.append("")
     ingestors = data.get("ingestors")
     if isinstance(ingestors, dict):

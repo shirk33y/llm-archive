@@ -81,3 +81,46 @@ def test_ensure_config_creates_default_disabled_providers(monkeypatch, tmp_path)
     assert config.ingestor("chatgpt").enabled is False
     assert config.ingestor("chatgpt").sync_interval_ms == 1_800_000
     assert config.ingestor("claudecode").watch is True
+
+
+def test_load_config_embed_auto_default(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text("[ingestors.chatgpt]\nmode = \"cookies\"\n")
+
+    config = load_config(path)
+    assert config.embed is None
+
+
+def test_load_config_embed_auto_enabled(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text("[embed]\nauto = true\n\n[ingestors.chatgpt]\nmode = \"cookies\"\n")
+
+    config = load_config(path)
+    assert config.embed is not None
+    assert config.embed.auto is True
+
+
+def test_load_config_embed_auto_disabled(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text("[embed]\nauto = false\n\n[ingestors.chatgpt]\nmode = \"cookies\"\n")
+
+    config = load_config(path)
+    assert config.embed is not None
+    assert config.embed.auto is False
+
+
+def test_ensure_config_includes_embed_section(tmp_path, monkeypatch):
+    browser_root = tmp_path / "firefox"
+    profile = browser_root / "default"
+    profile.mkdir(parents=True)
+    (profile / "cookies.sqlite").touch()
+    monkeypatch.setattr("llm_archive.config._detect_browser_dir", lambda: browser_root)
+    path = tmp_path / "config.toml"
+    ensure_config(path)
+    text = path.read_text()
+    assert "[embed]" in text
+    assert "auto = true" in text
+
+    config = load_config(path)
+    assert config.embed is not None
+    assert config.embed.auto is True

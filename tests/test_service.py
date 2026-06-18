@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from llm_archive import db
-from llm_archive.config import AppConfig, IngestorConfig
+from llm_archive.config import AppConfig, EmbedConfig, IngestorConfig
 from llm_archive.service import (
     _FileChangeHandler,
     _config_hash,
@@ -17,6 +17,14 @@ from llm_archive.service import (
     _run_due_syncs,
 )
 
+
+
+
+@pytest.fixture
+def con(tmp_path):
+    c = db.connect(tmp_path / "archive.db")
+    yield c
+    c.close()
 
 def test_path_mtime_file(tmp_path):
     f = tmp_path / "test.txt"
@@ -123,8 +131,7 @@ def _config(*, enabled=True, watch=False, path=None) -> AppConfig:
 
 
 @pytest.mark.asyncio
-async def test_run_due_syncs_skips_disabled(tmp_path):
-    con = db.connect(tmp_path / "archive.db")
+async def test_run_due_syncs_skips_disabled(tmp_path, con):
     config = _config(enabled=False)
     runner = AsyncMock()
     await _run_due_syncs(con, config, runner, None)
@@ -132,8 +139,7 @@ async def test_run_due_syncs_skips_disabled(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_run_due_syncs_triggers_when_stale(tmp_path):
-    con = db.connect(tmp_path / "archive.db")
+async def test_run_due_syncs_triggers_when_stale(tmp_path, con):
     db.ensure_provider_state(con, "test_provider")
     con.execute(
         "UPDATE provider_state SET stale_since=1 WHERE source_id='test_provider'"
@@ -149,8 +155,7 @@ async def test_run_due_syncs_triggers_when_stale(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_run_due_syncs_triggers_when_next_sync_passed(tmp_path):
-    con = db.connect(tmp_path / "archive.db")
+async def test_run_due_syncs_triggers_when_next_sync_passed(tmp_path, con):
     db.ensure_provider_state(con, "test_provider")
     con.execute(
         "UPDATE provider_state SET next_sync_at=1 WHERE source_id='test_provider'"
@@ -166,8 +171,7 @@ async def test_run_due_syncs_triggers_when_next_sync_passed(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_run_due_syncs_triggers_when_no_state(tmp_path):
-    con = db.connect(tmp_path / "archive.db")
+async def test_run_due_syncs_triggers_when_no_state(tmp_path, con):
     config = _config(enabled=True)
     runner = AsyncMock()
 
@@ -177,8 +181,7 @@ async def test_run_due_syncs_triggers_when_no_state(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_run_due_syncs_sets_next_sync_from_last_success(tmp_path):
-    con = db.connect(tmp_path / "archive.db")
+async def test_run_due_syncs_sets_next_sync_from_last_success(tmp_path, con):
     db.ensure_provider_state(con, "test_provider")
     con.execute(
         "UPDATE provider_state SET last_success_at=5000 WHERE source_id='test_provider'"
@@ -199,8 +202,7 @@ async def test_run_due_syncs_sets_next_sync_from_last_success(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_run_due_backup_skips_when_not_due(tmp_path):
-    con = db.connect(tmp_path / "archive.db")
+async def test_run_due_backup_skips_when_not_due(tmp_path, con):
     future = db.now_ms() + 86400000 * 2
     con.execute(
         "INSERT INTO backup_state(id, next_backup_at) VALUES (1, ?)", (future,)
@@ -213,16 +215,14 @@ async def test_run_due_backup_skips_when_not_due(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_run_due_backup_runs_when_no_state(tmp_path):
-    con = db.connect(tmp_path / "archive.db")
+async def test_run_due_backup_runs_when_no_state(tmp_path, con):
     with patch("llm_archive.service.run_backup") as mock_backup:
         await _run_due_backup(con, None)
         mock_backup.assert_called_once()
 
 
 @pytest.mark.asyncio
-async def test_run_due_backup_runs_when_due(tmp_path):
-    con = db.connect(tmp_path / "archive.db")
+async def test_run_due_backup_runs_when_due(tmp_path, con):
     past = db.now_ms() - 1000
     con.execute(
         "INSERT INTO backup_state(id, next_backup_at) VALUES (1, ?)", (past,)
@@ -235,8 +235,7 @@ async def test_run_due_backup_runs_when_due(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_run_due_backup_records_success(tmp_path):
-    con = db.connect(tmp_path / "archive.db")
+async def test_run_due_backup_records_success(tmp_path, con):
     with patch("llm_archive.service.run_backup"):
         await _run_due_backup(con, None)
 
@@ -246,8 +245,7 @@ async def test_run_due_backup_records_success(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_run_due_backup_records_failure(tmp_path):
-    con = db.connect(tmp_path / "archive.db")
+async def test_run_due_backup_records_failure(tmp_path, con):
     with patch("llm_archive.service.run_backup", side_effect=RuntimeError("backup failed")):
         await _run_due_backup(con, None)
 
@@ -257,8 +255,7 @@ async def test_run_due_backup_records_failure(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_watched_provider_skips_timer_when_not_stale(tmp_path):
-    con = db.connect(tmp_path / "archive.db")
+async def test_watched_provider_skips_timer_when_not_stale(tmp_path, con):
     db.ensure_provider_state(con, "claudecode")
     con.execute(
         "UPDATE provider_state SET last_success_at=5000, next_sync_at=1 WHERE source_id='claudecode'"
@@ -281,8 +278,7 @@ async def test_watched_provider_skips_timer_when_not_stale(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_watched_provider_syncs_when_stale(tmp_path):
-    con = db.connect(tmp_path / "archive.db")
+async def test_watched_provider_syncs_when_stale(tmp_path, con):
     db.ensure_provider_state(con, "claudecode")
     db.mark_provider_stale(con, "claudecode")
     con.execute(
@@ -306,8 +302,7 @@ async def test_watched_provider_syncs_when_stale(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_watched_provider_syncs_initial_run(tmp_path):
-    con = db.connect(tmp_path / "archive.db")
+async def test_watched_provider_syncs_initial_run(tmp_path, con):
 
     config = AppConfig(
         ingestors={
@@ -326,8 +321,7 @@ async def test_watched_provider_syncs_initial_run(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_non_watched_provider_syncs_on_timer(tmp_path):
-    con = db.connect(tmp_path / "archive.db")
+async def test_non_watched_provider_syncs_on_timer(tmp_path, con):
     db.ensure_provider_state(con, "chatgpt")
     con.execute(
         "UPDATE provider_state SET last_success_at=5000, next_sync_at=1 WHERE source_id='chatgpt'"
@@ -351,8 +345,7 @@ async def test_non_watched_provider_syncs_on_timer(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_watched_provider_skips_after_successful_sync_not_stale(tmp_path):
-    con = db.connect(tmp_path / "archive.db")
+async def test_watched_provider_skips_after_successful_sync_not_stale(tmp_path, con):
     db.ensure_provider_state(con, "claudecode")
     recent = db.now_ms()
     con.execute(
@@ -374,3 +367,12 @@ async def test_watched_provider_skips_after_successful_sync_not_stale(tmp_path):
     with patch("llm_archive.service.run_sync_job", new_callable=AsyncMock) as mock_job:
         await _run_due_syncs(con, config, AsyncMock(), None)
         mock_job.assert_not_awaited()
+
+def test_auto_embed_config_default_is_enabled():
+    cfg = EmbedConfig()
+    assert cfg.auto is True
+
+
+def test_auto_embed_config_disabled():
+    cfg = EmbedConfig(auto=False)
+    assert cfg.auto is False

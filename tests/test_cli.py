@@ -1311,7 +1311,7 @@ class TestSearchSemantic:
         import struct
 
         dims = len(vector)
-        has_vec = cli.db.init_embeddings(con, dims)
+        has_vec, _ = cli.db.init_embeddings(con, dims)
         assert has_vec, "sqlite-vec not available in test env"
         blob = struct.pack(f"{dims}f", *vector)
         cli.db.upsert_thread_embedding(con, thread_id, model, blob, 5000)
@@ -1393,3 +1393,175 @@ class TestSearchSemantic:
         assert len(data["results"]) == 1
         assert data["results"][0]["thread_id"] == "chatgpt:t1"
         assert "distance" in data["results"][0]
+
+
+class TestEmbed:
+    def _setup_db(self, tmp_path):
+        con = cli.db.connect(tmp_path / "archive.db")
+        cli.db.save_thread(
+            con,
+            IngestedThread(
+                id="test:t1",
+                source_id="test",
+                title="Python concurrency patterns",
+                created_at=1000,
+                updated_at=2000,
+                messages=[
+                    IngestedMessage(
+                        id="test:m1",
+                        thread_id="test:t1",
+                        role="user",
+                        content="How do async generators work in Python",
+                        created_at=1000,
+                    ),
+                ],
+            ),
+        )
+        return con
+
+    def test_embed_no_sqlite_vec(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cli.db, "_load_vec", lambda con: False)
+        result = CliRunner().invoke(
+            cli.main, ["embed", "--db-path", str(tmp_path / "archive.db")]
+        )
+        assert result.exit_code == 0
+        assert "sqlite-vec not installed" in result.output
+
+    def test_embed_already_up_to_date(self, tmp_path, monkeypatch):
+        con = self._setup_db(tmp_path)
+        has_vec, _ = cli.db.init_embeddings(con, 384)
+        if not has_vec:
+            pytest.skip("sqlite-vec not available")
+        monkeypatch.setattr("llm_archive.embed.embed_batch", lambda *a, **kw: [])
+
+        cli.db.upsert_thread_embedding(
+            con, "test:t1", "BAAI/bge-small-en-v1.5", b"\x00" * 1536, 5000
+        )
+        con.close()
+
+        result = CliRunner().invoke(
+            cli.main, ["embed", "--db-path", str(tmp_path / "archive.db")]
+        )
+        assert result.exit_code == 0
+        assert "already embedded" in result.output.lower() or "already up to date" in result.output.lower()
+
+    def test_embed_batch_success(self, tmp_path, monkeypatch):
+        self._setup_db(tmp_path)
+        monkeypatch.setattr(
+            "llm_archive.embed.embed_batch",
+            lambda texts, model=None: [[0.1] * 384 for _ in texts],
+        )
+        result = CliRunner().invoke(
+            cli.main, ["embed", "--db-path", str(tmp_path / "archive.db")]
+        )
+        assert result.exit_code == 0
+        assert "1 embedded" in result.output
+
+    def test_embed_force_re_embeds(self, tmp_path, monkeypatch):
+        con = self._setup_db(tmp_path)
+        has_vec, _ = cli.db.init_embeddings(con, 384)
+        if not has_vec:
+            pytest.skip("sqlite-vec not available")
+        monkeypatch.setattr(
+            "llm_archive.embed.embed_batch",
+            lambda texts, model=None: [[0.1] * 384 for _ in texts],
+        )
+        cli.db.upsert_thread_embedding(
+            con, "test:t1", "BAAI/bge-small-en-v1.5", b"\x00" * 1536, 5000
+        )
+        con.close()
+
+        result = CliRunner().invoke(
+            cli.main, ["embed", "--force", "--db-path", str(tmp_path / "archive.db")]
+        )
+        assert result.exit_code == 0
+        assert "1 embedded" in result.output
+
+    def test_embed_dimension_mismatch_warns_without_force(self, tmp_path, monkeypatch):
+        con = self._setup_db(tmp_path)
+        has_vec, _ = cli.db.init_embeddings(con, 384)
+        if not has_vec:
+            pytest.skip("sqlite-vec not available")
+        con.close()
+
+        monkeypatch.setattr(cli.db, "init_embeddings", lambda c, dims=384: (True, True))
+
+        result = CliRunner().invoke(
+            cli.main, ["embed", "--db-path", str(tmp_path / "archive.db")]
+        )
+        assert result.exit_code == 0
+        assert "Dimension mismatch" in result.output
+        assert "--force" in result.output
+
+    def test_embed_dimension_mismatch_rebuilds_with_force(self, tmp_path, monkeypatch):
+        con = self._setup_db(tmp_path)
+        has_vec, _ = cli.db.init_embeddings(con, 384)
+        if not has_vec:
+            pytest.skip("sqlite-vec not available")
+        monkeypatch.setattr(
+            "llm_archive.embed.embed_batch",
+            lambda texts, model=None: [[0.1] * 384 for _ in texts],
+        )
+        cli.db.upsert_thread_embedding(
+            con, "test:t1", "BAAI/bge-small-en-v1.5", b"\x00" * 1536, 5000
+        )
+        con.close()
+
+        call_count = 0
+        original_init = cli.db.init_embeddings
+
+        def fake_init(c, dims=384):
+            nonlocal call_count
+            call_count += 1
+            result = original_init(c, dims)
+            if call_count == 1:
+                return (result[0], True)
+            return result
+
+        monkeypatch.setattr(cli.db, "init_embeddings", fake_init)
+
+        result = CliRunner().invoke(
+            cli.main, ["embed", "--force", "--db-path", str(tmp_path / "archive.db")]
+        )
+        assert result.exit_code == 0
+        assert "embedded" in result.output
+
+    def test_embed_skips_empty_threads(self, tmp_path, monkeypatch):
+        con = cli.db.connect(tmp_path / "archive.db")
+        cli.db.save_thread(
+            con,
+            IngestedThread(
+                id="test:empty",
+                source_id="test",
+                title="",
+                created_at=1000,
+                updated_at=2000,
+                messages=[],
+            ),
+        )
+        con.close()
+
+        monkeypatch.setattr(
+            "llm_archive.embed.embed_batch",
+            lambda texts, model=None: [[0.1] * 384 for _ in texts],
+        )
+
+        result = CliRunner().invoke(
+            cli.main, ["embed", "--db-path", str(tmp_path / "archive.db")]
+        )
+        assert result.exit_code == 0
+        assert "skipped" in result.output
+
+    def test_embed_batch_error_handling(self, tmp_path, monkeypatch):
+        self._setup_db(tmp_path)
+
+        def bad_batch(texts, model=None):
+            raise RuntimeError("embedding failed")
+
+        monkeypatch.setattr("llm_archive.embed.embed_batch", bad_batch)
+
+        result = CliRunner().invoke(
+            cli.main, ["embed", "--db-path", str(tmp_path / "archive.db")]
+        )
+        assert result.exit_code == 0
+        assert "error" in result.output.lower()

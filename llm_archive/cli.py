@@ -265,7 +265,7 @@ def search(
         from llm_archive import embed as embed_mod
 
         model = embed_mod.DEFAULT_MODEL
-        has_vec = db.init_embeddings(con, embed_mod.get_dims(model))
+        has_vec, _ = db.init_embeddings(con, embed_mod.get_dims(model))
         if not has_vec:
             console.print("[red]sqlite-vec not installed.[/red] Run: [bold]pip install sqlite-vec[/bold]")
             raise SystemExit(1)
@@ -824,12 +824,26 @@ def embed(
     model = embed_mod.DEFAULT_MODEL
     dims = embed_mod.get_dims(model)
     con = db.connect(Path(db_path) if db_path else db.DB_PATH)
-    has_vec = db.init_embeddings(con, dims)
+    has_vec, dim_mismatch = db.init_embeddings(con, dims)
     if not has_vec:
         console.print(
             "[red]sqlite-vec not installed.[/red] Run: [bold]pip install sqlite-vec[/bold]"
         )
         return
+
+    if dim_mismatch and not force:
+        existing_count = con.execute("SELECT COUNT(*) FROM thread_embeddings").fetchone()[0]
+        console.print(
+            f"[yellow]Dimension mismatch:[/yellow] existing embeddings use different dimensions.\n"
+            f"  {existing_count} embeddings will be lost if you rebuild.\n"
+            f"  Run [bold]llm-archive embed --force[/bold] to rebuild with {dims}d vectors."
+        )
+        return
+
+    if dim_mismatch and force:
+        con.execute("DELETE FROM thread_embeddings")
+        con.execute("DROP TABLE IF EXISTS vec_threads")
+        db.init_embeddings(con, dims)
 
     thread_ids = embed_mod.threads_needing_embedding(con, source, force)
     if not thread_ids:
@@ -837,9 +851,12 @@ def embed(
         return
 
     console.print(f"Embedding [bold]{len(thread_ids)}[/bold] threads using [cyan]{model}[/cyan]...")
+    now = int(_time.time() * 1000)
+    BATCH_SIZE = 256
 
     errors = 0
     skipped = 0
+    done = 0
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -849,22 +866,38 @@ def embed(
         transient=True,
     ) as progress:
         task = progress.add_task("Embedding", total=len(thread_ids))
-        for thread_id in thread_ids:
-            try:
-                text = embed_mod.extract_thread_text(con, thread_id)
-                if not text.strip():
-                    skipped += 1
-                    progress.advance(task)
-                    continue
-                vector = embed_mod.embed_text(text, model)
-                blob = embed_mod.serialize(vector)
-                db.upsert_thread_embedding(con, thread_id, model, blob, int(_time.time() * 1000))
-            except Exception as e:
-                errors += 1
-                console.print(f"  [red]Error[/red] {thread_id}: {e}")
-            progress.advance(task)
+        for i in range(0, len(thread_ids), BATCH_SIZE):
+            batch_ids = thread_ids[i : i + BATCH_SIZE]
+            texts = []
+            valid_ids = []
+            for tid in batch_ids:
+                try:
+                    text = embed_mod.extract_thread_text(con, tid)
+                    if text.strip():
+                        texts.append(text)
+                        valid_ids.append(tid)
+                    else:
+                        skipped += 1
+                except Exception as e:
+                    errors += 1
+                    console.print(f"  [red]Error[/red] {tid}: {e}")
 
-    done = len(thread_ids) - errors - skipped
+            if not texts:
+                progress.advance(task, len(batch_ids))
+                continue
+
+            try:
+                vectors = embed_mod.embed_batch(texts, model)
+                for tid, vector in zip(valid_ids, vectors):
+                    blob = embed_mod.serialize(vector)
+                    db.upsert_thread_embedding(con, tid, model, blob, now)
+                done += len(valid_ids)
+            except Exception as e:
+                errors += len(valid_ids)
+                console.print(f"  [red]Batch error:[/red] {e}")
+
+            progress.advance(task, len(batch_ids))
+
     parts = [f"[green]{done}[/green] embedded"]
     if skipped:
         parts.append(f"[dim]{skipped}[/dim] skipped (empty)")

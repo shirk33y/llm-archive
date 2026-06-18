@@ -2,14 +2,26 @@ from __future__ import annotations
 
 import struct
 
+import pytest
+
 from llm_archive import db
 from llm_archive.embed import (
     DEFAULT_MODEL,
+    auto_embed,
+    embed_batch,
     extract_thread_text,
     get_dims,
     serialize,
     threads_needing_embedding,
 )
+from llm_archive.schema import IngestedMessage, IngestedThread
+
+
+@pytest.fixture
+def con(tmp_path):
+    c = db.connect(tmp_path / "test.db")
+    yield c
+    c.close()
 
 
 def test_get_dims_default():
@@ -52,8 +64,7 @@ def test_embed_text_caches_model():
         _cache.clear()
 
 
-def test_extract_thread_text_basic(tmp_path):
-    con = db.connect(tmp_path / "test.db")
+def test_extract_thread_text_basic(con):
     db.init_embeddings(con)
 
     con.execute("INSERT INTO sources(id) VALUES ('test')")
@@ -72,12 +83,11 @@ def test_extract_thread_text_basic(tmp_path):
     con.commit()
 
     text = extract_thread_text(con, "test:t1")
-    assert "My Title" in text
-    assert "hello there this is long enough" in text
+    assert "title: My Title" in text
+    assert "user: hello there this is long enough" in text
 
 
-def test_extract_thread_text_skips_short_parts(tmp_path):
-    con = db.connect(tmp_path / "test.db")
+def test_extract_thread_text_skips_short_parts(con):
     db.init_embeddings(con)
 
     con.execute("INSERT INTO sources(id) VALUES ('test')")
@@ -96,11 +106,10 @@ def test_extract_thread_text_skips_short_parts(tmp_path):
     con.commit()
 
     text = extract_thread_text(con, "test:t1")
-    assert text == "Title"
+    assert text == "title: Title"
 
 
-def test_extract_thread_text_filters_non_text_parts(tmp_path):
-    con = db.connect(tmp_path / "test.db")
+def test_extract_thread_text_filters_non_text_parts(con):
     db.init_embeddings(con)
 
     con.execute("INSERT INTO sources(id) VALUES ('test')")
@@ -119,11 +128,10 @@ def test_extract_thread_text_filters_non_text_parts(tmp_path):
     con.commit()
 
     text = extract_thread_text(con, "test:t1")
-    assert text == "Title"
+    assert text == "title: Title"
 
 
-def test_extract_thread_text_filters_non_user_assistant(tmp_path):
-    con = db.connect(tmp_path / "test.db")
+def test_extract_thread_text_filters_non_user_assistant(con):
     db.init_embeddings(con)
 
     con.execute("INSERT INTO sources(id) VALUES ('test')")
@@ -142,19 +150,17 @@ def test_extract_thread_text_filters_non_user_assistant(tmp_path):
     con.commit()
 
     text = extract_thread_text(con, "test:t1")
-    assert text == "Title"
+    assert text == "title: Title"
 
 
-def test_extract_thread_text_missing_thread(tmp_path):
-    con = db.connect(tmp_path / "test.db")
+def test_extract_thread_text_missing_thread(con):
     db.init_embeddings(con)
 
     text = extract_thread_text(con, "nonexistent")
     assert text == ""
 
 
-def test_extract_thread_text_max_chars(tmp_path):
-    con = db.connect(tmp_path / "test.db")
+def test_extract_thread_text_max_chars(con):
     db.init_embeddings(con)
 
     con.execute("INSERT INTO sources(id) VALUES ('test')")
@@ -176,8 +182,7 @@ def test_extract_thread_text_max_chars(tmp_path):
     assert len(text) <= 50
 
 
-def test_threads_needing_embedding_all_unembedded(tmp_path):
-    con = db.connect(tmp_path / "test.db")
+def test_threads_needing_embedding_all_unembedded(con):
     db.init_embeddings(con)
 
     con.execute("INSERT INTO sources(id) VALUES ('test')")
@@ -193,8 +198,7 @@ def test_threads_needing_embedding_all_unembedded(tmp_path):
     assert sorted(result) == ["test:t1", "test:t2"]
 
 
-def test_threads_needing_embedding_skips_embedded(tmp_path):
-    con = db.connect(tmp_path / "test.db")
+def test_threads_needing_embedding_skips_embedded(con):
     db.init_embeddings(con)
 
     con.execute("INSERT INTO sources(id) VALUES ('test')")
@@ -213,8 +217,7 @@ def test_threads_needing_embedding_skips_embedded(tmp_path):
     assert result == ["test:t2"]
 
 
-def test_threads_needing_embedding_filter_source(tmp_path):
-    con = db.connect(tmp_path / "test.db")
+def test_threads_needing_embedding_filter_source(con):
     db.init_embeddings(con)
 
     con.execute("INSERT INTO sources(id) VALUES ('a')")
@@ -231,8 +234,7 @@ def test_threads_needing_embedding_filter_source(tmp_path):
     assert result == ["a:t1"]
 
 
-def test_threads_needing_embedding_force(tmp_path):
-    con = db.connect(tmp_path / "test.db")
+def test_threads_needing_embedding_force(con):
     db.init_embeddings(con)
 
     con.execute("INSERT INTO sources(id) VALUES ('test')")
@@ -248,8 +250,7 @@ def test_threads_needing_embedding_force(tmp_path):
     assert result == ["test:t1"]
 
 
-def test_threads_needing_embedding_force_with_source(tmp_path):
-    con = db.connect(tmp_path / "test.db")
+def test_threads_needing_embedding_force_with_source(con):
     db.init_embeddings(con)
 
     con.execute("INSERT INTO sources(id) VALUES ('a')")
@@ -264,3 +265,119 @@ def test_threads_needing_embedding_force_with_source(tmp_path):
 
     result = threads_needing_embedding(con, source_id="a", force=True)
     assert result == ["a:t1"]
+
+
+def test_embed_batch_empty():
+    assert embed_batch([]) == []
+
+
+def test_embed_batch_returns_vectors():
+    from llm_archive.embed import _cache
+
+    _cache.clear()
+    try:
+        results = embed_batch(["hello world", "foo bar"])
+        assert len(results) == 2
+        assert len(results[0]) == 384
+        assert len(results[1]) == 384
+    finally:
+        _cache.clear()
+
+
+def test_extract_thread_text_includes_role_prefix(con):
+    db.init_embeddings(con)
+
+    con.execute("INSERT INTO sources(id) VALUES ('test')")
+    con.execute(
+        "INSERT INTO threads(id, source_id, title, created_at, updated_at) "
+        "VALUES ('test:t1', 'test', 'React Hooks Discussion', 1000, 1000)"
+    )
+    con.execute(
+        "INSERT INTO messages(id, thread_id, role, content, created_at) "
+        "VALUES ('test:m1', 'test:t1', 'user', 'how do I use useEffect', 1000)"
+    )
+    con.execute(
+        "INSERT INTO message_parts(message_id, ord, kind, text, visible, searchable) "
+        "VALUES ('test:m1', 0, 'text', 'how do I use useEffect for data fetching', 1, 1)"
+    )
+    con.execute(
+        "INSERT INTO messages(id, thread_id, role, content, created_at) "
+        "VALUES ('test:m2', 'test:t1', 'assistant', 'useEffect runs after render', 2000)"
+    )
+    con.execute(
+        "INSERT INTO message_parts(message_id, ord, kind, text, visible, searchable) "
+        "VALUES ('test:m2', 0, 'text', 'useEffect runs after render and can fetch data on mount', 1, 1)"
+    )
+    con.commit()
+
+    text = extract_thread_text(con, "test:t1")
+    assert text.startswith("title: React Hooks Discussion")
+    assert "user: how do I use useEffect" in text
+    assert "assistant: useEffect runs after render" in text
+
+
+def test_auto_embed_no_threads(con):
+    db.init_embeddings(con)
+    result = auto_embed(con)
+    assert result == 0
+
+
+def test_auto_embed_skips_if_no_existing_embeddings(con, monkeypatch):
+    db.init_embeddings(con)
+    db.save_thread(
+        con,
+        IngestedThread(
+            id="test:t1",
+            source_id="test",
+            title="Hello world",
+            created_at=1000,
+            updated_at=2000,
+            messages=[
+                IngestedMessage(
+                    id="test:m1",
+                    thread_id="test:t1",
+                    role="user",
+                    content="how do I use useEffect for data fetching",
+                    created_at=1000,
+                ),
+            ],
+        ),
+    )
+    con.commit()
+    result = auto_embed(con)
+    assert result == 0
+
+
+def test_auto_embed_embeds_new_threads(con, monkeypatch):
+    has_vec, _ = db.init_embeddings(con, 384)
+    if not has_vec:
+        pytest.skip("sqlite-vec not available")
+    db.save_thread(
+        con,
+        IngestedThread(
+            id="test:t1",
+            source_id="test",
+            title="Hello world",
+            created_at=1000,
+            updated_at=2000,
+            messages=[
+                IngestedMessage(
+                    id="test:m1",
+                    thread_id="test:t1",
+                    role="user",
+                    content="how do I use useEffect for data fetching",
+                    created_at=1000,
+                ),
+            ],
+        ),
+    )
+    con.commit()
+    monkeypatch.setattr("llm_archive.db.has_embeddings", lambda c: True)
+    monkeypatch.setattr(
+        "llm_archive.embed.embed_batch",
+        lambda texts, model=None: [[0.1] * 384 for _ in texts],
+    )
+    result = auto_embed(con)
+    assert result == 1
+    row = con.execute("SELECT COUNT(*) FROM thread_embeddings").fetchone()
+    assert row[0] == 1

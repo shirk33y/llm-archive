@@ -61,9 +61,12 @@ llm-archive disable deepseek cursor
 
 `enable` detects supported browser profiles and asks which one to use when more than one works. File providers use their default data path automatically — pass `--path` to override. Supported browser families include Firefox/Waterfox/LibreWolf and Chromium-family browsers such as Chrome, Chromium, Brave, Edge, and Opera.
 
-Config lives in the standard user config directory and is created automatically on first run with safe disabled defaults.
+Config lives in the standard user config directory and is created automatically on first run with safe disabled defaults. The `[embed]` section controls auto-embedding after sync (on by default).
 
 ```toml
+[embed]
+auto = true
+
 [ingestors.chatgpt]
 enabled = true
 mode = "cookies"
@@ -87,9 +90,11 @@ Durations use `ms`, `s`, `m`, `h`, or `d`.
 llm-archive enable <provider> [<provider> ...]
 llm-archive disable <provider> [<provider> ...]
 llm-archive sync [<provider> ...] [--force]
+llm-archive embed [--force] [<provider>]
 llm-archive search [--sync] [-s] [--provider provider] <phrase>
 llm-archive resume <thread-id>
 llm-archive show <thread>
+llm-archive tui
 llm-archive status [--verbose]
 llm-archive logs [provider]
 llm-archive backup [--verify]
@@ -99,7 +104,16 @@ llm-archive mcp
 
 `service` runs the scheduler in the foreground. Homebrew runs it with `brew services`; no extra service subcommands.
 
-`search -s` uses vector similarity via sqlite-vec + ollama (nomic-embed-text). Run `llm-archive embed` first to generate embeddings.
+## Semantic search
+
+`search -s` uses vector similarity (fastembed BAAI/bge-small-en-v1.5, 384d) via sqlite-vec. Embeddings are generated **automatically after every sync** by default — no manual step needed. You can also run:
+
+```sh
+llm-archive embed            # embed all unembedded threads
+llm-archive embed --force    # re-embed everything
+```
+
+To disable auto-embedding, set `auto = false` in the `[embed]` config section. If the embedding model dimensions change, `llm-archive embed` will warn you and require `--force` to rebuild.
 
 ## Freshness
 

@@ -57,6 +57,17 @@ async def _sync_command(
             wait=not no_wait,
         )
         results.append(result)
+
+    if config.embed is None or config.embed.auto:
+        from llm_archive.embed import auto_embed
+
+        con = db.connect(Path(db_path) if db_path else db.DB_PATH)
+        try:
+            count = auto_embed(con)
+            if count and not json_output:
+                console.print(f"  [green]{count}[/green] threads auto-embedded")
+        finally:
+            con.close()
         if result.status == "failed":
             console.print(f"  [red]{src}:[/red] {result.reason}")
         elif result.status == "running":

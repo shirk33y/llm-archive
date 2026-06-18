@@ -7,6 +7,7 @@ from typing import Optional
 from mcp.server import FastMCP
 from llm_archive import db
 from llm_archive.config import load_config
+from llm_archive.embed import auto_embed
 from llm_archive.ingestors import INGESTORS
 from llm_archive.jobs import ensure_fresh
 
@@ -107,7 +108,7 @@ def semantic_search(
     con = db.connect()
     try:
         model = embed_mod.DEFAULT_MODEL
-        has_vec = db.init_embeddings(con, embed_mod.get_dims(model))
+        has_vec, _ = db.init_embeddings(con, embed_mod.get_dims(model))
         if not has_vec:
             return {
                 "error": "sqlite-vec not installed. Run: pip install sqlite-vec",
@@ -203,6 +204,14 @@ def _ensure_fresh(source_ids: list[str] | None = None) -> None:
             runner=runner,
         )
     )
+
+    config = load_config()
+    if config.embed is None or config.embed.auto:
+        con = db.connect()
+        try:
+            auto_embed(con)
+        finally:
+            con.close()
 
 
 if __name__ == "__main__":

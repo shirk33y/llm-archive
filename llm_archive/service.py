@@ -14,6 +14,7 @@ from watchdog.observers import Observer
 from llm_archive import db
 from llm_archive.backup import run_backup
 from llm_archive.config import AppConfig, config_path, load_config, read_config_text
+from llm_archive.embed import auto_embed
 from llm_archive.jobs import run_sync_job
 from llm_archive.providers import provider_kind, provider_paths
 
@@ -117,6 +118,8 @@ async def run_service(
                                 break
                         db.mark_provider_stale(con, source_id)
                 await _run_due_syncs(con, config, runner, db_path)
+                if config.embed is None or config.embed.auto:
+                    auto_embed(con)
                 await _run_due_backup(con, db_path)
             except Exception:
                 logger.exception("service loop error")
