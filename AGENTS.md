@@ -20,26 +20,24 @@ Examples:
 
 ## Release process
 
-1. Bump version in `pyproject.toml` (`[project] version`)
-2. Commit: `git add pyproject.toml && git commit -m "vX.Y.Z"`
-3. Tag and push: `git tag vX.Y.Z && git push origin main --tags`
-4. Compute new archive SHA:
+Run `scripts/release.sh`:
 
-   ```
-   curl -sL "https://github.com/shirk33y/llm-archive/archive/refs/tags/vX.Y.Z.tar.gz" | sha256sum
-   ```
+  ```
+  scripts/release.sh
+  ```
 
-5. Update `Formula/llm-archive.rb` — bump `version` and `sha256`
-6. Copy formula to the tap repo:
+The script:
 
-   ```
-   cp Formula/llm-archive.rb /home/linuxbrew/.linuxbrew/Homebrew/Library/Taps/shirk33y/homebrew-tap/Formula/llm-archive.rb
-   ```
+- Runs pre-flight checks: ruff, pytest, service smoke
+- Auto-detects version from conventional commits since last tag (`feat` → minor, `fix` → patch, breaking → major)
+- Bumps `pyproject.toml` and `Formula/llm-archive.rb`
+- Commits as `chore(main): release vX.Y.Z` and tags
+- Pushes to GitHub (triggers CI on the tag commit)
+- Computes archive SHA and updates brew formula
+- Copies formula to homebrew-tap and pushes
 
-7. Commit and push from the tap repo:
+After the tag is pushed, `.github/workflows/release.yml` auto-creates a GitHub Release with notes generated from conventional commits.
 
-   ```
-   git -C /home/linuxbrew/.linuxbrew/Homebrew/Library/Taps/shirk33y/homebrew-tap add -A
-   git -C /home/linuxbrew/.linuxbrew/Homebrew/Library/Taps/shirk33y/homebrew-tap commit -m "llm-archive vX.Y.Z"
-   git -C /home/linuxbrew/.linuxbrew/Homebrew/Library/Taps/shirk33y/homebrew-tap push
-   ```
+CI workflows run on the tag commit. If anything fails, delete the tag (`git tag -d vX.Y.Z && git push origin :vX.Y.Z`), fix, and rerun.
+
+Overrides: `TAP_DIR=... DRY_RUN=1 scripts/release.sh`
