@@ -695,12 +695,19 @@ CREATE TABLE IF NOT EXISTS thread_embeddings (
 """
 
 
-def init_embeddings(con: sqlite3.Connection, dims: int = 768) -> bool:
+def init_embeddings(con: sqlite3.Connection, dims: int = 384) -> bool:
     """Initialize embedding tables. Returns True if sqlite-vec is available."""
     has_vec = _load_vec(con)
     con.execute(_EMBEDDINGS_DDL)
     con.commit()
     if has_vec:
+        existing = con.execute(
+            "SELECT sql FROM sqlite_master WHERE name='vec_threads'"
+        ).fetchone()
+        if existing and f"FLOAT[{dims}]" not in existing[0]:
+            con.execute("DELETE FROM thread_embeddings")
+            con.execute("DROP TABLE IF EXISTS vec_threads")
+            con.commit()
         try:
             con.execute(
                 f"CREATE VIRTUAL TABLE IF NOT EXISTS vec_threads USING vec0(embedding FLOAT[{dims}])"

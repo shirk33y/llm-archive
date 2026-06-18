@@ -20,6 +20,7 @@ dependencies = [
     "sqlite-vec>=0.1.9",
     "yt-dlp>=2025.12.8",
     "watchdog>=6.0.0",
+    "fastembed>=0.8.0",
 ]
 
 [project.optional-dependencies]
@@ -51,3 +52,6 @@ target-version = "py311"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+filterwarnings = [
+    "ignore::ResourceWarning",
+]

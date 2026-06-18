@@ -91,7 +91,7 @@ def semantic_search(
 ) -> dict:
     """Search conversations by semantic meaning — finds synonyms, related topics, paraphrases.
     Unlike keyword search, finds 'CPU' when searching 'processor', 'login' when searching 'auth'.
-    Requires embeddings: run 'llm-archive embed' first (needs ollama + nomic-embed-text).
+    Requires embeddings: run 'llm-archive embed' first.
 
     Args:
         query: Natural language search query
@@ -106,7 +106,8 @@ def semantic_search(
     _ensure_fresh([source_id] if source_id else None)
     con = db.connect()
     try:
-        has_vec = db.init_embeddings(con)
+        model = embed_mod.DEFAULT_MODEL
+        has_vec = db.init_embeddings(con, embed_mod.get_dims(model))
         if not has_vec:
             return {
                 "error": "sqlite-vec not installed. Run: pip install sqlite-vec",
@@ -114,10 +115,10 @@ def semantic_search(
                 "count": 0,
             }
         try:
-            vector = embed_mod.embed_text(query)
+            vector = embed_mod.embed_text(query, model)
         except Exception as e:
             return {
-                "error": f"Embedding failed — is ollama running with nomic-embed-text? {e}",
+                "error": f"Embedding failed: {e}",
                 "results": [],
                 "count": 0,
             }

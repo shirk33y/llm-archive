@@ -1230,7 +1230,10 @@ class TestEnable:
             return {"enabled": True, "path": f"/fake/{source}"}
 
         monkeypatch.setattr(cli, "enable_provider", fake_enable)
-        monkeypatch.setattr(cli, "_run", lambda *a, **kw: None)
+        def fake_run(coro, *a, **kw):
+            coro.close()
+
+        monkeypatch.setattr(cli, "_run", fake_run)
 
         result = CliRunner().invoke(cli.main, ["enable", "codex"])
         assert result.exit_code == 0
@@ -1243,8 +1246,11 @@ class TestEnable:
             results.append(source)
             return {"enabled": True, "path": f"/fake/{source}"}
 
+        def fake_run(coro, *a, **kw):
+            coro.close()
+
         monkeypatch.setattr(cli, "enable_provider", fake_enable)
-        monkeypatch.setattr(cli, "_run", lambda *a, **kw: None)
+        monkeypatch.setattr(cli, "_run", fake_run)
 
         result = CliRunner().invoke(cli.main, ["enable", "codex", "chatgpt"])
         assert result.exit_code == 0
@@ -1301,7 +1307,7 @@ class TestSearchSemantic:
         )
         return con
 
-    def _insert_embedding(self, con, thread_id, vector, model="nomic-embed-text"):
+    def _insert_embedding(self, con, thread_id, vector, model="BAAI/bge-small-en-v1.5"):
         import struct
 
         dims = len(vector)
@@ -1318,11 +1324,11 @@ class TestSearchSemantic:
         assert result.exit_code == 1
         assert "sqlite-vec not installed" in result.output
 
-    def test_semantic_ollama_failure(self, tmp_path, monkeypatch):
+    def test_semantic_embedding_failure(self, tmp_path, monkeypatch):
         self._setup_db(tmp_path)
 
         def boom(*a, **kw):
-            raise RuntimeError("ollama not running")
+            raise RuntimeError("fastembed not available")
 
         monkeypatch.setattr("llm_archive.embed.embed_text", boom)
         result = CliRunner().invoke(
@@ -1333,9 +1339,9 @@ class TestSearchSemantic:
 
     def test_semantic_no_embeddings_returns_no_matches(self, tmp_path, monkeypatch):
         self._setup_db(tmp_path)
-        vector = [0.1] * 768
+        vector = [0.1] * 384
         monkeypatch.setattr("llm_archive.embed.embed_text", lambda *a, **kw: vector)
-        monkeypatch.setattr("llm_archive.embed.get_dims", lambda *a, **kw: 768)
+        monkeypatch.setattr("llm_archive.embed.get_dims", lambda *a, **kw: 384)
         result = CliRunner().invoke(
             cli.main, ["search", "-s", "processor", "--db-path", str(tmp_path / "archive.db")]
         )
@@ -1344,11 +1350,11 @@ class TestSearchSemantic:
 
     def test_semantic_returns_results_with_distance(self, tmp_path, monkeypatch):
         con = self._setup_db(tmp_path)
-        self._insert_embedding(con, "chatgpt:t1", [0.9] * 768)
-        self._insert_embedding(con, "claude:t2", [0.1] * 768)
+        self._insert_embedding(con, "chatgpt:t1", [0.9] * 384)
+        self._insert_embedding(con, "claude:t2", [0.1] * 384)
 
-        query_vector = [0.85] * 768
-        monkeypatch.setattr("llm_archive.embed.embed_text", lambda *a, **kw: query_vector)
+        query_vector = [0.85] * 384
+        monkeypatch.setattr("llm_archive.embed.embed_text", lambda text, model=None: query_vector)
         result = CliRunner().invoke(
             cli.main, ["search", "-s", "processor", "--db-path", str(tmp_path / "archive.db")]
         )
@@ -1358,11 +1364,11 @@ class TestSearchSemantic:
 
     def test_semantic_provider_filter(self, tmp_path, monkeypatch):
         con = self._setup_db(tmp_path)
-        self._insert_embedding(con, "chatgpt:t1", [0.9] * 768)
-        self._insert_embedding(con, "claude:t2", [0.1] * 768)
+        self._insert_embedding(con, "chatgpt:t1", [0.9] * 384)
+        self._insert_embedding(con, "claude:t2", [0.1] * 384)
 
-        query_vector = [0.85] * 768
-        monkeypatch.setattr("llm_archive.embed.embed_text", lambda *a, **kw: query_vector)
+        query_vector = [0.85] * 384
+        monkeypatch.setattr("llm_archive.embed.embed_text", lambda text, model=None: query_vector)
         result = CliRunner().invoke(
             cli.main,
             ["search", "-s", "processor", "--provider", "chatgpt", "--db-path", str(tmp_path / "archive.db")],
@@ -1373,10 +1379,10 @@ class TestSearchSemantic:
 
     def test_semantic_json_output(self, tmp_path, monkeypatch):
         con = self._setup_db(tmp_path)
-        self._insert_embedding(con, "chatgpt:t1", [0.9] * 768)
+        self._insert_embedding(con, "chatgpt:t1", [0.9] * 384)
 
-        query_vector = [0.85] * 768
-        monkeypatch.setattr("llm_archive.embed.embed_text", lambda *a, **kw: query_vector)
+        query_vector = [0.85] * 384
+        monkeypatch.setattr("llm_archive.embed.embed_text", lambda text, model=None: query_vector)
         result = CliRunner().invoke(
             cli.main,
             ["search", "-s", "processor", "--json", "--db-path", str(tmp_path / "archive.db")],

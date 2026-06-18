@@ -1,38 +1,34 @@
-"""Semantic embedding for threads using Ollama."""
 from __future__ import annotations
 
+import logging
 import struct
 from typing import Optional
 
-import httpx
+logger = logging.getLogger("llm_archive.embed")
 
-OLLAMA_URL = "http://localhost:11434"
-DEFAULT_MODEL = "nomic-embed-text"
+DEFAULT_MODEL = "BAAI/bge-small-en-v1.5"
 
 _MODEL_DIMS: dict[str, int] = {
-    "nomic-embed-text": 768,
-    "nomic-embed-text-v1.5": 768,
-    "mxbai-embed-large": 1024,
-    "all-minilm": 384,
+    "BAAI/bge-small-en-v1.5": 384,
+    "BAAI/bge-small-en-v1.5-Q": 384,
 }
+
+_cache: dict = {}
 
 
 def get_dims(model: str) -> int:
-    return _MODEL_DIMS.get(model, 768)
+    return _MODEL_DIMS.get(model, 384)
 
 
-def embed_text(
-    text: str,
-    model: str = DEFAULT_MODEL,
-    ollama_url: str = OLLAMA_URL,
-) -> list[float]:
-    resp = httpx.post(
-        f"{ollama_url}/api/embeddings",
-        json={"model": model, "prompt": text},
-        timeout=60,
-    )
-    resp.raise_for_status()
-    return resp.json()["embedding"]
+def embed_text(text: str, model: str = DEFAULT_MODEL) -> list[float]:
+    key = ("fastembed", model)
+    if key not in _cache:
+        from fastembed import TextEmbedding
+
+        _cache[key] = TextEmbedding(model)
+    embedder = _cache[key]
+    results = list(embedder.embed([text]))
+    return results[0].tolist()
 
 
 def serialize(vector: list[float]) -> bytes:
@@ -40,7 +36,6 @@ def serialize(vector: list[float]) -> bytes:
 
 
 def extract_thread_text(con, thread_id: str, max_chars: int = 2000) -> str:
-    """Extract clean, embeddable text from a thread (title + user/assistant messages, no tool noise)."""
     title_row = con.execute("SELECT title FROM threads WHERE id=?", (thread_id,)).fetchone()
     title = (title_row["title"] or "") if title_row else ""
 

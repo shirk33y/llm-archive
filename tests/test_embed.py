@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 import struct
-from unittest.mock import MagicMock, patch
-
-import pytest
 
 from llm_archive import db
 from llm_archive.embed import (
-    embed_text,
+    DEFAULT_MODEL,
     extract_thread_text,
     get_dims,
     serialize,
@@ -15,16 +12,17 @@ from llm_archive.embed import (
 )
 
 
+def test_get_dims_default():
+    assert get_dims(DEFAULT_MODEL) == 384
+
+
 def test_get_dims_known():
-    assert get_dims("nomic-embed-text") == 768
-    assert get_dims("nomic-embed-text-v1.5") == 768
-    assert get_dims("mxbai-embed-large") == 1024
-    assert get_dims("all-minilm") == 384
+    assert get_dims("BAAI/bge-small-en-v1.5") == 384
+    assert get_dims("BAAI/bge-small-en-v1.5-Q") == 384
 
 
 def test_get_dims_unknown_falls_back():
-    assert get_dims("unknown-model") == 768
-    assert get_dims("") == 768
+    assert get_dims("unknown-model") == 384
 
 
 def test_serialize_roundtrip():
@@ -38,44 +36,20 @@ def test_serialize_empty():
     assert serialize([]) == b""
 
 
-@patch("llm_archive.embed.httpx.post")
-def test_embed_text(mock_post):
-    mock_resp = MagicMock()
-    mock_resp.json.return_value = {"embedding": [0.1, 0.2, 0.3]}
-    mock_post.return_value = mock_resp
+def test_embed_text_caches_model():
+    from llm_archive.embed import _cache, embed_text
 
-    result = embed_text("hello world")
-    assert result == [0.1, 0.2, 0.3]
-    mock_post.assert_called_once_with(
-        "http://localhost:11434/api/embeddings",
-        json={"model": "nomic-embed-text", "prompt": "hello world"},
-        timeout=60,
-    )
-
-
-@patch("llm_archive.embed.httpx.post")
-def test_embed_text_custom_model_url(mock_post):
-    mock_resp = MagicMock()
-    mock_resp.json.return_value = {"embedding": [0.5]}
-    mock_post.return_value = mock_resp
-
-    result = embed_text("test", model="all-minilm", ollama_url="http://custom:11434")
-    assert result == [0.5]
-    mock_post.assert_called_once_with(
-        "http://custom:11434/api/embeddings",
-        json={"model": "all-minilm", "prompt": "test"},
-        timeout=60,
-    )
-
-
-@patch("llm_archive.embed.httpx.post")
-def test_embed_text_raises_on_http_error(mock_post):
-    mock_resp = MagicMock()
-    mock_resp.raise_for_status.side_effect = Exception("HTTP 500")
-    mock_post.return_value = mock_resp
-
-    with pytest.raises(Exception, match="HTTP 500"):
-        embed_text("fail")
+    _cache.clear()
+    try:
+        result = embed_text("test query")
+        assert len(result) == 384
+        key = ("fastembed", DEFAULT_MODEL)
+        assert key in _cache, "model should be cached after first call"
+        first_model = _cache[key]
+        embed_text("second query")
+        assert _cache[key] is first_model, "should reuse cached model"
+    finally:
+        _cache.clear()
 
 
 def test_extract_thread_text_basic(tmp_path):

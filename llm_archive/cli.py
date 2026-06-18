@@ -229,7 +229,7 @@ def status(db_path: str | None, verbose: bool, json_output: bool):
 @click.option("--limit", default=200, show_default=True, help="Maximum matches to show")
 @click.option("--provider", "provider_filter", type=click.Choice(list(INGESTORS)), default=None)
 @click.option("--sync", "do_sync", is_flag=True, help="Trigger sync before searching")
-@click.option("-s", "--semantic", is_flag=True, help="Semantic search via embeddings (needs ollama)")
+@click.option("-s", "--semantic", is_flag=True, help="Semantic search via embeddings")
 @click.option("--json", "json_output", is_flag=True, help="Print JSON")
 @click.option(
     "-t", "threads_only", is_flag=True, help="Only show matching threads and match counts"
@@ -264,16 +264,15 @@ def search(
     if semantic:
         from llm_archive import embed as embed_mod
 
-        has_vec = db.init_embeddings(con)
+        model = embed_mod.DEFAULT_MODEL
+        has_vec = db.init_embeddings(con, embed_mod.get_dims(model))
         if not has_vec:
             console.print("[red]sqlite-vec not installed.[/red] Run: [bold]pip install sqlite-vec[/bold]")
             raise SystemExit(1)
         try:
-            vector = embed_mod.embed_text(phrase)
+            vector = embed_mod.embed_text(phrase, model)
         except Exception as exc:
-            console.print(
-                f"[red]Embedding failed[/red] — is ollama running with nomic-embed-text?\n{exc}"
-            )
+            console.print(f"[red]Embedding failed[/red] — {exc}")
             raise SystemExit(1)
         blob = embed_mod.serialize(vector)
         rows = db.semantic_search_threads(con, blob, limit=limit, source_id=provider_filter)
@@ -812,26 +811,19 @@ def tui(db_path: str | None):
 @main.command()
 @click.argument("source", type=click.Choice(list(INGESTORS)), required=False)
 @click.option("--force", "-f", is_flag=True, help="Re-embed already embedded threads")
-@click.option(
-    "--model", default="nomic-embed-text", show_default=True, help="Ollama embedding model"
-)
-@click.option(
-    "--ollama-url", default="http://localhost:11434", show_default=True, help="Ollama API URL"
-)
 @click.option("--db-path", default=None, help="Override database path")
 def embed(
     source: str | None,
     force: bool,
-    model: str,
-    ollama_url: str,
     db_path: str | None,
 ):
-    """Generate embeddings for semantic search (requires ollama + embedding model)."""
+    """Generate embeddings for semantic search (uses fastembed, local)."""
     import time as _time
     from llm_archive import embed as embed_mod
 
-    con = db.connect(Path(db_path) if db_path else db.DB_PATH)
+    model = embed_mod.DEFAULT_MODEL
     dims = embed_mod.get_dims(model)
+    con = db.connect(Path(db_path) if db_path else db.DB_PATH)
     has_vec = db.init_embeddings(con, dims)
     if not has_vec:
         console.print(
@@ -864,7 +856,7 @@ def embed(
                     skipped += 1
                     progress.advance(task)
                     continue
-                vector = embed_mod.embed_text(text, model, ollama_url)
+                vector = embed_mod.embed_text(text, model)
                 blob = embed_mod.serialize(vector)
                 db.upsert_thread_embedding(con, thread_id, model, blob, int(_time.time() * 1000))
             except Exception as e:

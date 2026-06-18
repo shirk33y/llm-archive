@@ -84,6 +84,14 @@ print('ok' if hb else '')
   [ -n "$HB" ] || err "service status missing heartbeat"
   HOME="$_SAVED_HOME"
   info "service smoke passed"
+
+  # Embed + semantic search smoke
+  echo "Testing embed + semantic search..."
+  EMBED_OUT=$(uv run llm-archive embed --force --db-path /tmp/llm-archive-release-home/.config/llm-archive/archive.db 2>&1) || true
+  echo "$EMBED_OUT" | grep -qi "embedded\|already" || { echo "$EMBED_OUT"; err "embed smoke failed"; }
+  SEM_OUT=$(uv run llm-archive search -s "test" --json --db-path /tmp/llm-archive-release-home/.config/llm-archive/archive.db 2>&1) || true
+  echo "$SEM_OUT" | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); assert d.get('count',0)>=0, d; print(f'semantic: {d[\"count\"]} results')" || err "semantic search smoke failed"
+  info "embed + semantic search passed"
 }
 
 # ── 1. Detect next version ──────────────────────────────────────────────
