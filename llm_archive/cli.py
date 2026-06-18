@@ -43,7 +43,12 @@ def main(verbose: bool):
 @click.option("--db-path", default=None, help="Override database path")
 @click.option("-f", "--force", is_flag=True, help="Force full resync (ignore last sync timestamp)")
 @click.option("-v", "--verbose", is_flag=True, help="Enable verbose logging")
-@click.option("--auth-mode", type=click.Choice(["cookies"]), default=None, help="Override auth mode for this sync")
+@click.option(
+    "--auth-mode",
+    type=click.Choice(["cookies"]),
+    default=None,
+    help="Override auth mode for this sync",
+)
 @click.option("--no-wait", is_flag=True, help="Do not wait if source already syncing")
 @click.option("--json", "json_output", is_flag=True, help="Print JSON")
 def sync(
@@ -139,9 +144,13 @@ def status(db_path: str | None, verbose: bool, json_output: bool):
     else:
         age = int(time.time() * 1000) - int(service_state["heartbeat_at"])
         if age > 90_000:
-            lines.append(f"SERVICE stale  pid {service_state.get('pid')}, heart {_relative_time(service_state['heartbeat_at'])} ago  (brew services restart)")
+            lines.append(
+                f"SERVICE stale  pid {service_state.get('pid')}, heart {_relative_time(service_state['heartbeat_at'])} ago  (brew services restart)"
+            )
         else:
-            lines.append(f"SERVICE up  pid {service_state.get('pid')}, heart {format_duration_ms(age)} ago")
+            lines.append(
+                f"SERVICE up  pid {service_state.get('pid')}, heart {format_duration_ms(age)} ago"
+            )
 
     if not backup_state or not backup_state.get("last_success_at"):
         lines.append("BACKUP never")
@@ -188,7 +197,9 @@ def status(db_path: str | None, verbose: bool, json_output: bool):
     hdr = f"{'SOURCE':<{w_src}}  {('STATE'):<{w_st}}  {('THR'):>{w_thr}}  {('MSG'):>{w_msg}}  {('LAST'):<{w_lst}}  NEXT"
     lines.append(hdr)
     for src, st, thr, msg, lst, nxt in rows:
-        lines.append(f"{src:<{w_src}}  {st:<{w_st}}  {thr:>{w_thr}}  {msg:>{w_msg}}  {lst:<{w_lst}}  {nxt}")
+        lines.append(
+            f"{src:<{w_src}}  {st:<{w_st}}  {thr:>{w_thr}}  {msg:>{w_msg}}  {lst:<{w_lst}}  {nxt}"
+        )
 
     for line in lines:
         console.print(line)
@@ -197,15 +208,12 @@ def status(db_path: str | None, verbose: bool, json_output: bool):
         _print_verbose_status(states, jobs)
 
 
-
-
-
 @main.command()
 @click.argument("phrase")
 @click.option("--db-path", default=None, help="Override database path")
 @click.option("--limit", default=200, show_default=True, help="Maximum matches to show")
 @click.option("--provider", "provider_filter", type=click.Choice(list(INGESTORS)), default=None)
-@click.option("--no-refresh", is_flag=True, help="Do not trigger early sync")
+@click.option("--sync", "do_sync", is_flag=True, help="Trigger sync before searching")
 @click.option("--json", "json_output", is_flag=True, help="Print JSON")
 @click.option(
     "-t", "threads_only", is_flag=True, help="Only show matching threads and match counts"
@@ -215,12 +223,12 @@ def search(
     db_path: str | None,
     limit: int,
     provider_filter: str | None,
-    no_refresh: bool,
+    do_sync: bool,
     json_output: bool,
     threads_only: bool,
 ):
     """Search all indexed messages across providers."""
-    if not no_refresh:
+    if do_sync:
         config = load_config()
 
         async def runner(src: str, job_force: bool) -> bool:
@@ -396,6 +404,57 @@ def show(thread: str, db_path: str | None):
     _print_lines(lines)
 
 
+RESUME_URLS = {
+    "chatgpt": "https://chatgpt.com/c/{id}",
+    "claude": "https://claude.ai/chat/{id}",
+    "deepseek": "https://chat.deepseek.com/a/chat/s/{id}",
+}
+
+RESUME_COMMANDS = {
+    "claudecode": "claude --resume {id}",
+    "codex": "codex resume {id}",
+    "opencode": "opencode --session {id}",
+}
+
+RESUME_UNSUPPORTED = {"cursor", "windsurf", "gemini"}
+
+
+@main.command()
+@click.argument("thread_id")
+@click.option("--db-path", default=None, help="Override database path")
+def resume(thread_id: str, db_path: str | None):
+    """Resume a conversation by opening it in the provider (browser or CLI)."""
+    import webbrowser
+
+    con = db.connect(Path(db_path) if db_path else db.DB_PATH)
+    row = db.resolve_short_id(con, thread_id) or db.get_thread(con, thread_id)
+    if not row:
+        console.print(f"Thread not found: {thread_id}")
+        raise SystemExit(1)
+
+    thread = row["thread"]
+    source_id = thread["source_id"]
+    local_id = _local_id(thread["id"])
+
+    if source_id in RESUME_UNSUPPORTED:
+        console.print(f"{source_id} does not support resuming conversations")
+        raise SystemExit(1)
+
+    if source_id in RESUME_URLS:
+        url = RESUME_URLS[source_id].format(id=local_id)
+        console.print(url)
+        webbrowser.open(url)
+    elif source_id in RESUME_COMMANDS:
+        cmd = RESUME_COMMANDS[source_id].format(id=local_id)
+        console.print(cmd)
+        import subprocess
+
+        subprocess.Popen(cmd.split())
+    else:
+        console.print(f"No resume handler for {source_id}")
+        raise SystemExit(1)
+
+
 def _relative_time(ms: int) -> str:
     """Format timestamp as relative time (e.g., '1d', '32m', '2y')."""
     from datetime import datetime, timezone
@@ -510,7 +569,9 @@ def _print_verbose_status(states: dict[str, dict], jobs: list[dict]) -> None:
         console.print(table)
     for source_id, state in states.items():
         if state.get("last_error"):
-            console.print(f"{source_id}: fix setup, then run `llm-archive enable {source_id} --force`")
+            console.print(
+                f"{source_id}: fix setup, then run `llm-archive enable {source_id} --force`"
+            )
 
 
 def _msg_marker(ms: int) -> str:
@@ -687,8 +748,12 @@ def tui(db_path: str | None):
 @main.command()
 @click.argument("source", type=click.Choice(list(INGESTORS)), required=False)
 @click.option("--force", "-f", is_flag=True, help="Re-embed already embedded threads")
-@click.option("--model", default="nomic-embed-text", show_default=True, help="Ollama embedding model")
-@click.option("--ollama-url", default="http://localhost:11434", show_default=True, help="Ollama API URL")
+@click.option(
+    "--model", default="nomic-embed-text", show_default=True, help="Ollama embedding model"
+)
+@click.option(
+    "--ollama-url", default="http://localhost:11434", show_default=True, help="Ollama API URL"
+)
 @click.option("--db-path", default=None, help="Override database path")
 def embed(
     source: str | None,
@@ -715,9 +780,7 @@ def embed(
         console.print("All threads already embedded. Use [bold]--force[/bold] to re-embed.")
         return
 
-    console.print(
-        f"Embedding [bold]{len(thread_ids)}[/bold] threads using [cyan]{model}[/cyan]..."
-    )
+    console.print(f"Embedding [bold]{len(thread_ids)}[/bold] threads using [cyan]{model}[/cyan]...")
 
     errors = 0
     skipped = 0
@@ -739,9 +802,7 @@ def embed(
                     continue
                 vector = embed_mod.embed_text(text, model, ollama_url)
                 blob = embed_mod.serialize(vector)
-                db.upsert_thread_embedding(
-                    con, thread_id, model, blob, int(_time.time() * 1000)
-                )
+                db.upsert_thread_embedding(con, thread_id, model, blob, int(_time.time() * 1000))
             except Exception as e:
                 errors += 1
                 console.print(f"  [red]Error[/red] {thread_id}: {e}")
@@ -838,4 +899,5 @@ def logs(source: str | None):
 def mcp():
     """Start MCP server for conversation search and retrieval (stdio transport)."""
     from llm_archive.mcp_server import run_sync
+
     run_sync()

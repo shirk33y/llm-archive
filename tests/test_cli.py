@@ -48,13 +48,16 @@ class CountIngestor(FakeIngestor):
 
     async def threads(self, since: int | None = None):
         from llm_archive.schema import IngestedMessage, IngestedThread
+
         yield IngestedThread(
             id="test:1",
             source_id=self.source_id,
             title="a",
             created_at=0,
             updated_at=1,
-            messages=[IngestedMessage(id="m1", thread_id="test:1", role="user", content="a", created_at=0)],
+            messages=[
+                IngestedMessage(id="m1", thread_id="test:1", role="user", content="a", created_at=0)
+            ],
         )
         yield IngestedThread(
             id="test:2",
@@ -62,7 +65,9 @@ class CountIngestor(FakeIngestor):
             title="b",
             created_at=0,
             updated_at=1,
-            messages=[IngestedMessage(id="m2", thread_id="test:2", role="user", content="b", created_at=0)],
+            messages=[
+                IngestedMessage(id="m2", thread_id="test:2", role="user", content="b", created_at=0)
+            ],
         )
 
 
@@ -132,7 +137,9 @@ async def test_sync_does_not_advance_last_sync_on_failed_ingest(monkeypatch, tmp
 
 
 @pytest.mark.asyncio
-async def test_sync_falls_back_to_full_sync_when_last_sync_exists_but_no_threads(monkeypatch, tmp_path):
+async def test_sync_falls_back_to_full_sync_when_last_sync_exists_but_no_threads(
+    monkeypatch, tmp_path
+):
     ingestor = FakeIngestor()
     ingestor.source_id = "deepseek"
     saved = []
@@ -165,13 +172,13 @@ async def test_do_ingest_supports_count_threads(tmp_path):
 async def test_do_ingest_processes_all_threads_regardless_of_since(tmp_path):
     """Test that sync processes all threads even when since parameter is provided."""
     con = cli.db.connect(tmp_path / "archive.db")
-    
+
     # First sync to populate database
     ingestor = CountIngestor()
     ok = await sync_mod._do_ingest(con, ingestor, since=None)
     assert ok is True
     assert con.execute("select count(*) from threads").fetchone()[0] == 2
-    
+
     # Second sync with since parameter - should still process all threads
     ingestor2 = CountIngestor()
     ok2 = await sync_mod._do_ingest(con, ingestor2, since=1234)
@@ -185,13 +192,13 @@ async def test_do_ingest_processes_all_threads_regardless_of_since(tmp_path):
 async def test_force_flag_updates_threads(tmp_path):
     """Test that -f flag forces thread updates."""
     con = cli.db.connect(tmp_path / "archive.db")
-    
+
     # First sync to populate database
     ingestor = CountIngestor()
     ok = await sync_mod._do_ingest(con, ingestor, since=None)
     assert ok is True
     assert con.execute("select count(*) from threads").fetchone()[0] == 2
-    
+
     # Second sync with force=True - should re-fetch and update threads
     ingestor2 = CountIngestor()
     ok2 = await sync_mod._do_ingest(con, ingestor2, since=None, force=True)
@@ -202,16 +209,17 @@ async def test_force_flag_updates_threads(tmp_path):
 
 class SmartSyncIngestor(FakeIngestor):
     """Ingestor that supports smart sync with timestamp comparison."""
+
     source_id = "smart"
-    
+
     async def threads(self, since: int | None = None, existing_thread_ids: set[str] | None = None):
         if existing_thread_ids is None:
             existing_thread_ids = set()
-        
+
         for i in range(5):
             thread_id = f"smart:{i}"
             updated_at = i * 1000
-            
+
             # Smart sync with timestamp comparison
             if thread_id in existing_thread_ids:
                 if isinstance(existing_thread_ids, dict):
@@ -220,14 +228,22 @@ class SmartSyncIngestor(FakeIngestor):
                         break
                 else:
                     break
-            
+
             yield IngestedThread(
                 id=thread_id,
                 source_id=self.source_id,
                 title=f"Thread {i}",
                 created_at=i,
                 updated_at=updated_at,
-                messages=[IngestedMessage(id=f"m{i}", thread_id=thread_id, role="user", content=f"content {i}", created_at=i)],
+                messages=[
+                    IngestedMessage(
+                        id=f"m{i}",
+                        thread_id=thread_id,
+                        role="user",
+                        content=f"content {i}",
+                        created_at=i,
+                    )
+                ],
             )
 
 
@@ -235,13 +251,13 @@ class SmartSyncIngestor(FakeIngestor):
 async def test_smart_sync_stops_at_existing_thread(tmp_path):
     """Test that smart sync stops fetching when it encounters an existing thread."""
     con = cli.db.connect(tmp_path / "archive.db")
-    
+
     # First sync to populate database
     ingestor = SmartSyncIngestor()
     ok = await sync_mod._do_ingest(con, ingestor, since=None)
     assert ok is True
     assert con.execute("select count(*) from threads").fetchone()[0] == 5
-    
+
     # Second sync - should stop at first existing thread
     ingestor2 = SmartSyncIngestor()
     ok2 = await sync_mod._do_ingest(con, ingestor2, since=None)
@@ -254,19 +270,19 @@ async def test_smart_sync_stops_at_existing_thread(tmp_path):
 async def test_smart_sync_refetches_updated_thread(tmp_path):
     """Test that smart sync re-fetches conversations with newer updated_at."""
     con = cli.db.connect(tmp_path / "archive.db")
-    
+
     # First sync - add threads with updated_at = 0, 1000, 2000, 3000, 4000
     ingestor = SmartSyncIngestor()
     ok = await sync_mod._do_ingest(con, ingestor, since=None)
     assert ok is True
     assert con.execute("select count(*) from threads").fetchone()[0] == 5
-    
+
     # Update thread 0 in database to have updated_at = -100 (older than API's 0)
     # Also change the sha1 by updating content to ensure it gets re-fetched
     con.execute("UPDATE threads SET updated_at=-100 WHERE id='smart:0'")
     con.execute("UPDATE threads SET sha1='different_sha1' WHERE id='smart:0'")
     con.commit()
-    
+
     # Second sync - should re-fetch thread 0 (API has 0, DB has -100)
     ingestor2 = SmartSyncIngestor()
     ok2 = await sync_mod._do_ingest(con, ingestor2, since=None)
@@ -282,13 +298,13 @@ async def test_smart_sync_refetches_updated_thread(tmp_path):
 async def test_force_flag_disables_smart_sync(tmp_path):
     """Test that -f flag disables smart sync and fetches all threads."""
     con = cli.db.connect(tmp_path / "archive.db")
-    
+
     # First sync to populate database
     ingestor = SmartSyncIngestor()
     ok = await sync_mod._do_ingest(con, ingestor, since=None)
     assert ok is True
     assert con.execute("select count(*) from threads").fetchone()[0] == 5
-    
+
     # Second sync with force=True - should fetch all threads (not stop at existing)
     ingestor2 = SmartSyncIngestor()
     ok2 = await sync_mod._do_ingest(con, ingestor2, since=None, force=True)
@@ -300,7 +316,7 @@ async def test_force_flag_disables_smart_sync(tmp_path):
 def test_token_extraction_from_storage_state(tmp_path):
     """Test extracting bearer token from storage state localStorage."""
     import json
-    
+
     # Test plain token
     auth_dir = tmp_path / "auth"
     auth_dir.mkdir(parents=True, exist_ok=True)
@@ -310,14 +326,14 @@ def test_token_extraction_from_storage_state(tmp_path):
                 "origin": "https://chat.deepseek.com",
                 "localStorage": [
                     {"name": "accessToken", "value": "test_token_123"},
-                    {"name": "otherKey", "value": "other_value"}
-                ]
+                    {"name": "otherKey", "value": "other_value"},
+                ],
             }
         ]
     }
     storage_path = auth_dir / "deepseek.json"
     storage_path.write_text(json.dumps(storage_state))
-    
+
     state = json.loads(storage_path.read_text())
     origins = state.get("origins", [])
     token = None
@@ -337,22 +353,25 @@ def test_token_extraction_from_storage_state(tmp_path):
                         break
         if token:
             break
-    
+
     assert token == "test_token_123"
-    
+
     # Test JSON-encoded token (like userToken)
     storage_state2 = {
         "origins": [
             {
                 "origin": "https://chat.deepseek.com",
                 "localStorage": [
-                    {"name": "userToken", "value": json.dumps({"value": "json_token_456", "__version": "0"})}
-                ]
+                    {
+                        "name": "userToken",
+                        "value": json.dumps({"value": "json_token_456", "__version": "0"}),
+                    }
+                ],
             }
         ]
     }
     storage_path.write_text(json.dumps(storage_state2))
-    
+
     state2 = json.loads(storage_path.read_text())
     origins2 = state2.get("origins", [])
     token2 = None
@@ -372,10 +391,8 @@ def test_token_extraction_from_storage_state(tmp_path):
                         break
         if token2:
             break
-    
+
     assert token2 == "json_token_456"
-
-
 
 
 def test_search_command_outputs_grouped_matches(tmp_path):
@@ -406,7 +423,9 @@ def test_search_command_outputs_grouped_matches(tmp_path):
             ],
         ),
     )
-    result = CliRunner().invoke(cli.main, ["search", "search term", "--db-path", str(tmp_path / "archive.db")])
+    result = CliRunner().invoke(
+        cli.main, ["search", "search term", "--db-path", str(tmp_path / "archive.db")]
+    )
     assert result.exit_code == 0
     assert "Search Title" in result.output
     assert "…" in result.output
@@ -425,12 +444,26 @@ def test_search_threads_only_shows_counts(tmp_path):
             created_at=1,
             updated_at=1,
             messages=[
-                IngestedMessage(id="claude:m1", thread_id="claude:t1", role="user", content="search hit one", created_at=1),
-                IngestedMessage(id="claude:m2", thread_id="claude:t1", role="assistant", content="search hit two", created_at=2),
+                IngestedMessage(
+                    id="claude:m1",
+                    thread_id="claude:t1",
+                    role="user",
+                    content="search hit one",
+                    created_at=1,
+                ),
+                IngestedMessage(
+                    id="claude:m2",
+                    thread_id="claude:t1",
+                    role="assistant",
+                    content="search hit two",
+                    created_at=2,
+                ),
             ],
         ),
     )
-    result = CliRunner().invoke(cli.main, ["search", "-t", "search", "--db-path", str(tmp_path / "archive.db")])
+    result = CliRunner().invoke(
+        cli.main, ["search", "-t", "search", "--db-path", str(tmp_path / "archive.db")]
+    )
     assert result.exit_code == 0
     assert "2 matching messages" in result.output
     assert "search hit one" not in result.output
@@ -457,10 +490,15 @@ def test_search_command_snippet_centers_match(tmp_path):
             ],
         ),
     )
-    result = CliRunner().invoke(cli.main, ["search", "raspberry", "--db-path", str(tmp_path / "archive.db")])
+    result = CliRunner().invoke(
+        cli.main, ["search", "raspberry", "--db-path", str(tmp_path / "archive.db")]
+    )
     assert result.exit_code == 0
     assert "raspberry" in result.output.lower()
-    assert "prefix prefix prefix prefix prefix prefix prefix prefix prefix prefix prefix prefix prefix prefix prefix prefix prefix prefix prefix prefix prefix prefix prefix prefix prefix prefix prefix prefix prefix prefix prefix prefix" not in result.output
+    assert (
+        "prefix prefix prefix prefix prefix prefix prefix prefix prefix prefix prefix prefix prefix prefix prefix prefix prefix prefix prefix prefix prefix prefix prefix prefix prefix prefix prefix prefix prefix prefix prefix prefix"
+        not in result.output
+    )
 
 
 def test_show_command_prints_full_conversation(tmp_path):
@@ -474,12 +512,26 @@ def test_show_command_prints_full_conversation(tmp_path):
             created_at=1,
             updated_at=1,
             messages=[
-                IngestedMessage(id="deepseek:m1", thread_id="deepseek:x1", role="user", content="hello", created_at=1),
-                IngestedMessage(id="deepseek:m2", thread_id="deepseek:x1", role="assistant", content="world", created_at=2),
+                IngestedMessage(
+                    id="deepseek:m1",
+                    thread_id="deepseek:x1",
+                    role="user",
+                    content="hello",
+                    created_at=1,
+                ),
+                IngestedMessage(
+                    id="deepseek:m2",
+                    thread_id="deepseek:x1",
+                    role="assistant",
+                    content="world",
+                    created_at=2,
+                ),
             ],
         ),
     )
-    result = CliRunner().invoke(cli.main, ["show", "deepseek:x1", "--db-path", str(tmp_path / "archive.db")])
+    result = CliRunner().invoke(
+        cli.main, ["show", "deepseek:x1", "--db-path", str(tmp_path / "archive.db")]
+    )
     assert result.exit_code == 0
     assert "deepseek:x1" in result.output
     assert "Conversation" in result.output
@@ -491,7 +543,9 @@ def test_show_command_prints_full_conversation(tmp_path):
 
 
 def test_show_command_returns_error_when_missing(tmp_path):
-    result = CliRunner().invoke(cli.main, ["show", "claude:nope", "--db-path", str(tmp_path / "archive.db")])
+    result = CliRunner().invoke(
+        cli.main, ["show", "claude:nope", "--db-path", str(tmp_path / "archive.db")]
+    )
     assert result.exit_code == 1
     assert "Thread not found: claude:nope" in result.output
 
@@ -517,7 +571,9 @@ def test_show_command_renders_normalized_parts(tmp_path):
             ],
         ),
     )
-    result = CliRunner().invoke(cli.main, ["show", "claudecode:t3", "--db-path", str(tmp_path / "archive.db")])
+    result = CliRunner().invoke(
+        cli.main, ["show", "claudecode:t3", "--db-path", str(tmp_path / "archive.db")]
+    )
     assert result.exit_code == 0
     assert "[Tool: Bash]" in result.output
     assert "ls" in result.output
@@ -537,16 +593,36 @@ def test_show_command_message_short_id(tmp_path):
             created_at=1000,
             updated_at=3000,
             messages=[
-                IngestedMessage(id="claude:m1", thread_id="claude:t1", role="user", content="first message", created_at=1000),
-                IngestedMessage(id="claude:m2", thread_id="claude:t1", role="assistant", content="second message", created_at=2000),
-                IngestedMessage(id="claude:m3", thread_id="claude:t1", role="user", content="third message", created_at=3000),
+                IngestedMessage(
+                    id="claude:m1",
+                    thread_id="claude:t1",
+                    role="user",
+                    content="first message",
+                    created_at=1000,
+                ),
+                IngestedMessage(
+                    id="claude:m2",
+                    thread_id="claude:t1",
+                    role="assistant",
+                    content="second message",
+                    created_at=2000,
+                ),
+                IngestedMessage(
+                    id="claude:m3",
+                    thread_id="claude:t1",
+                    role="user",
+                    content="third message",
+                    created_at=3000,
+                ),
             ],
         ),
     )
     # Find the short ID for m2
     msg_row = con.execute("SELECT rowid FROM messages WHERE id='claude:m2'").fetchone()
     short_id = f"m{to_base53(msg_row[0])}"
-    result = CliRunner().invoke(cli.main, ["show", short_id, "--db-path", str(tmp_path / "archive.db")])
+    result = CliRunner().invoke(
+        cli.main, ["show", short_id, "--db-path", str(tmp_path / "archive.db")]
+    )
     assert result.exit_code == 0
     assert "My Thread" in result.output
     assert "second message" in result.output
@@ -568,7 +644,9 @@ def test_print_output_skips_pager_for_short_output(monkeypatch):
             return False
 
     monkeypatch.setattr(cli.sys.stdout, "isatty", lambda: True)
-    monkeypatch.setattr(cli.shutil, "get_terminal_size", lambda fallback: __import__("os").terminal_size((80, 40)))
+    monkeypatch.setattr(
+        cli.shutil, "get_terminal_size", lambda fallback: __import__("os").terminal_size((80, 40))
+    )
     monkeypatch.setattr(cli.console, "pager", lambda styles=True: Pager())
     cli._print_lines(["hello", "world"])
     assert calls == []
@@ -590,7 +668,13 @@ def test_search_sorts_newest_thread_first(tmp_path):
             created_at=1000,
             updated_at=1000,
             messages=[
-                IngestedMessage(id="claude:m_old", thread_id="claude:old", role="user", content="findme old", created_at=1000),
+                IngestedMessage(
+                    id="claude:m_old",
+                    thread_id="claude:old",
+                    role="user",
+                    content="findme old",
+                    created_at=1000,
+                ),
             ],
         ),
     )
@@ -604,11 +688,19 @@ def test_search_sorts_newest_thread_first(tmp_path):
             created_at=2000,
             updated_at=2000,
             messages=[
-                IngestedMessage(id="claude:m_new", thread_id="claude:new", role="user", content="findme new", created_at=2000),
+                IngestedMessage(
+                    id="claude:m_new",
+                    thread_id="claude:new",
+                    role="user",
+                    content="findme new",
+                    created_at=2000,
+                ),
             ],
         ),
     )
-    result = CliRunner().invoke(cli.main, ["search", "findme", "--db-path", str(tmp_path / "archive.db")])
+    result = CliRunner().invoke(
+        cli.main, ["search", "findme", "--db-path", str(tmp_path / "archive.db")]
+    )
     assert result.exit_code == 0
     # New thread title should appear before old thread title
     new_pos = result.output.find("New thread")
@@ -627,20 +719,37 @@ def test_search_sorts_newest_messages_within_thread_first(tmp_path):
             created_at=1000,
             updated_at=3000,
             messages=[
-                IngestedMessage(id="claude:m1", thread_id="claude:t1", role="user", content="findme early", created_at=1000),
-                IngestedMessage(id="claude:m2", thread_id="claude:t1", role="assistant", content="findme late", created_at=3000),
+                IngestedMessage(
+                    id="claude:m1",
+                    thread_id="claude:t1",
+                    role="user",
+                    content="findme early",
+                    created_at=1000,
+                ),
+                IngestedMessage(
+                    id="claude:m2",
+                    thread_id="claude:t1",
+                    role="assistant",
+                    content="findme late",
+                    created_at=3000,
+                ),
             ],
         ),
     )
-    result = CliRunner().invoke(cli.main, ["search", "findme", "--db-path", str(tmp_path / "archive.db")])
+    result = CliRunner().invoke(
+        cli.main, ["search", "findme", "--db-path", str(tmp_path / "archive.db")]
+    )
     assert result.exit_code == 0
     late_pos = result.output.find("findme late")
     early_pos = result.output.find("findme early")
-    assert late_pos < early_pos, "Later message should appear before earlier message within same thread"
+    assert late_pos < early_pos, (
+        "Later message should appear before earlier message within same thread"
+    )
 
 
 def test_sync_running_job_message_format():
     from llm_archive.jobs import JobResult
+
     r = JobResult("claudecode", "running", "already syncing (job 42)", 42)
     assert r.status == "running"
     assert "already syncing" in r.reason
@@ -648,6 +757,7 @@ def test_sync_running_job_message_format():
 
 def test_sync_throttled_message_format():
     from llm_archive.jobs import JobResult
+
     r = JobResult("claudecode", "throttled", "throttled 25m left", 1)
     assert r.status == "throttled"
     assert "throttled" in r.reason
@@ -655,6 +765,7 @@ def test_sync_throttled_message_format():
 
 def test_sync_joined_message_format():
     from llm_archive.jobs import JobResult
+
     r = JobResult("claudecode", "joined", "already running, joined", 42, True)
     assert r.status == "joined"
     assert r.waited is True
@@ -662,6 +773,7 @@ def test_sync_joined_message_format():
 
 def test_sync_failed_message_format():
     from llm_archive.jobs import JobResult
+
     r = JobResult("chatgpt", "failed", "auth_failed", 1)
     assert r.status == "failed"
     assert "auth_failed" in r.reason
@@ -674,7 +786,7 @@ def test_status_next_shows_live_for_watched_file_provider(tmp_path, monkeypatch)
     cli.db.set_provider_sync_success(con, "claudecode", now)
 
     config_path = tmp_path / "config.toml"
-    config_path.write_text('[ingestors.claudecode]\nenabled = true\n')
+    config_path.write_text("[ingestors.claudecode]\nenabled = true\n")
     monkeypatch.setenv("LLM_ARCHIVE_CONFIG", str(config_path))
 
     result = CliRunner().invoke(cli.main, ["status", "--db-path", str(db_path)])
@@ -687,7 +799,7 @@ def test_status_next_shows_dash_before_first_sync(tmp_path, monkeypatch):
     cli.db.connect(db_path)
 
     config_path = tmp_path / "config.toml"
-    config_path.write_text('[ingestors.claudecode]\nenabled = true\n')
+    config_path.write_text("[ingestors.claudecode]\nenabled = true\n")
     monkeypatch.setenv("LLM_ARCHIVE_CONFIG", str(config_path))
 
     result = CliRunner().invoke(cli.main, ["status", "--db-path", str(db_path)])
@@ -717,7 +829,7 @@ def test_status_next_shows_time_for_web_provider(tmp_path, monkeypatch):
             break
 
 
-def test_search_runner_calls_sync_one_without_extra_args(tmp_path, monkeypatch):
+def test_search_no_sync_by_default(tmp_path, monkeypatch):
     db_path = tmp_path / "archive.db"
     con = cli.db.connect(db_path)
     cli.db.save_thread(
@@ -729,13 +841,55 @@ def test_search_runner_calls_sync_one_without_extra_args(tmp_path, monkeypatch):
             created_at=1000,
             updated_at=1000,
             messages=[
-                IngestedMessage(id="claudecode:m1", thread_id="claudecode:t1", role="user", content="hello", created_at=1000),
+                IngestedMessage(
+                    id="claudecode:m1",
+                    thread_id="claudecode:t1",
+                    role="user",
+                    content="hello",
+                    created_at=1000,
+                ),
+            ],
+        ),
+    )
+
+    sync_calls = []
+
+    async def spy_sync_one(*args, **kwargs):
+        sync_calls.append((args, kwargs))
+        return True
+
+    monkeypatch.setattr(sync_mod, "_sync_one", spy_sync_one)
+
+    result = CliRunner().invoke(cli.main, ["search", "hello", "--db-path", str(db_path)])
+    assert result.exit_code == 0, result.output
+    assert sync_calls == [], "search should not sync by default"
+
+
+def test_search_sync_flag_triggers_sync(tmp_path, monkeypatch):
+    db_path = tmp_path / "archive.db"
+    con = cli.db.connect(db_path)
+    cli.db.save_thread(
+        con,
+        IngestedThread(
+            id="claudecode:t1",
+            source_id="claudecode",
+            title="Test thread",
+            created_at=1000,
+            updated_at=1000,
+            messages=[
+                IngestedMessage(
+                    id="claudecode:m1",
+                    thread_id="claudecode:t1",
+                    role="user",
+                    content="hello",
+                    created_at=1000,
+                ),
             ],
         ),
     )
 
     config_path = tmp_path / "config.toml"
-    config_path.write_text('[ingestors.claudecode]\nenabled = true\n')
+    config_path.write_text("[ingestors.claudecode]\nenabled = true\n")
     monkeypatch.setenv("LLM_ARCHIVE_CONFIG", str(config_path))
 
     calls = []
@@ -747,7 +901,320 @@ def test_search_runner_calls_sync_one_without_extra_args(tmp_path, monkeypatch):
     monkeypatch.setattr(sync_mod, "_sync_one", spy_sync_one)
     monkeypatch.setattr(sync_mod, "INGESTORS", {"claudecode": FakeIngestor})
 
-    result = CliRunner().invoke(cli.main, ["search", "hello", "--db-path", str(db_path)])
+    result = CliRunner().invoke(cli.main, ["search", "hello", "--sync", "--db-path", str(db_path)])
     assert result.exit_code == 0, result.output
     if calls:
-        assert len(calls[0][0]) == 5, f"runner should pass 5 args to _sync_one, got {len(calls[0][0])}: {calls[0][0]}"
+        assert len(calls[0][0]) == 5, (
+            f"runner should pass 5 args to _sync_one, got {len(calls[0][0])}: {calls[0][0]}"
+        )
+
+
+def test_resume_opens_chatgpt_url(tmp_path, monkeypatch):
+    db_path = tmp_path / "archive.db"
+    con = cli.db.connect(db_path)
+    cli.db.save_thread(
+        con,
+        IngestedThread(
+            id="chatgpt:abc-123",
+            source_id="chatgpt",
+            title="ChatGPT Thread",
+            created_at=1000,
+            updated_at=1000,
+            messages=[
+                IngestedMessage(
+                    id="chatgpt:m1",
+                    thread_id="chatgpt:abc-123",
+                    role="user",
+                    content="hi",
+                    created_at=1000,
+                ),
+            ],
+        ),
+    )
+
+    opened = []
+    monkeypatch.setattr("webbrowser.open", lambda url: opened.append(url))
+    result = CliRunner().invoke(cli.main, ["resume", "chatgpt:abc-123", "--db-path", str(db_path)])
+    assert result.exit_code == 0
+    assert "https://chatgpt.com/c/abc-123" in result.output
+    assert opened == ["https://chatgpt.com/c/abc-123"]
+
+
+def test_resume_opens_claude_url(tmp_path, monkeypatch):
+    db_path = tmp_path / "archive.db"
+    con = cli.db.connect(db_path)
+    cli.db.save_thread(
+        con,
+        IngestedThread(
+            id="claude:def-456",
+            source_id="claude",
+            title="Claude Thread",
+            created_at=1000,
+            updated_at=1000,
+            messages=[
+                IngestedMessage(
+                    id="claude:m1",
+                    thread_id="claude:def-456",
+                    role="user",
+                    content="hi",
+                    created_at=1000,
+                ),
+            ],
+        ),
+    )
+
+    opened = []
+    monkeypatch.setattr("webbrowser.open", lambda url: opened.append(url))
+    result = CliRunner().invoke(cli.main, ["resume", "claude:def-456", "--db-path", str(db_path)])
+    assert result.exit_code == 0
+    assert "https://claude.ai/chat/def-456" in result.output
+    assert opened == ["https://claude.ai/chat/def-456"]
+
+
+def test_resume_opens_deepseek_url(tmp_path, monkeypatch):
+    db_path = tmp_path / "archive.db"
+    con = cli.db.connect(db_path)
+    cli.db.save_thread(
+        con,
+        IngestedThread(
+            id="deepseek:xyz789",
+            source_id="deepseek",
+            title="DeepSeek Thread",
+            created_at=1000,
+            updated_at=1000,
+            messages=[
+                IngestedMessage(
+                    id="deepseek:m1",
+                    thread_id="deepseek:xyz789",
+                    role="user",
+                    content="hi",
+                    created_at=1000,
+                ),
+            ],
+        ),
+    )
+
+    opened = []
+    monkeypatch.setattr("webbrowser.open", lambda url: opened.append(url))
+    result = CliRunner().invoke(cli.main, ["resume", "deepseek:xyz789", "--db-path", str(db_path)])
+    assert result.exit_code == 0
+    assert "https://chat.deepseek.com/a/chat/s/xyz789" in result.output
+
+
+def test_resume_unsupported_cursor(tmp_path):
+    db_path = tmp_path / "archive.db"
+    con = cli.db.connect(db_path)
+    cli.db.save_thread(
+        con,
+        IngestedThread(
+            id="cursor:abc",
+            source_id="cursor",
+            title="Cursor Thread",
+            created_at=1000,
+            updated_at=1000,
+            messages=[
+                IngestedMessage(
+                    id="cursor:m1",
+                    thread_id="cursor:abc",
+                    role="user",
+                    content="hi",
+                    created_at=1000,
+                ),
+            ],
+        ),
+    )
+
+    result = CliRunner().invoke(cli.main, ["resume", "cursor:abc", "--db-path", str(db_path)])
+    assert result.exit_code == 1
+    assert "does not support resuming" in result.output
+
+
+def test_resume_unsupported_windsurf(tmp_path):
+    db_path = tmp_path / "archive.db"
+    con = cli.db.connect(db_path)
+    cli.db.save_thread(
+        con,
+        IngestedThread(
+            id="windsurf:xyz",
+            source_id="windsurf",
+            title="Windsurf Thread",
+            created_at=1000,
+            updated_at=1000,
+            messages=[
+                IngestedMessage(
+                    id="windsurf:m1",
+                    thread_id="windsurf:xyz",
+                    role="user",
+                    content="hi",
+                    created_at=1000,
+                ),
+            ],
+        ),
+    )
+    result = CliRunner().invoke(cli.main, ["resume", "windsurf:xyz", "--db-path", str(db_path)])
+    assert result.exit_code == 1
+    assert "does not support resuming" in result.output
+
+
+def test_resume_not_found(tmp_path):
+    result = CliRunner().invoke(
+        cli.main, ["resume", "claude:nope", "--db-path", str(tmp_path / "archive.db")]
+    )
+    assert result.exit_code == 1
+    assert "Thread not found" in result.output
+
+
+def test_resume_short_id(tmp_path, monkeypatch):
+    db_path = tmp_path / "archive.db"
+    con = cli.db.connect(db_path)
+    cli.db.save_thread(
+        con,
+        IngestedThread(
+            id="chatgpt:short-id",
+            source_id="chatgpt",
+            title="Short ID Thread",
+            created_at=1000,
+            updated_at=1000,
+            messages=[
+                IngestedMessage(
+                    id="chatgpt:m1",
+                    thread_id="chatgpt:short-id",
+                    role="user",
+                    content="hi",
+                    created_at=1000,
+                ),
+            ],
+        ),
+    )
+    row = con.execute("SELECT rowid FROM threads WHERE id='chatgpt:short-id'").fetchone()
+    short_id = f"t{to_base53(row[0])}"
+
+    opened = []
+    monkeypatch.setattr("webbrowser.open", lambda url: opened.append(url))
+    result = CliRunner().invoke(cli.main, ["resume", short_id, "--db-path", str(db_path)])
+    assert result.exit_code == 0
+    assert "https://chatgpt.com/c/short-id" in result.output
+
+
+def test_resume_claudecode_launches_command(tmp_path, monkeypatch):
+    db_path = tmp_path / "archive.db"
+    con = cli.db.connect(db_path)
+    cli.db.save_thread(
+        con,
+        IngestedThread(
+            id="claudecode:sess_abc",
+            source_id="claudecode",
+            title="Claude Code Thread",
+            created_at=1000,
+            updated_at=1000,
+            messages=[
+                IngestedMessage(
+                    id="claudecode:m1",
+                    thread_id="claudecode:sess_abc",
+                    role="user",
+                    content="hi",
+                    created_at=1000,
+                ),
+            ],
+        ),
+    )
+
+    spawned = []
+    monkeypatch.setattr("subprocess.Popen", lambda cmd, **kw: spawned.append(cmd))
+    result = CliRunner().invoke(
+        cli.main, ["resume", "claudecode:sess_abc", "--db-path", str(db_path)]
+    )
+    assert result.exit_code == 0
+    assert "claude --resume sess_abc" in result.output
+    assert spawned == [["claude", "--resume", "sess_abc"]]
+
+
+def test_resume_codex_launches_command(tmp_path, monkeypatch):
+    db_path = tmp_path / "archive.db"
+    con = cli.db.connect(db_path)
+    cli.db.save_thread(
+        con,
+        IngestedThread(
+            id="codex:abc-def",
+            source_id="codex",
+            title="Codex Thread",
+            created_at=1000,
+            updated_at=1000,
+            messages=[
+                IngestedMessage(
+                    id="codex:m1",
+                    thread_id="codex:abc-def",
+                    role="user",
+                    content="hi",
+                    created_at=1000,
+                ),
+            ],
+        ),
+    )
+
+    spawned = []
+    monkeypatch.setattr("subprocess.Popen", lambda cmd, **kw: spawned.append(cmd))
+    result = CliRunner().invoke(cli.main, ["resume", "codex:abc-def", "--db-path", str(db_path)])
+    assert result.exit_code == 0
+    assert "codex resume abc-def" in result.output
+    assert spawned == [["codex", "resume", "abc-def"]]
+
+
+def test_resume_opencode_launches_command(tmp_path, monkeypatch):
+    db_path = tmp_path / "archive.db"
+    con = cli.db.connect(db_path)
+    cli.db.save_thread(
+        con,
+        IngestedThread(
+            id="opencode:ses_test123",
+            source_id="opencode",
+            title="OpenCode Thread",
+            created_at=1000,
+            updated_at=1000,
+            messages=[
+                IngestedMessage(
+                    id="opencode:m1",
+                    thread_id="opencode:ses_test123",
+                    role="user",
+                    content="hi",
+                    created_at=1000,
+                ),
+            ],
+        ),
+    )
+
+    spawned = []
+    monkeypatch.setattr("subprocess.Popen", lambda cmd, **kw: spawned.append(cmd))
+    result = CliRunner().invoke(
+        cli.main, ["resume", "opencode:ses_test123", "--db-path", str(db_path)]
+    )
+    assert result.exit_code == 0
+    assert "opencode --session ses_test123" in result.output
+    assert spawned == [["opencode", "--session", "ses_test123"]]
+
+
+def test_resume_unsupported_gemini(tmp_path):
+    db_path = tmp_path / "archive.db"
+    con = cli.db.connect(db_path)
+    cli.db.save_thread(
+        con,
+        IngestedThread(
+            id="gemini:abc",
+            source_id="gemini",
+            title="Gemini Thread",
+            created_at=1000,
+            updated_at=1000,
+            messages=[
+                IngestedMessage(
+                    id="gemini:m1",
+                    thread_id="gemini:abc",
+                    role="user",
+                    content="hi",
+                    created_at=1000,
+                ),
+            ],
+        ),
+    )
+    result = CliRunner().invoke(cli.main, ["resume", "gemini:abc", "--db-path", str(db_path)])
+    assert result.exit_code == 1
+    assert "does not support resuming" in result.output

@@ -116,7 +116,7 @@ jobs:
           poll enabled 60
 
           # CLI smoke against the running service's database
-          "$LA" search dummycanarytoken --no-refresh --json | tee /tmp/search.json
+          "$LA" search dummycanarytoken --json | tee /tmp/search.json
           python3 -c "import json;d=json.load(open('/tmp/search.json'));assert d['count']>0,d;print('search ok',d['count'])"
           "$LA" logs | grep -q dummy
           echo "e2e PASS"
@@ -223,7 +223,7 @@ jobs:
             sleep 2
           done
           python3 /tmp/check.py enabled
-          llm-archive search dummycanarytoken --no-refresh --json | tee /tmp/search.json
+          llm-archive search dummycanarytoken --json | tee /tmp/search.json
           python3 -c "import json;d=json.load(open('/tmp/search.json'));assert d['count']>0,d;print('search ok',d['count'])"
           echo "brew e2e PASS"
 
