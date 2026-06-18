@@ -7,7 +7,8 @@ Related project: [`unbalancedparentheses/llm-archive`](https://github.com/unbala
 ## Quickstart
 
 ```sh
-brew install shirk33y/tap/llm-archive
+brew tap shirk33y/llm-archive https://github.com/shirk33y/llm-archive
+brew install llm-archive
 llm-archive enable chatgpt
 llm-archive sync chatgpt
 llm-archive search "that thing I forgot"
@@ -16,7 +17,7 @@ llm-archive search "that thing I forgot"
 Run background sync:
 
 ```sh
-brew services start shirk33y/tap/llm-archive
+brew services start shirk33y/llm-archive
 llm-archive status
 ```
 

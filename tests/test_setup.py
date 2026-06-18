@@ -45,6 +45,17 @@ class TestEnableFile:
             result = _enable_file("claudecode", None)
             assert result == {"path": str(data)}
 
+    def test_single_nonexistent_default(self, tmp_path):
+        data = tmp_path / "does-not-exist"
+        with patch("llm_archive.setup.provider_paths", return_value=[data]):
+            result = _enable_file("claudecode", None)
+            assert result == {"path": str(data)}
+
+    def test_explicit_path_nonexistent(self, tmp_path):
+        target = tmp_path / "nonexistent.db"
+        result = _enable_file("claudecode", str(target))
+        assert result == {"path": str(target)}
+
 
 class TestSetupSummary:
     def test_web_provider(self):

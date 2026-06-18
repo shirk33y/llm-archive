@@ -63,22 +63,28 @@ def _enable_web(
 
 
 def _enable_file(source_id: str, path: str | None) -> dict:
-    candidates = [Path(path).expanduser()] if path else list(provider_paths(source_id))
-    existing = [candidate for candidate in candidates if candidate.exists()]
-    if not existing and source_id != "windsurf":
+    if path:
+        return {"path": str(Path(path).expanduser())}
+    defaults = list(provider_paths(source_id))
+    if not defaults:
+        if source_id == "windsurf":
+            return {}
         raise click.ClickException(f"No data path found for {source_id}. Pass --path.")
+    if len(defaults) == 1:
+        return {"path": str(defaults[0])}
+    existing = [p for p in defaults if p.exists()]
+    if not existing:
+        return {"path": str(defaults[0])}
     if len(existing) == 1:
         return {"path": str(existing[0])}
-    if len(existing) > 1:
-        labels = [str(item) for item in existing]
-        choice = click.prompt(
-            "Choose data path",
-            type=click.Choice([str(i + 1) for i in range(len(labels))]),
-            show_choices=False,
-            default="1",
-        )
-        return {"path": labels[int(choice) - 1]}
-    return {}
+    labels = [str(item) for item in existing]
+    choice = click.prompt(
+        "Choose data path",
+        type=click.Choice([str(i + 1) for i in range(len(labels))]),
+        show_choices=False,
+        default="1",
+    )
+    return {"path": labels[int(choice) - 1]}
 
 
 def _choose_profile(matches: list[BrowserProfile]) -> BrowserProfile | None:

@@ -68,7 +68,7 @@ def sync(
 
 
 @main.command()
-@click.argument("source", type=click.Choice(list(INGESTORS)))
+@click.argument("sources", nargs=-1, type=click.Choice(list(INGESTORS)))
 @click.option("--browser", default=None, help="Detected browser name")
 @click.option("--profile", default=None, help="Browser profile name")
 @click.option("--browser-path", default=None, help="Custom browser/profile path")
@@ -76,6 +76,20 @@ def sync(
 @click.option("--force", is_flag=True, help="Reconfigure existing source")
 @click.option("--dry-run", is_flag=True, help="Detect and verify only")
 def enable(
+    sources: tuple[str, ...],
+    browser: str | None,
+    profile: str | None,
+    browser_path: str | None,
+    path: str | None,
+    force: bool,
+    dry_run: bool,
+):
+    """Configure sources, verify auth/path, run first sync."""
+    for source in sources:
+        _enable_one(source, browser, profile, browser_path, path, force, dry_run)
+
+
+def _enable_one(
     source: str,
     browser: str | None,
     profile: str | None,
@@ -84,7 +98,6 @@ def enable(
     force: bool,
     dry_run: bool,
 ):
-    """Configure source, verify auth/path, run first sync."""
     values = enable_provider(
         source,
         browser=browser,

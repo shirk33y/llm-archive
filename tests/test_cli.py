@@ -1218,3 +1218,33 @@ def test_resume_unsupported_gemini(tmp_path):
     result = CliRunner().invoke(cli.main, ["resume", "gemini:abc", "--db-path", str(db_path)])
     assert result.exit_code == 1
     assert "does not support resuming" in result.output
+
+
+class TestEnable:
+    def test_enable_single_provider(self, monkeypatch):
+        results = []
+
+        def fake_enable(source, **kwargs):
+            results.append(source)
+            return {"enabled": True, "path": f"/fake/{source}"}
+
+        monkeypatch.setattr(cli, "enable_provider", fake_enable)
+        monkeypatch.setattr(cli, "_run", lambda *a, **kw: None)
+
+        result = CliRunner().invoke(cli.main, ["enable", "codex"])
+        assert result.exit_code == 0
+        assert results == ["codex"]
+
+    def test_enable_multiple_providers(self, monkeypatch):
+        results = []
+
+        def fake_enable(source, **kwargs):
+            results.append(source)
+            return {"enabled": True, "path": f"/fake/{source}"}
+
+        monkeypatch.setattr(cli, "enable_provider", fake_enable)
+        monkeypatch.setattr(cli, "_run", lambda *a, **kw: None)
+
+        result = CliRunner().invoke(cli.main, ["enable", "codex", "chatgpt"])
+        assert result.exit_code == 0
+        assert results == ["codex", "chatgpt"]

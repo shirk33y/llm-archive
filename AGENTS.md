@@ -34,10 +34,9 @@ The script:
 - Commits as `chore(main): release vX.Y.Z` and tags
 - Pushes to GitHub (triggers CI on the tag commit)
 - Computes archive SHA and updates brew formula
-- Copies formula to homebrew-tap and pushes
 
 After the tag is pushed, `.github/workflows/release.yml` auto-creates a GitHub Release with notes generated from conventional commits.
 
 CI workflows run on the tag commit. If anything fails, delete the tag (`git tag -d vX.Y.Z && git push origin :vX.Y.Z`), fix, and rerun.
 
-Overrides: `TAP_DIR=... DRY_RUN=1 scripts/release.sh`
+Overrides: `DRY_RUN=1 scripts/release.sh`

@@ -5,19 +5,17 @@
 # Pre-flight: ruff check + pytest + service smoke
 # Version: auto-detect from conventional commits since last tag
 # Bump: pyproject.toml → commit → tag → push
-# Brew: update Formula/llm-archive.rb, copy to tap repo, push
+# Brew: update Formula/llm-archive.rb
 #
 # Usage:  scripts/release.sh
 #
 # Overrides:
-#   TAP_DIR   path to homebrew-tap clone  (default: ~/homebrew-tap)
 #   DRY_RUN   set to 1 to skip push steps
 #
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
 
-TAP_DIR="${TAP_DIR:-/home/linuxbrew/.linuxbrew/Homebrew/Library/Taps/shirk33y/homebrew-tap}"
 DRY_RUN="${DRY_RUN:-0}"
 
 # ── Help ──────────────────────────────────────────────────────────────────
@@ -179,20 +177,6 @@ push_formula() {
   run git push origin main
 }
 
-# ── 7. Copy + push brew formula to tap repo ────────────────────────────
-push_tap() {
-  if [ ! -d "$TAP_DIR" ]; then
-    warn "tap dir $TAP_DIR not found — skipping tap push"
-    warn "  manually: cp Formula/llm-archive.rb <tap>/Formula/ && git -C <tap> add -A && git -C <tap> commit && git -C <tap> push"
-    return
-  fi
-
-  run cp "Formula/llm-archive.rb" "$TAP_DIR/Formula/llm-archive.rb"
-  run git -C "$TAP_DIR" add -A
-  run git -C "$TAP_DIR" commit -m "llm-archive ${NEXT_TAG}"
-  run git -C "$TAP_DIR" push
-}
-
 # ── Main ──────────────────────────────────────────────────────────────────
 main() {
   if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
@@ -215,7 +199,7 @@ main() {
 
   # Confirm
   echo "Ready to release $NEXT_TAG."
-  echo "Will bump, push to GitHub, fetch archive SHA, update formula, and push to tap."
+  echo "Will bump, push to GitHub, fetch archive SHA, update formula, and push."
   echo "Press Enter to continue or Ctrl-C to abort..."
   read -r
 
@@ -224,7 +208,6 @@ main() {
   fetch_sha
   update_formula
   push_formula
-  push_tap
 
   echo ""
   info "Released ${NEXT_TAG} 🚀"
