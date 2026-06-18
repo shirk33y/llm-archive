@@ -38,7 +38,7 @@ def main(verbose: bool):
 
 
 @main.command()
-@click.argument("source", type=click.Choice(list(INGESTORS)), required=False)
+@click.argument("sources", nargs=-1, type=click.Choice(list(INGESTORS)))
 @click.option("--path", default=None, help="Override local path (for windsurf, etc.)")
 @click.option("--db-path", default=None, help="Override database path")
 @click.option("-f", "--force", is_flag=True, help="Force full resync (ignore last sync timestamp)")
@@ -52,7 +52,7 @@ def main(verbose: bool):
 @click.option("--no-wait", is_flag=True, help="Do not wait if source already syncing")
 @click.option("--json", "json_output", is_flag=True, help="Print JSON")
 def sync(
-    source: str | None,
+    sources: tuple[str, ...],
     path: str | None,
     db_path: str | None,
     force: bool,
@@ -64,7 +64,8 @@ def sync(
     """Sync sources. Performs first-time setup automatically when needed."""
     if verbose:
         set_verbose(True)
-    _run(_sync_command(source, db_path, path, force, auth_mode, no_wait, json_output))
+    for source in sources or [None]:
+        _run(_sync_command(source, db_path, path, force, auth_mode, no_wait, json_output))
 
 
 @main.command()
@@ -113,16 +114,17 @@ def _enable_one(
 
 
 @main.command()
-@click.argument("source", type=click.Choice(list(INGESTORS)))
+@click.argument("sources", nargs=-1, type=click.Choice(list(INGESTORS)))
 @click.option("--no-confirm", is_flag=True, help="Disable without prompt")
-def disable(source: str, no_confirm: bool):
+def disable(sources: tuple[str, ...], no_confirm: bool):
     """Disable source scheduling/watchers, keep archived data."""
-    if not no_confirm and not click.confirm(f"Disable {source}?", default=True):
+    if not no_confirm and not click.confirm(f"Disable {', '.join(sources)}?", default=True):
         return
-    disable_provider(source)
-    con = db.connect(db.DB_PATH)
-    db.set_provider_enabled(con, source, False)
-    console.print(f"{source} disabled")
+    for source in sources:
+        disable_provider(source)
+        con = db.connect(db.DB_PATH)
+        db.set_provider_enabled(con, source, False)
+        console.print(f"{source} disabled")
 
 
 @main.command()
