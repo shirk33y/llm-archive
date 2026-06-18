@@ -133,38 +133,37 @@ detect_version() {
   echo ""
 }
 
-# ── 2. Bump version in pyproject.toml ───────────────────────────────────
+# ── 2. Bump version in pyproject.toml + push ────────────────────────────
 bump_version() {
   sed -i "s/^version = \".*\"/version = \"${NEXT_VER}\"/" pyproject.toml
   info "pyproject.toml → $NEXT_VER"
 }
 
-# ── 3. Build archive + compute SHA ──────────────────────────────────────
-compute_sha() {
-  REPO_URL="https://github.com/shirk33y/llm-archive"
-  # Simulate: GitHub generates archive after push. We fetch from the archive URL.
-  # But the tag doesn't exist yet locally (it will after push).
-  # We need the tag to exist on GitHub first. So sequence matters:
-  #   push → compute SHA → update formula → push formula
+# ── 3. Commit, tag, push (without formula — need SHA from GitHub) ──────
+push_release() {
+  run git add pyproject.toml
+  run git commit -m "chore(main): release ${NEXT_TAG}"
+  run git tag "$NEXT_TAG" -m "llm-archive ${NEXT_TAG}"
+  run git push origin main --tags
+}
 
-  # Alternative: compute SHA from local git archive (same result as GitHub).
-  rm -rf /tmp/llm-archive-release-archive
-  cmd git archive --format=tar.gz --prefix="llm-archive-${NEXT_VER}/" \
-    -o "/tmp/llm-archive-release-archive.tar.gz" HEAD
-  SHA=$(sha256sum /tmp/llm-archive-release-archive.tar.gz | cut -d' ' -f1)
-  rm -f /tmp/llm-archive-release-archive.tar.gz
+# ── 4. Fetch archive from GitHub + compute SHA ─────────────────────────
+fetch_sha() {
+  REPO_URL="https://github.com/shirk33y/llm-archive"
+
+  echo "Fetching archive from GitHub..."
+  ARCHIVE_URL="${REPO_URL}/archive/refs/tags/${NEXT_TAG}.tar.gz"
+  SHA=$(curl -sL "$ARCHIVE_URL" | sha256sum | cut -d' ' -f1)
+  [ -n "$SHA" ] || err "failed to fetch archive from $ARCHIVE_URL"
   info "archive SHA256: $SHA"
 }
 
-# ── 4. Update brew formula ─────────────────────────────────────────────
+# ── 5. Update brew formula ──────────────────────────────────────────────
 update_formula() {
   FORMULA="Formula/llm-archive.rb"
-
-  # Check formula content (expected format)
-  grep -q "version \"" "$FORMULA" || err "unexpected formula format (version)"
-
-  # In-place update: version + sha256 + url
   ARCHIVE_URL="${REPO_URL}/archive/refs/tags/${NEXT_TAG}.tar.gz"
+
+  grep -q "version \"" "$FORMULA" || err "unexpected formula format (version)"
 
   sed -i 's|url ".*archive/refs/tags/v.*.tar.gz"|url "'"$ARCHIVE_URL"'"|' "$FORMULA"
   sed -i 's|sha256 ".*"|sha256 "'"$SHA"'"|' "$FORMULA"
@@ -173,15 +172,14 @@ update_formula() {
   info "$FORMULA updated"
 }
 
-# ── 5. Commit, tag, push ───────────────────────────────────────────────
-commit_and_tag() {
-  run git add pyproject.toml "$FORMULA"
-  run git commit -m "chore(main): release ${NEXT_TAG}"
-  run git tag "$NEXT_TAG" -m "llm-archive ${NEXT_TAG}"
-  run git push origin main --tags
+# ── 6. Commit formula + push ───────────────────────────────────────────
+push_formula() {
+  run git add "$FORMULA"
+  run git commit -m "chore(main): formula ${NEXT_TAG}"
+  run git push origin main
 }
 
-# ── 6. Copy + push brew formula to tap repo ────────────────────────────
+# ── 7. Copy + push brew formula to tap repo ────────────────────────────
 push_tap() {
   if [ ! -d "$TAP_DIR" ]; then
     warn "tap dir $TAP_DIR not found — skipping tap push"
@@ -217,14 +215,15 @@ main() {
 
   # Confirm
   echo "Ready to release $NEXT_TAG."
-  echo "Version bump will be committed, tagged, and pushed."
+  echo "Will bump, push to GitHub, fetch archive SHA, update formula, and push to tap."
   echo "Press Enter to continue or Ctrl-C to abort..."
   read -r
 
   bump_version
-  compute_sha
+  push_release
+  fetch_sha
   update_formula
-  commit_and_tag
+  push_formula
   push_tap
 
   echo ""
@@ -235,6 +234,9 @@ main() {
   echo ""
   echo "When CI passes, the release workflow will auto-publish:"
   echo "  https://github.com/shirk33y/llm-archive/releases"
+  echo ""
+  echo "Next version already has formula committed. To install:"
+  echo "  brew update && brew upgrade llm-archive"
 }
 
 main "$@"
