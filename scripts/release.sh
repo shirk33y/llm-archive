@@ -59,6 +59,7 @@ preflight() {
   TMPCFG=$(mktemp /tmp/llm-archive-release-config.XXXXXX)
   printf '[ingestors.dummy]\nenabled = false\nsync_interval = "1s"\nmin_sync_interval = "1s"\nwatch = false\n' > "$TMPCFG"
   mkdir -p /tmp/llm-archive-release-home
+  _SAVED_HOME="$HOME"
   export HOME=/tmp/llm-archive-release-home
   mkdir -p "$HOME/.config/llm-archive"
   cp "$TMPCFG" "$HOME/.config/llm-archive/config.toml"
@@ -83,6 +84,7 @@ hb = (d.get('service') or {}).get('heartbeat_at') or 0
 print('ok' if hb else '')
 ")
   [ -n "$HB" ] || err "service status missing heartbeat"
+  HOME="$_SAVED_HOME"
   info "service smoke passed"
 }
 
