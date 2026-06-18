@@ -6,18 +6,33 @@ Related project: [`unbalancedparentheses/llm-archive`](https://github.com/unbala
 
 ## Quickstart
 
+**Homebrew** (macOS, Linux):
+
 ```sh
 brew tap shirk33y/llm-archive https://github.com/shirk33y/llm-archive
-brew install llm-archive
-llm-archive enable chatgpt
-llm-archive sync chatgpt
+brew install llm-archive          # installs Python 3.13 alongside
+```
+
+> On Homebrew ≥ 5.2, run `brew trust --formula shirk33y/llm-archive/llm-archive` after the first `brew install`.
+
+**pipx** (uses your existing Python ≥ 3.11):
+
+```sh
+pipx install git+https://github.com/shirk33y/llm-archive.git
+```
+
+Then:
+
+```sh
+llm-archive enable chatgpt claude codex
+llm-archive sync
 llm-archive search "that thing I forgot"
 ```
 
 Run background sync:
 
 ```sh
-brew services start shirk33y/llm-archive
+brew services start shirk33y/llm-archive   # Homebrew only
 llm-archive status
 ```
 
@@ -40,18 +55,14 @@ Web providers default to one-minute sync. File providers default to file watchin
 ## Setup
 
 ```sh
-llm-archive enable chatgpt
-llm-archive enable claude
-llm-archive enable deepseek
-llm-archive enable claudecode
-llm-archive disable deepseek
+llm-archive enable chatgpt claude deepseek
+llm-archive enable claudecode codex
+llm-archive disable deepseek cursor
 ```
 
-`enable` detects supported browser profiles and asks which one to use when more than one works. Supported browser families include Firefox/Waterfox/LibreWolf and Chromium-family browsers such as Chrome, Chromium, Brave, Edge, and Opera.
+`enable` detects supported browser profiles and asks which one to use when more than one works. File providers use their default data path automatically — pass `--path` to override. Supported browser families include Firefox/Waterfox/LibreWolf and Chromium-family browsers such as Chrome, Chromium, Brave, Edge, and Opera.
 
-Config lives in the standard user config directory:
-
-It is created automatically on first run with safe disabled defaults and any obvious browser profile root.
+Config lives in the standard user config directory and is created automatically on first run with safe disabled defaults.
 
 ```toml
 [ingestors.chatgpt]
@@ -74,10 +85,11 @@ Durations use `ms`, `s`, `m`, `h`, or `d`.
 ## Commands
 
 ```sh
-llm-archive enable <provider>
-llm-archive disable <provider>
-llm-archive sync [provider] [--force]
-llm-archive search [--provider provider] <phrase>
+llm-archive enable <provider> [<provider> ...]
+llm-archive disable <provider> [<provider> ...]
+llm-archive sync [<provider> ...] [--force]
+llm-archive search [--sync] [--provider provider] <phrase>
+llm-archive resume <thread-id>
 llm-archive show <thread>
 llm-archive status [--verbose]
 llm-archive logs [provider]

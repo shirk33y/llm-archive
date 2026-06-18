@@ -188,7 +188,6 @@ main() {
   echo "Releasing from: $(git rev-parse --short HEAD)"
   echo "Last tag:       $LAST_TAG"
   echo "DRY_RUN:        $DRY_RUN"
-  echo "TAP_DIR:        $TAP_DIR"
   echo ""
 
   preflight
