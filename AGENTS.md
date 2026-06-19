@@ -1,5 +1,9 @@
 # llm-archive — AGENTS.md
 
+## Setup
+
+After cloning: `uv sync --extra dev && uv run pre-commit install`
+
 ## Commits
 
 `type(scope): description` — lowercase, imperative, no trailing period. Scope optional.
