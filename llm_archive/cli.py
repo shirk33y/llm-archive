@@ -990,7 +990,7 @@ def logs(source: str | None):
 @click.option("--model", default="ollama/qwen2.5:7b", help="litellm model string (e.g. ollama/qwen2.5:7b, anthropic/claude-sonnet-4-20250514)")
 @click.option("--limit", "-n", default=0, type=int, help="Max threads to summarize (0=all)")
 @click.option("--db-path", default=None, help="Override database path")
-def sum(
+def sum_cmd(
     source: str | None,
     force: bool,
     model: str,
