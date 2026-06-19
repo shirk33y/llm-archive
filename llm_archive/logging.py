@@ -56,9 +56,11 @@ def set_verbose(verbose: bool) -> None:
     if verbose:
         root_logger.setLevel(logging.DEBUG)
         logging.getLogger("httpx").setLevel(logging.DEBUG)
+        logging.getLogger("litellm").setLevel(logging.INFO)
     else:
         root_logger.setLevel(logging.INFO)
         logging.getLogger("httpx").setLevel(logging.WARNING)
+        logging.getLogger("litellm").setLevel(logging.WARNING)
 
 
 def get_logger(name: str) -> logging.Logger:
