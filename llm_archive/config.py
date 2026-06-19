@@ -3,9 +3,10 @@ from __future__ import annotations
 import os
 import re
 import tomllib
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from pydantic import BaseModel, Field, model_validator
 
 VALID_AUTH_MODES = {"cookies"}
 WEB_INGESTORS = {"chatgpt", "claude", "deepseek"}
@@ -24,8 +25,7 @@ def config_path() -> Path:
     return config_home / "llm-archive" / "config.toml"
 
 
-@dataclass(frozen=True)
-class IngestorConfig:
+class IngestorConfig(BaseModel):
     mode: str | None = None
     enabled: bool = False
     sync_interval_ms: int | None = None
@@ -37,125 +37,46 @@ class IngestorConfig:
     browser_dir: str | None = None
     path: str | None = None
 
+    @model_validator(mode="after")
+    def _check_mode(self) -> IngestorConfig:
+        if self.mode is not None and self.mode not in VALID_AUTH_MODES:
+            valid = ", ".join(sorted(VALID_AUTH_MODES))
+            raise ValueError(f"Invalid auth mode: {self.mode!r}. Expected: {valid}")
+        return self
 
-@dataclass(frozen=True)
-class EmbedConfig:
+
+class EmbedConfig(BaseModel):
     auto: bool = True
+    provider: str = "fastembed"
+    model: str = "BAAI/bge-small-en-v1.5"
 
 
-@dataclass(frozen=True)
-class AppConfig:
+class SummarizeConfig(BaseModel):
+    auto: bool = False
+    model: str = "ollama/qwen2.5:7b"
+    min_new_messages: int = Field(default=3, ge=0)
+
+
+class AppConfig(BaseModel):
     browser_path: str | None = None
     browser_dir: str | None = None
-    ingestors: dict[str, IngestorConfig] | None = None
-    embed: EmbedConfig | None = None
+    embed: EmbedConfig = Field(default_factory=EmbedConfig)
+    summarize: SummarizeConfig = Field(default_factory=SummarizeConfig)
+    ingestors: dict[str, IngestorConfig] = Field(default_factory=dict)
 
     def ingestor(self, source_id: str) -> IngestorConfig:
         defaults = default_ingestor_config(source_id)
-        override = (self.ingestors or {}).get(source_id)
+        override = self.ingestors.get(source_id)
         if not override:
-            return defaults
-        return IngestorConfig(
-            mode=override.mode if override.mode is not None else defaults.mode,
-            enabled=override.enabled,
-            sync_interval_ms=override.sync_interval_ms or defaults.sync_interval_ms,
-            min_sync_interval_ms=override.min_sync_interval_ms or defaults.min_sync_interval_ms,
-            watch=override.watch if override.watch is not None else defaults.watch,
-            browser=override.browser,
-            profile=override.profile,
-            browser_path=override.browser_path or self.browser_path,
-            browser_dir=override.browser_dir or self.browser_dir,
-            path=override.path,
-        )
+            return IngestorConfig(**defaults.model_dump())
+        merged = defaults.model_dump()
+        merged.update({k: v for k, v in override.model_dump().items() if v is not None})
+        merged["browser_path"] = merged.get("browser_path") or self.browser_path
+        merged["browser_dir"] = merged.get("browser_dir") or self.browser_dir
+        return IngestorConfig(**merged)
 
 
-def load_config(path: Path | None = None) -> AppConfig:
-    path = path or config_path()
-    ensure_config(path)
-
-    data = tomllib.loads(path.read_text())
-    ingestors: dict[str, IngestorConfig] = {}
-
-    for source_id, raw in _table(data.get("ingestors")).items():
-        mode = _optional_str(raw.get("mode"), f"ingestors.{source_id}.mode")
-        if mode is not None and mode not in VALID_AUTH_MODES:
-            valid = ", ".join(sorted(VALID_AUTH_MODES))
-            raise ValueError(f"Invalid auth mode for {source_id}: {mode!r}. Expected: {valid}")
-        enabled = _optional_bool(raw.get("enabled"), f"ingestors.{source_id}.enabled")
-        ingestors[source_id] = IngestorConfig(
-            mode=mode,
-            enabled=True if enabled is None else enabled,
-            sync_interval_ms=_optional_duration(
-                raw.get("sync_interval"), f"ingestors.{source_id}.sync_interval"
-            ),
-            min_sync_interval_ms=_optional_duration(
-                raw.get("min_sync_interval"), f"ingestors.{source_id}.min_sync_interval"
-            ),
-            watch=_optional_bool(raw.get("watch"), f"ingestors.{source_id}.watch"),
-            browser=_optional_str(raw.get("browser"), f"ingestors.{source_id}.browser"),
-            profile=_optional_str(raw.get("profile"), f"ingestors.{source_id}.profile"),
-            browser_path=_optional_str(
-                raw.get("browser_path"), f"ingestors.{source_id}.browser_path"
-            ),
-            browser_dir=_optional_str(raw.get("browser_dir"), f"ingestors.{source_id}.browser_dir"),
-            path=_optional_str(raw.get("path"), f"ingestors.{source_id}.path"),
-        )
-
-    return AppConfig(
-        browser_path=_optional_str(data.get("browser_path"), "browser_path"),
-        browser_dir=_optional_str(data.get("browser_dir"), "browser_dir"),
-        ingestors=ingestors,
-        embed=_parse_embed(data.get("embed")),
-    )
-
-
-def _table(value: Any) -> dict[str, dict[str, Any]]:
-    if value is None:
-        return {}
-    if not isinstance(value, dict):
-        raise ValueError("ingestors must be a TOML table")
-    for key, child in value.items():
-        if not isinstance(child, dict):
-            raise ValueError(f"ingestors.{key} must be a TOML table")
-    return value
-
-
-def _optional_str(value: Any, name: str) -> str | None:
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise ValueError(f"{name} must be a string")
-    return value
-
-
-def _parse_embed(value: Any) -> EmbedConfig | None:
-    if value is None:
-        return None
-    if not isinstance(value, dict):
-        raise ValueError("embed must be a TOML table")
-    auto = value.get("auto")
-    if auto is not None and not isinstance(auto, bool):
-        raise ValueError("embed.auto must be a boolean")
-    return EmbedConfig(auto=auto if auto is not None else True)
-
-
-def _optional_bool(value: Any, name: str) -> bool | None:
-    if value is None:
-        return None
-    if not isinstance(value, bool):
-        raise ValueError(f"{name} must be a boolean")
-    return value
-
-
-def _optional_duration(value: Any, name: str) -> int | None:
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise ValueError(f"{name} must be a duration string")
-    return parse_duration_ms(value)
-
-
-def parse_duration_ms(value: str) -> int:
+def _duration_str_to_ms(value: str) -> int:
     match = _DURATION_RE.match(value)
     if not match:
         raise ValueError(f"Invalid duration: {value!r}")
@@ -165,9 +86,7 @@ def parse_duration_ms(value: str) -> int:
     return max(1, int(amount * factor))
 
 
-def format_duration_ms(ms: int | None) -> str:
-    if ms is None:
-        return "-"
+def _ms_to_duration_str(ms: int) -> str:
     units = [("d", 86_400_000), ("h", 3_600_000), ("m", 60_000), ("s", 1000)]
     for suffix, factor in units:
         if ms >= factor:
@@ -175,26 +94,71 @@ def format_duration_ms(ms: int | None) -> str:
     return f"{ms}ms"
 
 
+def parse_duration_ms(value: str) -> int:
+    return _duration_str_to_ms(value)
+
+
+def format_duration_ms(ms: int | None) -> str:
+    if ms is None:
+        return "-"
+    return _ms_to_duration_str(ms)
+
+
 def default_ingestor_config(source_id: str) -> IngestorConfig:
     if source_id == "deepseek":
         return IngestorConfig(
             mode="cookies",
-            sync_interval_ms=parse_duration_ms("30m"),
-            min_sync_interval_ms=parse_duration_ms("10m"),
+            sync_interval_ms=_duration_str_to_ms("30m"),
+            min_sync_interval_ms=_duration_str_to_ms("10m"),
             watch=False,
         )
     if source_id in WEB_INGESTORS:
         return IngestorConfig(
             mode="cookies",
-            sync_interval_ms=parse_duration_ms("30m"),
-            min_sync_interval_ms=parse_duration_ms("30m"),
+            sync_interval_ms=_duration_str_to_ms("30m"),
+            min_sync_interval_ms=_duration_str_to_ms("30m"),
             watch=False,
         )
     return IngestorConfig(
-        sync_interval_ms=parse_duration_ms("10s"),
-        min_sync_interval_ms=parse_duration_ms("10s"),
+        sync_interval_ms=_duration_str_to_ms("10s"),
+        min_sync_interval_ms=_duration_str_to_ms("10s"),
         watch=True,
     )
+
+
+def _raw_to_model(data: dict[str, Any]) -> AppConfig:
+    ingestors: dict[str, dict[str, Any]] = {}
+    for source_id, raw in data.get("ingestors", {}).items():
+        entry: dict[str, Any] = {}
+        for key in ("mode", "enabled", "watch", "browser", "profile", "browser_path", "browser_dir", "path"):
+            if key in raw:
+                entry[key] = raw[key]
+        if "sync_interval" in raw:
+            entry["sync_interval_ms"] = _duration_str_to_ms(raw["sync_interval"])
+        if "min_sync_interval" in raw:
+            entry["min_sync_interval_ms"] = _duration_str_to_ms(raw["min_sync_interval"])
+        ingestors[source_id] = entry
+
+    model_data: dict[str, Any] = {}
+    if "browser_path" in data:
+        model_data["browser_path"] = data["browser_path"]
+    if "browser_dir" in data:
+        model_data["browser_dir"] = data["browser_dir"]
+    if "embed" in data:
+        model_data["embed"] = data["embed"]
+    if "summarize" in data:
+        model_data["summarize"] = data["summarize"]
+    if ingestors:
+        model_data["ingestors"] = ingestors
+
+    return AppConfig.model_validate(model_data)
+
+
+def load_config(path: Path | None = None) -> AppConfig:
+    path = path or config_path()
+    ensure_config(path)
+    data = tomllib.loads(path.read_text())
+    return _raw_to_model(data)
 
 
 def read_config_text(path: Path | None = None) -> str:
@@ -233,7 +197,8 @@ def ensure_config(path: Path | None = None) -> Path:
 
 def _default_raw_config() -> dict[str, Any]:
     return {
-        "embed": {"auto": True},
+        "embed": {"auto": True, "provider": "fastembed", "model": "BAAI/bge-small-en-v1.5"},
+        "summarize": {"auto": False, "model": "ollama/qwen2.5:7b", "min_new_messages": 3},
         "ingestors": {
             source_id: _default_ingestor_table(source_id)
             for source_id in INGESTOR_ORDER
@@ -247,9 +212,9 @@ def _default_ingestor_table(source_id: str) -> dict[str, Any]:
     if config.mode:
         row["mode"] = config.mode
     if config.sync_interval_ms:
-        row["sync_interval"] = format_duration_ms(config.sync_interval_ms)
+        row["sync_interval"] = _ms_to_duration_str(config.sync_interval_ms)
     if config.min_sync_interval_ms:
-        row["min_sync_interval"] = format_duration_ms(config.min_sync_interval_ms)
+        row["min_sync_interval"] = _ms_to_duration_str(config.min_sync_interval_ms)
     if config.watch is not None:
         row["watch"] = config.watch
     return row
@@ -279,7 +244,7 @@ def _browser_roots() -> list[Path]:
         home / ".mozilla" / "firefox",
         home / ".var" / "app" / "org.mozilla.firefox" / "config" / "mozilla" / "firefox",
         home / ".var" / "app" / "org.mozilla.firefox" / ".mozilla" / "firefox",
-        home / "snap" / "firefox" / "common" / ".mozilla" / "firefox",
+        home / ".snap" / "firefox" / "common" / ".mozilla" / "firefox",
     ]
 
 
@@ -291,17 +256,17 @@ def _write_raw_config(data: dict[str, Any], path: Path) -> None:
 def _toml(data: dict[str, Any]) -> str:
     lines: list[str] = []
     for key, value in data.items():
-        if key in ("ingestors", "embed") or isinstance(value, dict):
+        if key in ("ingestors", "embed", "summarize") or isinstance(value, dict):
             continue
         lines.append(f"{key} = {_toml_value(value)}")
     if lines:
         lines.append("")
-    embed = data.get("embed")
-    if isinstance(embed, dict):
-        lines.append("[embed]")
-        for key, value in embed.items():
-            lines.append(f"{key} = {_toml_value(value)}")
-        lines.append("")
+    for section in ("embed", "summarize"):
+        if section in data and isinstance(data[section], dict):
+            lines.append(f"[{section}]")
+            for key, value in data[section].items():
+                lines.append(f"{key} = {_toml_value(value)}")
+            lines.append("")
     ingestors = data.get("ingestors")
     if isinstance(ingestors, dict):
         for source_id in sorted(ingestors):

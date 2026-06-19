@@ -206,7 +206,7 @@ def _ensure_fresh(source_ids: list[str] | None = None) -> None:
     )
 
     config = load_config()
-    if config.embed is None or config.embed.auto:
+    if config.embed.auto:
         con = db.connect()
         try:
             auto_embed(con)

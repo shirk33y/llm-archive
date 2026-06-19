@@ -21,6 +21,8 @@ dependencies = [
     "yt-dlp>=2025.12.8",
     "watchdog>=6.0.0",
     "fastembed>=0.8.0",
+    "litellm>=1.83.0,<1.83.3",
+    "pydantic>=2.13.3",
 ]
 
 [project.optional-dependencies]

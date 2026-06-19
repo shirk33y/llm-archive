@@ -375,7 +375,7 @@ def test_auto_embed_embeds_new_threads(con, monkeypatch):
     monkeypatch.setattr("llm_archive.db.has_embeddings", lambda c: True)
     monkeypatch.setattr(
         "llm_archive.embed.embed_batch",
-        lambda texts, model=None: [[0.1] * 384 for _ in texts],
+        lambda texts, model=None, provider="fastembed": [[0.1] * 384 for _ in texts],
     )
     result = auto_embed(con)
     assert result == 1

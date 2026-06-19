@@ -4,11 +4,13 @@ import logging
 import struct
 from typing import Optional
 
+import litellm
+
 logger = logging.getLogger("llm_archive.embed")
 
 DEFAULT_MODEL = "BAAI/bge-small-en-v1.5"
 
-_MODEL_DIMS: dict[str, int] = {
+_FASTEMBED_DIMS: dict[str, int] = {
     "BAAI/bge-small-en-v1.5": 384,
     "BAAI/bge-small-en-v1.5-Q": 384,
 }
@@ -16,8 +18,14 @@ _MODEL_DIMS: dict[str, int] = {
 _cache: dict = {}
 
 
-def get_dims(model: str) -> int:
-    return _MODEL_DIMS.get(model, 384)
+def get_dims(model: str, provider: str = "fastembed") -> int:
+    if provider == "fastembed":
+        return _FASTEMBED_DIMS.get(model, 384)
+    try:
+        info = litellm.get_model_info(model)
+        return info.get("max_input_tokens", 384)
+    except Exception:
+        return 384
 
 
 def _get_embedder(model: str = DEFAULT_MODEL):
@@ -29,15 +37,21 @@ def _get_embedder(model: str = DEFAULT_MODEL):
     return _cache[key]
 
 
-def embed_text(text: str, model: str = DEFAULT_MODEL) -> list[float]:
+def embed_text(text: str, model: str = DEFAULT_MODEL, provider: str = "fastembed") -> list[float]:
+    if provider == "litellm":
+        resp = litellm.embedding(model=model, input=[text])
+        return resp["data"][0]["embedding"]
     embedder = _get_embedder(model)
     results = list(embedder.embed([text]))
     return results[0].tolist()
 
 
-def embed_batch(texts: list[str], model: str = DEFAULT_MODEL) -> list[list[float]]:
+def embed_batch(texts: list[str], model: str = DEFAULT_MODEL, provider: str = "fastembed") -> list[list[float]]:
     if not texts:
         return []
+    if provider == "litellm":
+        resp = litellm.embedding(model=model, input=texts)
+        return [d["embedding"] for d in resp["data"]]
     embedder = _get_embedder(model)
     results = list(embedder.embed(texts))
     return [r.tolist() for r in results]
@@ -106,7 +120,7 @@ def threads_needing_embedding(
     return [r["id"] for r in rows]
 
 
-def auto_embed(con, source_id: Optional[str] = None) -> int:
+def auto_embed(con, source_id: Optional[str] = None, model: str = DEFAULT_MODEL, provider: str = "fastembed") -> int:
     """Embed threads that don't have embeddings yet.
 
     Returns the number of threads embedded. Returns 0 if sqlite-vec is
@@ -118,8 +132,7 @@ def auto_embed(con, source_id: Optional[str] = None) -> int:
     import time as _time
     from llm_archive import db
 
-    model = DEFAULT_MODEL
-    dims = get_dims(model)
+    dims = get_dims(model, provider)
     has_vec, dim_mismatch = db.init_embeddings(con, dims)
     if not has_vec or dim_mismatch:
         return 0
@@ -149,7 +162,7 @@ def auto_embed(con, source_id: Optional[str] = None) -> int:
             continue
 
         try:
-            vectors = embed_batch(texts, model)
+            vectors = embed_batch(texts, model, provider)
         except Exception:
             logger.exception("auto_embed: batch failed, stopping")
             break

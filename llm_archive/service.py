@@ -118,7 +118,7 @@ async def run_service(
                                 break
                         db.mark_provider_stale(con, source_id)
                 await _run_due_syncs(con, config, runner, db_path)
-                if config.embed is None or config.embed.auto:
+                if config.embed.auto:
                     auto_embed(con)
                 await _run_due_backup(con, db_path)
             except Exception:

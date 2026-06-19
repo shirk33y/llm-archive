@@ -131,6 +131,45 @@ def _due_for_search(state: dict, provider_config) -> bool:
     return db.now_ms() - int(last) >= interval
 
 
+async def run_summarize_job(
+    *,
+    config: AppConfig,
+    runner: SyncRunner,
+    db_path: Path | None = None,
+    force: bool = False,
+    wait: bool = True,
+) -> JobResult:
+    con = db.connect(db_path or db.DB_PATH)
+    summarize_config = config.summarize
+
+    if not summarize_config.auto and not force:
+        job_id = db.create_job(con, "summarize", source_id=None, status="skipped", reason="disabled")
+        db.update_job(con, job_id, finish=True)
+        return JobResult(source_id="summarize", status="skipped", reason="disabled", job_id=job_id)
+
+    active = db.active_job(con, "summarize", source_id=None)
+    if active:
+        if not wait:
+            return JobResult(source_id="summarize", status="running", reason=f"already summarizing (job {active['id']})", job_id=active["id"])
+        logger.info(f"summarize: waiting for running job {active['id']} to complete")
+        await _wait_for_job(con, active["id"])
+        return JobResult(source_id="summarize", status="joined", reason="already running, joined", job_id=active["id"], waited=True)
+
+    job_id = db.create_job(con, "summarize", source_id=None, force=force)
+    try:
+        ok = await runner("summarize", force)
+    except Exception as exc:
+        db.update_job(con, job_id, status="failed", reason="failed", error=str(exc), finish=True)
+        return JobResult(source_id="summarize", status="failed", reason="failed", job_id=job_id)
+
+    if ok:
+        db.update_job(con, job_id, status="success", reason="summarized", finish=True)
+        return JobResult(source_id="summarize", status="success", reason="summarized", job_id=job_id)
+
+    db.update_job(con, job_id, status="failed", reason="failed", error="summarize failed", finish=True)
+    return JobResult(source_id="summarize", status="failed", reason="failed", job_id=job_id)
+
+
 async def _wait_for_job(con, job_id: int, timeout: float = 300) -> None:
     deadline = asyncio.get_event_loop().time() + timeout
     logger.info(f"waiting for job {job_id} to complete (timeout {int(timeout)}s)")

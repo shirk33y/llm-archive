@@ -750,6 +750,89 @@ def upsert_thread_embedding(
     con.commit()
 
 
+_SUMMARIES_DDL = """
+CREATE TABLE IF NOT EXISTS thread_summaries (
+    thread_id   TEXT PRIMARY KEY,
+    tiny        TEXT,
+    small       TEXT,
+    medium      TEXT,
+    large       TEXT,
+    model       TEXT NOT NULL,
+    summarized_at INTEGER NOT NULL
+);
+"""
+
+
+def init_summaries(con: sqlite3.Connection) -> None:
+    con.execute(_SUMMARIES_DDL)
+    con.commit()
+
+
+def upsert_thread_summary(
+    con: sqlite3.Connection,
+    thread_id: str,
+    tiny: str,
+    small: str,
+    medium: str,
+    large: str,
+    model: str,
+    summarized_at: int,
+) -> None:
+    con.execute(
+        """
+        INSERT INTO thread_summaries(thread_id, tiny, small, medium, large, model, summarized_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(thread_id) DO UPDATE SET
+            tiny=excluded.tiny, small=excluded.small, medium=excluded.medium,
+            large=excluded.large, model=excluded.model, summarized_at=excluded.summarized_at
+        """,
+        (thread_id, tiny, small, medium, large, model, summarized_at),
+    )
+    con.commit()
+
+
+def threads_needing_summary(
+    con: sqlite3.Connection,
+    source_id: str | None = None,
+    force: bool = False,
+    min_new_messages: int = 3,
+) -> list[dict]:
+    init_summaries(con)
+    if force:
+        q = "SELECT id FROM threads" + (" WHERE source_id=?" if source_id else "")
+        rows = con.execute(q, (source_id,) if source_id else ()).fetchall()
+    else:
+        q = """
+            SELECT t.id, COUNT(m.id) AS new_msg_count
+            FROM threads t
+            LEFT JOIN thread_summaries ts ON ts.thread_id = t.id
+            LEFT JOIN messages m ON m.thread_id = t.id
+                AND (ts.summarized_at IS NULL OR m.created_at > ts.summarized_at)
+            WHERE ts.summarized_at IS NULL
+               OR EXISTS (
+                   SELECT 1 FROM messages m2
+                   WHERE m2.thread_id = t.id
+                     AND m2.created_at > ts.summarized_at
+               )
+        """
+        params: list = []
+        if source_id:
+            q += " AND t.source_id = ?"
+            params.append(source_id)
+        q += " GROUP BY t.id HAVING new_msg_count >= ?"
+        params.append(min_new_messages)
+        rows = con.execute(q, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_thread_summary(con: sqlite3.Connection, thread_id: str) -> dict | None:
+    init_summaries(con)
+    row = con.execute(
+        "SELECT * FROM thread_summaries WHERE thread_id=?", (thread_id,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
 def semantic_search_threads(
     con: sqlite3.Connection,
     query_vector: bytes,

@@ -985,6 +985,77 @@ def logs(source: str | None):
 
 
 @main.command()
+@click.argument("source", type=click.Choice(list(INGESTORS)), required=False)
+@click.option("--force", "-f", is_flag=True, help="Re-summarize all threads")
+@click.option("--model", default="ollama/qwen2.5:7b", help="litellm model string (e.g. ollama/qwen2.5:7b, anthropic/claude-sonnet-4-20250514)")
+@click.option("--limit", "-n", default=0, type=int, help="Max threads to summarize (0=all)")
+@click.option("--db-path", default=None, help="Override database path")
+def sum(
+    source: str | None,
+    force: bool,
+    model: str,
+    limit: int,
+    db_path: str | None,
+):
+    """Summarize threads using an LLM via litellm."""
+    from llm_archive import summarize as sum_mod
+
+    con = db.connect(Path(db_path) if db_path else db.DB_PATH)
+    threads = db.threads_needing_summary(con, source, force=force)
+
+    if not threads:
+        console.print("No threads need summarizing.")
+        return
+
+    if limit > 0:
+        threads = threads[:limit]
+
+    console.print(
+        f"Summarizing [bold]{len(threads)}[/bold] threads using "
+        f"[cyan]{model}[/cyan]..."
+    )
+
+    done = 0
+    errors = 0
+    t_start = time.time()
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        console=progress_console,
+        transient=True,
+    ) as progress:
+        task = progress.add_task("Summarizing", total=len(threads))
+        for t in threads:
+            tid = t["id"]
+            result = sum_mod.summarize_thread(con, tid, model)
+            if result:
+                db.upsert_thread_summary(
+                    con,
+                    tid,
+                    result.get("tiny", ""),
+                    result.get("small", ""),
+                    result.get("medium", ""),
+                    result.get("large", ""),
+                    model,
+                    int(time.time() * 1000),
+                )
+                done += 1
+            else:
+                errors += 1
+            progress.advance(task, 1)
+
+    elapsed = time.time() - t_start
+    parts = [f"[green]{done}[/green] summarized"]
+    if errors:
+        parts.append(f"[red]{errors}[/red] errors")
+    parts.append(f"({elapsed:.0f}s, {elapsed/max(done,1):.1f}s/thread)")
+    console.print("  " + ", ".join(parts))
+
+
+@main.command()
 def mcp():
     """Start MCP server for conversation search and retrieval (stdio transport)."""
     from llm_archive.mcp_server import run_sync

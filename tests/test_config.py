@@ -36,7 +36,7 @@ def test_load_config_rejects_invalid_mode(tmp_path):
     path = tmp_path / "config.toml"
     path.write_text('[ingestors.chatgpt]\nmode = "token"\n')
 
-    with pytest.raises(ValueError, match="Invalid auth mode"):
+    with pytest.raises(Exception, match="Invalid auth mode"):
         load_config(path)
 
 
@@ -83,12 +83,14 @@ def test_ensure_config_creates_default_disabled_providers(monkeypatch, tmp_path)
     assert config.ingestor("claudecode").watch is True
 
 
-def test_load_config_embed_auto_default(tmp_path):
+def test_load_config_embed_defaults(tmp_path):
     path = tmp_path / "config.toml"
     path.write_text("[ingestors.chatgpt]\nmode = \"cookies\"\n")
 
     config = load_config(path)
-    assert config.embed is None
+    assert config.embed.auto is True
+    assert config.embed.provider == "fastembed"
+    assert config.embed.model == "BAAI/bge-small-en-v1.5"
 
 
 def test_load_config_embed_auto_enabled(tmp_path):
@@ -96,7 +98,6 @@ def test_load_config_embed_auto_enabled(tmp_path):
     path.write_text("[embed]\nauto = true\n\n[ingestors.chatgpt]\nmode = \"cookies\"\n")
 
     config = load_config(path)
-    assert config.embed is not None
     assert config.embed.auto is True
 
 
@@ -105,11 +106,10 @@ def test_load_config_embed_auto_disabled(tmp_path):
     path.write_text("[embed]\nauto = false\n\n[ingestors.chatgpt]\nmode = \"cookies\"\n")
 
     config = load_config(path)
-    assert config.embed is not None
     assert config.embed.auto is False
 
 
-def test_ensure_config_includes_embed_section(tmp_path, monkeypatch):
+def test_ensure_config_includes_embed_and_summarize(tmp_path, monkeypatch):
     browser_root = tmp_path / "firefox"
     profile = browser_root / "default"
     profile.mkdir(parents=True)
@@ -120,7 +120,21 @@ def test_ensure_config_includes_embed_section(tmp_path, monkeypatch):
     text = path.read_text()
     assert "[embed]" in text
     assert "auto = true" in text
+    assert "[summarize]" in text
 
     config = load_config(path)
-    assert config.embed is not None
     assert config.embed.auto is True
+    assert config.summarize.auto is False
+    assert config.summarize.min_new_messages == 3
+
+
+def test_load_config_summarize_custom(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text(
+        "[summarize]\nauto = true\nmodel = \"anthropic/claude-sonnet-4-20250514\"\nmin_new_messages = 5\n"
+    )
+
+    config = load_config(path)
+    assert config.summarize.auto is True
+    assert config.summarize.model == "anthropic/claude-sonnet-4-20250514"
+    assert config.summarize.min_new_messages == 5

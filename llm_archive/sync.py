@@ -58,7 +58,7 @@ async def _sync_command(
         )
         results.append(result)
 
-    if config.embed is None or config.embed.auto:
+    if config.embed.auto:
         from llm_archive.embed import auto_embed
 
         con = db.connect(Path(db_path) if db_path else db.DB_PATH)

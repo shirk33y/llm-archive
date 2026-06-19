@@ -7,7 +7,8 @@
 - [x] ~~Auto-download Chromium and launch it if no browser found~~ (obsolete — CDP removed)
 - [x] ~~Explore embedded webview~~ (obsolete — CDP removed)
 - [ ] `llm-archive resume <source> <thread_id>` — hint or subcommand to resume a session in its original tool (e.g. `opencode run --session <id>`)
-- [ ] Summarize threads to db using cli tools like claude, opencode, ollama
+- [x] ~~Summarize threads to db using cli tools like claude, opencode, ollama~~ (`llm-archive sum`)
+- [ ] Add message references to thread summaries (which messages/part of conversation each summary tier covers, so MCP client can dig into source)
 - [ ] Display resume URL or command
 - [ ] Explore sqlite-vec for semantic search
 - [ ] Design TUI
