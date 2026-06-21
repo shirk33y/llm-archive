@@ -8,7 +8,34 @@ permissions:
   contents: write
 
 jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --extra dev
+      - run: uv run ruff check
+      - run: uv run pytest -q --cov-fail-under=70
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --extra dev
+      - env:
+          TEST_HOME: ${{ runner.temp }}/home
+        run: scripts/e2e-service.sh
+      - name: Teardown
+        if: always()
+        run: |
+          [ -f "$RUNNER_TEMP/svc.pid" ] && kill "$(cat "$RUNNER_TEMP/svc.pid")" 2>/dev/null || true
+          echo '--- service log ---'
+          cat "$RUNNER_TEMP/svc.log" 2>/dev/null || true
+
   publish:
+    needs: [tests, e2e]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

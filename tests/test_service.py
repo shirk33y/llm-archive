@@ -104,6 +104,7 @@ def test_file_change_handler_debounce():
 def test_file_change_handler_flush():
     calls = []
     handler = _FileChangeHandler("test", debounce_s=100, callback=lambda: calls.append(1))
+    handler._last_fire = -1
 
     handler._mark()
     assert len(calls) == 1
