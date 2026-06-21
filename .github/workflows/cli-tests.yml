@@ -14,7 +14,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Push/PR gate: prove the scheduler service works, fast, on Linux, no brew.
   service:
     name: service e2e (ubuntu)
     runs-on: ubuntu-latest
@@ -27,87 +26,10 @@ jobs:
       - name: Install package
         run: uv sync --extra dev
 
-      - name: Write state poller
-        run: |
-          cat > /tmp/check.sh <<'SH'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          mode=$1
-          now_ms=$(( $(date +%s) * 1000 ))
-          hb=$(jq -r '.service.heartbeat_at // 0' /tmp/status.json)
-          fresh=false
-          if [ "$hb" != "0" ] && [ $(( now_ms - hb )) -le 90000 ]; then fresh=true; fi
-          threads=$(jq '[.sources[] | select(.id=="dummy") | .thread_count // 0][0] // 0' /tmp/status.json)
-          success=$(jq '[.jobs[] | select(.source_id=="dummy" and .status=="success")] | length' /tmp/status.json)
-          if $fresh && [ "$mode" = "disabled" ] && [ "$threads" = "0" ] && [ "$success" = "0" ]; then
-            echo "OK (disabled): threads=$threads success=$success"; exit 0
-          fi
-          if $fresh && [ "$mode" = "enabled" ] && [ "$success" != "0" ] && [ "$threads" -ge 1 ]; then
-            echo "OK (enabled): threads=$threads success=$success"; exit 0
-          fi
-          echo "FAIL ($mode): fresh=$fresh threads=$threads success=$success" >&2; exit 1
-          SH
-          chmod +x /tmp/check.sh
-
       - name: Run scheduler e2e
         env:
           TEST_HOME: ${{ runner.temp }}/home
-        run: |
-          set -euo pipefail
-          export HOME="$TEST_HOME"
-          LA="$GITHUB_WORKSPACE/.venv/bin/llm-archive"
-          CFG="$HOME/.config/llm-archive/config.toml"
-          mkdir -p "$(dirname "$CFG")"
-
-          write_config() {
-            printf '%s\n' \
-              '[ingestors.dummy]' \
-              "enabled = $1" \
-              'sync_interval = "1s"' \
-              'min_sync_interval = "1s"' \
-              'watch = false' > "$CFG"
-          }
-
-          poll() {
-            local mode="$1" tries="${2:-45}"
-            for _ in $(seq 1 "$tries"); do
-              "$LA" status --json > /tmp/status.json 2>/dev/null || true
-              if /tmp/check.sh "$mode" 2>/dev/null; then return 0; fi
-              sleep 2
-            done
-            echo "::error::poll timed out ($mode)"
-            echo "service pid: $(cat "$RUNNER_TEMP/svc.pid" 2>/dev/null)"
-            kill -0 "$(cat "$RUNNER_TEMP/svc.pid" 2>/dev/null)" 2>&1 && echo "service alive" || echo "service DEAD"
-            "$LA" status --json || true
-            /tmp/check.sh "$mode" || true
-            return 1
-          }
-
-          # dummy must stay invisible in the provider catalog
-          "$LA" status --json | jq -e '.sources | map(.id) | index("dummy") | not'
-
-          # Phase 1: disabled. Service must heartbeat but must NOT sync dummy.
-          write_config false
-          "$LA" service > "$RUNNER_TEMP/svc.log" 2>&1 &
-          echo $! > "$RUNNER_TEMP/svc.pid"
-          sleep 3
-          echo "service started pid=$(cat "$RUNNER_TEMP/svc.pid")"
-          poll disabled 20
-
-          # Phase 2: enable. Service must pick up the live config change.
-          write_config true
-          poll enabled 60
-
-          # CLI smoke against the running service's database
-          "$LA" search dummycanarytoken --json | jq -e '.count > 0'
-          "$LA" logs | grep -q dummy
-
-          # Embed + semantic search e2e
-          "$LA" embed --force 2>&1 | tee /tmp/embed.log
-          grep -q "embedded" /tmp/embed.log
-          "$LA" search -s "test query" --json | jq -e '.count > 0'
-
-          echo "e2e PASS"
+        run: scripts/e2e-service.sh
 
       - name: Teardown
         if: always()
@@ -116,8 +38,6 @@ jobs:
           echo '--- service log ---'
           cat "$RUNNER_TEMP/svc.log" 2>/dev/null || true
 
-  # Manual only: prove the real brew artifact installs and runs as a service
-  # on both macOS and Linux. The formula lives in Formula/llm-archive.rb.
   brew:
     name: brew + brew services (${{ matrix.os }})
     if: github.event_name == 'workflow_dispatch'
@@ -128,6 +48,8 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     steps:
+      - uses: actions/checkout@v4
+
       - name: Setup Homebrew
         uses: homebrew/actions/setup-homebrew@master
 
@@ -137,71 +59,8 @@ jobs:
           brew install llm-archive --HEAD
           llm-archive --help
 
-      - name: CLI smoke + dummy invisible
-        run: |
-          llm-archive status --json | jq -e '.sources | map(.id) | index("dummy") | not'
-
-      - name: Write state poller
-        run: |
-          cat > /tmp/check.sh <<'SH'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          mode=$1
-          now_ms=$(( $(date +%s) * 1000 ))
-          hb=$(jq -r '.service.heartbeat_at // 0' /tmp/status.json)
-          fresh=false
-          if [ "$hb" != "0" ] && [ $(( now_ms - hb )) -le 90000 ]; then fresh=true; fi
-          threads=$(jq '[.sources[] | select(.id=="dummy") | .thread_count // 0][0] // 0' /tmp/status.json)
-          success=$(jq '[.jobs[] | select(.source_id=="dummy" and .status=="success")] | length' /tmp/status.json)
-          if $fresh && [ "$mode" = "disabled" ] && [ "$threads" = "0" ] && [ "$success" = "0" ]; then
-            echo "OK (disabled): threads=$threads success=$success"; exit 0
-          fi
-          if $fresh && [ "$mode" = "enabled" ] && [ "$success" != "0" ] && [ "$threads" -ge 1 ]; then
-            echo "OK (enabled): threads=$threads success=$success"; exit 0
-          fi
-          echo "FAIL ($mode): fresh=$fresh threads=$threads success=$success" >&2; exit 1
-          SH
-          chmod +x /tmp/check.sh
-
-      - name: Enable dummy
-        run: |
-          mkdir -p ~/.config/llm-archive
-          printf '%s\n' \
-            '[ingestors.dummy]' \
-            'enabled = true' \
-            'sync_interval = "1s"' \
-            'min_sync_interval = "1s"' \
-            'watch = false' > ~/.config/llm-archive/config.toml
-
-      - name: Start service via brew services
-        run: |
-          # Linuxbrew services drives systemd --user, which needs a user session.
-          if command -v systemctl >/dev/null 2>&1; then
-            sudo loginctl enable-linger "$USER" 2>/dev/null || true
-            export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-            systemctl --user daemon-reload 2>/dev/null || true
-          fi
-          brew services start llm-archive
-          sleep 3
-          brew services info llm-archive
-
-      - name: Poll service + dummy sync
-        run: |
-          set -euo pipefail
-          for _ in $(seq 1 90); do
-            llm-archive status --json > /tmp/status.json 2>/dev/null || true
-            if /tmp/check.sh enabled 2>/dev/null; then break; fi
-            sleep 2
-          done
-          /tmp/check.sh enabled
-          llm-archive search dummycanarytoken --json | jq -e '.count > 0'
-
-          # Embed + semantic search e2e
-          llm-archive embed --force 2>&1 | tee /tmp/embed.log
-          grep -q "embedded" /tmp/embed.log
-          llm-archive search -s "test query" --json | jq -e '.count > 0'
-
-          echo "brew e2e PASS"
+      - name: Brew e2e
+        run: scripts/e2e-brew.sh
 
       - name: Teardown
         if: always()
