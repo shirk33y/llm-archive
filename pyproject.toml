@@ -54,3 +54,8 @@ target-version = "py311"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+markers = [
+    "e2e: end-to-end tests (service/brew infrastructure required)",
+    "brew: brew-specific e2e tests (requires Homebrew)",
+]
+addopts = "-m 'not e2e'"

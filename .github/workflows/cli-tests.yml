@@ -20,23 +20,9 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-
       - uses: astral-sh/setup-uv@v6
-
-      - name: Install package
-        run: uv sync --extra dev
-
-      - name: Run scheduler e2e
-        env:
-          TEST_HOME: ${{ runner.temp }}/home
-        run: scripts/e2e-service.sh
-
-      - name: Teardown
-        if: always()
-        run: |
-          [ -f "$RUNNER_TEMP/svc.pid" ] && kill "$(cat "$RUNNER_TEMP/svc.pid")" 2>/dev/null || true
-          echo '--- service log ---'
-          cat "$RUNNER_TEMP/svc.log" 2>/dev/null || true
+      - run: uv sync --extra dev
+      - run: uv run pytest -q -m "e2e and not brew" -x --tb=short -s
 
   brew:
     name: brew + brew services (${{ matrix.os }})
@@ -59,8 +45,19 @@ jobs:
           brew install llm-archive --HEAD
           llm-archive --help
 
-      - name: Brew e2e
-        run: scripts/e2e-brew.sh
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --extra dev
+
+      - name: Setup systemd user session (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo loginctl enable-linger "$USER"
+          echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
+          systemctl --user daemon-reload || true
+
+      - env:
+          CI: "1"
+        run: uv run pytest -q -m brew -x --tb=short -s
 
       - name: Teardown
         if: always()
