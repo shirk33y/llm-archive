@@ -8,4 +8,4 @@ jobs:
       - uses: homebrew/actions/setup-homebrew@master
       - run: brew install shirk33y/tap/llm-archive
       - run: llm-archive --help
-      - run: llm-archive sources
+      - run: llm-archive status --json | jq -e '.sources | map(.id) | index("dummy") | not'

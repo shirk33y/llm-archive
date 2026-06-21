@@ -29,41 +29,25 @@ jobs:
 
       - name: Write state poller
         run: |
-          cat > /tmp/check.py <<'PY'
-          import json, sys, time
-          mode = sys.argv[1]
-          with open('/tmp/status.json') as f:
-              data = json.load(f)
-          svc = data.get('service') or {}
-          hb = svc.get('heartbeat_at')
-          fresh = bool(hb) and (time.time() * 1000 - int(hb)) <= 90000
-          sources = data.get('sources') or []
-          dummy = next((s for s in sources if s.get('id') == 'dummy'), None)
-          threads = (dummy or {}).get('thread_count') or 0
-          jobs = data.get('jobs') or []
-          success = any(
-              j.get('source_id') == 'dummy' and j.get('status') == 'success'
-              for j in jobs
-          )
-          ok = False
-          if not fresh:
-              print('heartbeat not fresh', file=sys.stderr)
-          elif mode == 'disabled':
-              if threads or success:
-                  print(f'dummy synced while disabled (threads={threads})', file=sys.stderr)
-              else:
-                  ok = True
-          else:
-              if not success:
-                  print('no dummy success job', file=sys.stderr)
-              elif threads < 1:
-                  print('dummy thread not written', file=sys.stderr)
-              else:
-                  ok = True
-          if not ok:
-              sys.exit(1)
-          print(f'OK ({mode}): threads={threads} success={success}')
-          PY
+          cat > /tmp/check.sh <<'SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          mode=$1
+          now_ms=$(( $(date +%s) * 1000 ))
+          hb=$(jq -r '.service.heartbeat_at // 0' /tmp/status.json)
+          fresh=false
+          if [ "$hb" != "0" ] && [ $(( now_ms - hb )) -le 90000 ]; then fresh=true; fi
+          threads=$(jq '[.sources[] | select(.id=="dummy") | .thread_count // 0][0] // 0' /tmp/status.json)
+          success=$(jq '[.jobs[] | select(.source_id=="dummy" and .status=="success")] | length' /tmp/status.json)
+          if $fresh && [ "$mode" = "disabled" ] && [ "$threads" = "0" ] && [ "$success" = "0" ]; then
+            echo "OK (disabled): threads=$threads success=$success"; exit 0
+          fi
+          if $fresh && [ "$mode" = "enabled" ] && [ "$success" != "0" ] && [ "$threads" -ge 1 ]; then
+            echo "OK (enabled): threads=$threads success=$success"; exit 0
+          fi
+          echo "FAIL ($mode): fresh=$fresh threads=$threads success=$success" >&2; exit 1
+          SH
+          chmod +x /tmp/check.sh
 
       - name: Run scheduler e2e
         env:
@@ -88,20 +72,19 @@ jobs:
             local mode="$1" tries="${2:-45}"
             for _ in $(seq 1 "$tries"); do
               "$LA" status --json > /tmp/status.json 2>/dev/null || true
-              if python3 /tmp/check.py "$mode" 2>/dev/null; then return 0; fi
+              if /tmp/check.sh "$mode" 2>/dev/null; then return 0; fi
               sleep 2
             done
             echo "::error::poll timed out ($mode)"
             echo "service pid: $(cat "$RUNNER_TEMP/svc.pid" 2>/dev/null)"
             kill -0 "$(cat "$RUNNER_TEMP/svc.pid" 2>/dev/null)" 2>&1 && echo "service alive" || echo "service DEAD"
             "$LA" status --json || true
-            python3 /tmp/check.py "$mode" || true
+            /tmp/check.sh "$mode" || true
             return 1
           }
 
           # dummy must stay invisible in the provider catalog
-          "$LA" sources | tee /tmp/sources.txt
-          ! grep -qw dummy /tmp/sources.txt
+          "$LA" status --json | jq -e '.sources | map(.id) | index("dummy") | not'
 
           # Phase 1: disabled. Service must heartbeat but must NOT sync dummy.
           write_config false
@@ -116,15 +99,13 @@ jobs:
           poll enabled 60
 
           # CLI smoke against the running service's database
-          "$LA" search dummycanarytoken --json | tee /tmp/search.json
-          python3 -c "import json;d=json.load(open('/tmp/search.json'));assert d['count']>0,d;print('search ok',d['count'])"
+          "$LA" search dummycanarytoken --json | jq -e '.count > 0'
           "$LA" logs | grep -q dummy
 
           # Embed + semantic search e2e
           "$LA" embed --force 2>&1 | tee /tmp/embed.log
           grep -q "embedded" /tmp/embed.log
-          "$LA" search -s "test query" --json | tee /tmp/sem-search.json
-          python3 -c "import json;d=json.load(open('/tmp/sem-search.json'));assert d['count']>0,d;print('semantic search ok',d['count'])"
+          "$LA" search -s "test query" --json | jq -e '.count > 0'
 
           echo "e2e PASS"
 
@@ -158,46 +139,29 @@ jobs:
 
       - name: CLI smoke + dummy invisible
         run: |
-          llm-archive sources | tee /tmp/sources.txt
-          ! grep -qw dummy /tmp/sources.txt
+          llm-archive status --json | jq -e '.sources | map(.id) | index("dummy") | not'
 
       - name: Write state poller
         run: |
-          cat > /tmp/check.py <<'PY'
-          import json, sys, time
-          mode = sys.argv[1]
-          with open('/tmp/status.json') as f:
-              data = json.load(f)
-          svc = data.get('service') or {}
-          hb = svc.get('heartbeat_at')
-          fresh = bool(hb) and (time.time() * 1000 - int(hb)) <= 90000
-          sources = data.get('sources') or []
-          dummy = next((s for s in sources if s.get('id') == 'dummy'), None)
-          threads = (dummy or {}).get('thread_count') or 0
-          jobs = data.get('jobs') or []
-          success = any(
-              j.get('source_id') == 'dummy' and j.get('status') == 'success'
-              for j in jobs
-          )
-          ok = False
-          if not fresh:
-              print('heartbeat not fresh', file=sys.stderr)
-          elif mode == 'disabled':
-              if threads or success:
-                  print(f'dummy synced while disabled (threads={threads})', file=sys.stderr)
-              else:
-                  ok = True
-          else:
-              if not success:
-                  print('no dummy success job', file=sys.stderr)
-              elif threads < 1:
-                  print('dummy thread not written', file=sys.stderr)
-              else:
-                  ok = True
-          if not ok:
-              sys.exit(1)
-          print(f'OK ({mode}): threads={threads} success={success}')
-          PY
+          cat > /tmp/check.sh <<'SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          mode=$1
+          now_ms=$(( $(date +%s) * 1000 ))
+          hb=$(jq -r '.service.heartbeat_at // 0' /tmp/status.json)
+          fresh=false
+          if [ "$hb" != "0" ] && [ $(( now_ms - hb )) -le 90000 ]; then fresh=true; fi
+          threads=$(jq '[.sources[] | select(.id=="dummy") | .thread_count // 0][0] // 0' /tmp/status.json)
+          success=$(jq '[.jobs[] | select(.source_id=="dummy" and .status=="success")] | length' /tmp/status.json)
+          if $fresh && [ "$mode" = "disabled" ] && [ "$threads" = "0" ] && [ "$success" = "0" ]; then
+            echo "OK (disabled): threads=$threads success=$success"; exit 0
+          fi
+          if $fresh && [ "$mode" = "enabled" ] && [ "$success" != "0" ] && [ "$threads" -ge 1 ]; then
+            echo "OK (enabled): threads=$threads success=$success"; exit 0
+          fi
+          echo "FAIL ($mode): fresh=$fresh threads=$threads success=$success" >&2; exit 1
+          SH
+          chmod +x /tmp/check.sh
 
       - name: Enable dummy
         run: |
@@ -226,18 +190,16 @@ jobs:
           set -euo pipefail
           for _ in $(seq 1 90); do
             llm-archive status --json > /tmp/status.json 2>/dev/null || true
-            if python3 /tmp/check.py enabled 2>/dev/null; then break; fi
+            if /tmp/check.sh enabled 2>/dev/null; then break; fi
             sleep 2
           done
-          python3 /tmp/check.py enabled
-          llm-archive search dummycanarytoken --json | tee /tmp/search.json
-          python3 -c "import json;d=json.load(open('/tmp/search.json'));assert d['count']>0,d;print('search ok',d['count'])"
+          /tmp/check.sh enabled
+          llm-archive search dummycanarytoken --json | jq -e '.count > 0'
 
           # Embed + semantic search e2e
           llm-archive embed --force 2>&1 | tee /tmp/embed.log
           grep -q "embedded" /tmp/embed.log
-          llm-archive search -s "test query" --json | tee /tmp/sem-search.json
-          python3 -c "import json;d=json.load(open('/tmp/sem-search.json'));assert d['count']>0,d;print('semantic search ok',d['count'])"
+          llm-archive search -s "test query" --json | jq -e '.count > 0'
 
           echo "brew e2e PASS"
 
