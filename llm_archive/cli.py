@@ -6,6 +6,7 @@ import shutil
 import sys
 import time
 from pathlib import Path
+from typing import NamedTuple
 
 import click
 from rich.console import Console
@@ -138,6 +139,16 @@ def disable(sources: tuple[str, ...], no_confirm: bool):
         console.print(f"{source} disabled")
 
 
+class _StatusRow(NamedTuple):
+    source_id: str
+    state: str
+    last: str
+    threads: str
+    messages: str
+    next_sync: str
+    stale: bool
+
+
 @main.command()
 @click.option("--db-path", default=None, help="Override database path")
 @click.option("--verbose", is_flag=True, help="Include setup checks and fix hints")
@@ -199,7 +210,7 @@ def status(db_path: str | None, verbose: bool, json_output: bool):
         for item in jobs
         if item["kind"] == "sync" and item["status"] == "running" and item["source_id"]
     }
-    rows: list[tuple[str, str, str, str, str, str, bool]] = []
+    rows: list[_StatusRow] = []
     for source_id in sorted((set(by_source) | set(states)) - {"dummy"}):
         row = by_source.get(source_id, {})
         state = states.get(source_id, {})
@@ -237,21 +248,21 @@ def status(db_path: str | None, verbose: bool, json_output: bool):
             st = "sync"
         else:
             st = "ok"
-        rows.append((source_id, st, last_str, thr, msg, next_str, last_old))
+        rows.append(_StatusRow(source_id, st, last_str, thr, msg, next_str, last_old))
 
-    w_src = max(max((len(r[0]) for r in rows), default=0), len("SOURCE"), 6)
-    w_st = max(max((len(r[1]) for r in rows), default=0), len("STATE"), 5)
-    w_lst = max(max((len(r[2]) for r in rows), default=0), len("LAST"), 5)
-    w_thr = max(max((len(r[3]) for r in rows), default=0), len("THR"), 3)
-    w_msg = max(max((len(r[4]) for r in rows), default=0), len("MSG"), 3)
+    w_src = max(max((len(r.source_id) for r in rows), default=0), len("SOURCE"), 6)
+    w_st = max(max((len(r.state) for r in rows), default=0), len("STATE"), 5)
+    w_lst = max(max((len(r.last) for r in rows), default=0), len("LAST"), 5)
+    w_thr = max(max((len(r.threads) for r in rows), default=0), len("THR"), 3)
+    w_msg = max(max((len(r.messages) for r in rows), default=0), len("MSG"), 3)
     hdr = f"{'SOURCE':<{w_src}}  {('STATE'):<{w_st}}  {('LAST'):<{w_lst}}  {('THR'):>{w_thr}}  {('MSG'):>{w_msg}}  NEXT"
     lines.append(hdr)
-    for src, st, lst, thr, msg, nxt, stale in rows:
-        lst_cell = f"{lst:<{w_lst}}"
-        if stale:
+    for r in rows:
+        lst_cell = f"{r.last:<{w_lst}}"
+        if r.stale:
             lst_cell = f"[orange3]{lst_cell}[/orange3]"
         lines.append(
-            f"{src:<{w_src}}  {st:<{w_st}}  {lst_cell}  {thr:>{w_thr}}  {msg:>{w_msg}}  {nxt}"
+            f"{r.source_id:<{w_src}}  {r.state:<{w_st}}  {lst_cell}  {r.threads:>{w_thr}}  {r.messages:>{w_msg}}  {r.next_sync}"
         )
 
     for line in lines:
