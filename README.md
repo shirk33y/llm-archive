@@ -31,8 +31,7 @@ llm-archive search "that thing I forgot"
 Run background sync:
 
 ```sh
-llm-archive service install
-llm-archive service start
+llm-archive start --install
 llm-archive status
 ```
 
@@ -97,14 +96,44 @@ llm-archive resume <thread-id>
 llm-archive show <thread>
 llm-archive tui
 llm-archive status [--verbose]
-llm-archive logs [provider]
+llm-archive logs [-n N] [-f]
 llm-archive backup [--verify]
-llm-archive service
-llm-archive service install|start|stop|restart|status|logs|uninstall
+llm-archive start [--install]
+llm-archive stop [--uninstall]
+llm-archive restart
+llm-archive service              # run scheduler in foreground (used by service units)
 llm-archive mcp
 ```
 
-`service` runs the scheduler in the foreground. `service install/start/stop/restart/status/logs/uninstall` delegates to `brew services` when run from the Homebrew package. Other installs create a native user service: systemd on Linux, launchd on macOS.
+### Service control
+
+`start`, `stop`, and `restart` manage the scheduler service. `start --install` registers it first (then starts); `stop --uninstall` stops and unregisters it. A bare `start` on an unregistered install prints a hint instead of silently registering:
+
+```sh
+llm-archive start --install      # register (if needed) and start
+llm-archive start                # start; hints to use --install if not registered
+llm-archive stop                 # stop, keep registration
+llm-archive stop --uninstall     # stop and unregister/remove the unit
+llm-archive restart
+llm-archive logs -n 200 -f       # tail scheduler process logs
+```
+
+From the Homebrew package these delegate to `brew services`. Other installs create a native user service: systemd on Linux, launchd on macOS. `status` shows the service heartbeat alongside provider/freshness state.
+
+### Dev mode
+
+Reload the running scheduler on code/config changes without reinstalling the package. Useful for editable/checkout installs:
+
+```toml
+[dev]
+watch = true
+debounce_ms = 1000
+gate = true                       # run `ruff check .` before each reload
+gate_command = "ruff check . && pyright"   # optional custom gate (shell)
+watch_paths = ["../sibling-repo"] # optional extra paths
+```
+
+When `watch = true`, the foreground scheduler watches the installed package source and config file. After changes settle for `debounce_ms`, it runs the gate; the process only reloads (`os.execv`) when the gate passes, so broken code never replaces a running service. Works best with an editable install (`pipx install -e`, `uv sync`) so the watched path is your checkout.
 
 ## Semantic search
 

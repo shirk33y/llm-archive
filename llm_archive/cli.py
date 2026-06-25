@@ -27,6 +27,10 @@ from llm_archive.providers import provider_kind
 from llm_archive.setup import disable_provider, enable_provider, setup_summary
 from llm_archive.service_cli import service as service_command
 
+SERVICE_HINT_INSTALL = "llm-archive start --install"
+SERVICE_HINT_START = "llm-archive start"
+SERVICE_HINT_RESTART = "llm-archive restart"
+
 console = Console()
 progress_console = Console()
 
@@ -165,12 +169,12 @@ def status(db_path: str | None, verbose: bool, json_output: bool):
 
     lines = []
     if not service_state or not service_state.get("heartbeat_at"):
-        lines.append("SERVICE stopped  (brew services start llm-archive)")
+        lines.append(f"SERVICE stopped  ({SERVICE_HINT_START})")
     else:
         age = int(time.time() * 1000) - int(service_state["heartbeat_at"])
         if age > 90_000:
             lines.append(
-                f"SERVICE stale  pid {service_state.get('pid')}, heart {_relative_time(service_state['heartbeat_at'])} ago  (brew services restart)"
+                f"SERVICE stale  pid {service_state.get('pid')}, heart {_relative_time(service_state['heartbeat_at'])} ago  ({SERVICE_HINT_RESTART})"
             )
         else:
             lines.append(
@@ -182,7 +186,7 @@ def status(db_path: str | None, verbose: bool, json_output: bool):
     elif backup_state.get("last_error"):
         lines.append(f"BACKUP failed  {backup_state['last_error']}")
     else:
-        last = _fmt_ts(backup_state["last_success_at"])
+        last = _relative_time(backup_state["last_success_at"])
         next_backup_at = backup_state.get("next_backup_at")
         nxt = _until(next_backup_at) if isinstance(next_backup_at, int) else "-"
         lines.append(f"BACKUP ok  last {last}, next {nxt}")
@@ -642,13 +646,6 @@ def _search_message_line(
     return line
 
 
-def _fmt_ts(ms: int) -> str:
-    from datetime import datetime, timezone
-
-    dt = datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
-    return dt.strftime("%Y-%m-%d %H:%M UTC")
-
-
 def _until(ms: int) -> str:
     remaining = int(ms - time.time() * 1000)
     if remaining <= 0:
@@ -1006,21 +1003,45 @@ def config_validate():
 
 
 @main.command()
-@click.argument("source", type=click.Choice(list(INGESTORS)), required=False)
-def logs(source: str | None):
-    """Show recent service/provider job history."""
-    con = db.connect(db.DB_PATH)
-    try:
-        rows = db.recent_jobs(con, 30)
-    finally:
-        con.close()
-    if source:
-        rows = [row for row in rows if row.get("source_id") == source]
-    for row in rows:
+@click.option("-n", "--lines", default=100, show_default=True, type=int, help="Number of log lines")
+@click.option("-f", "--follow", is_flag=True, help="Follow logs")
+def logs(lines: int, follow: bool):
+    """Show scheduler service process logs."""
+    from llm_archive.service_control import service_logs
+
+    service_logs(lines, follow)
+
+
+@main.command()
+@click.option("--install", "do_install", is_flag=True, help="Register the service first, then start")
+def start(do_install: bool):
+    """Start the scheduler service (register with --install)."""
+    from llm_archive.service_control import is_service_installed, start_service
+
+    if not do_install and not is_service_installed():
         console.print(
-            f"{row['id']} {row.get('source_id') or '-'} {row['status']} "
-            f"{row.get('reason') or row.get('error') or ''}"
+            "[yellow]service not installed.[/yellow] run: "
+            f"[bold]{SERVICE_HINT_INSTALL}[/bold]"
         )
+        raise SystemExit(1)
+    console.print(start_service(install=do_install))
+
+
+@main.command()
+@click.option("--uninstall", "do_uninstall", is_flag=True, help="Also unregister and remove the service")
+def stop(do_uninstall: bool):
+    """Stop the scheduler service (unregister with --uninstall)."""
+    from llm_archive.service_control import stop_service
+
+    console.print(stop_service(uninstall=do_uninstall))
+
+
+@main.command()
+def restart():
+    """Restart the scheduler service."""
+    from llm_archive.service_control import restart_service
+
+    console.print(restart_service())
 
 
 @main.command()

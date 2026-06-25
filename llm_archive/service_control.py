@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import plistlib
 import shutil
@@ -30,56 +31,69 @@ def is_brew_install(executable: Path | None = None) -> bool:
     return "Cellar" in parts and BREW_FORMULA in parts
 
 
-def install_service(executable: Path | None = None) -> str:
+def is_service_installed(executable: Path | None = None) -> bool:
+    """True when a service unit/plist is registered for this install."""
     if is_brew_install(executable):
-        _run(["brew", "services", "start", BREW_FORMULA])
-        return "installed via brew services"
+        return _brew_registered()
     match sys.platform:
         case "linux":
-            paths = _systemd_paths()
-            paths.unit.parent.mkdir(parents=True, exist_ok=True)
-            paths.unit.write_text(_systemd_unit(executable or executable_path()))
-            _run(["systemctl", "--user", "daemon-reload"])
-            _run(["systemctl", "--user", "enable", SYSTEMD_UNIT])
-            return f"installed {SYSTEMD_UNIT}"
+            return _systemd_paths().unit.exists()
         case "darwin":
-            paths = _launchd_paths()
-            paths.unit.parent.mkdir(parents=True, exist_ok=True)
-            paths.log.parent.mkdir(parents=True, exist_ok=True)
-            paths.unit.write_bytes(_launchd_plist(executable or executable_path(), paths.log))
-            _run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(paths.unit)])
-            _run(["launchctl", "enable", f"gui/{os.getuid()}/{LAUNCHD_LABEL}"])
-            return f"installed {LAUNCHD_LABEL}"
+            return _launchd_paths().unit.exists()
         case _:
-            raise RuntimeError(f"unsupported service platform: {sys.platform}")
+            return False
 
 
-def start_service(executable: Path | None = None) -> str:
+def start_service(executable: Path | None = None, *, install: bool = False) -> str:
+    """Start the scheduler service. With ``install`` also register it first."""
     if is_brew_install(executable):
         _run(["brew", "services", "start", BREW_FORMULA])
         return "started via brew services"
     match sys.platform:
         case "linux":
+            if install:
+                _ensure_systemd_unit(executable or executable_path())
             _run(["systemctl", "--user", "start", SYSTEMD_UNIT])
+            return "started"
         case "darwin":
-            _run(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{LAUNCHD_LABEL}"])
+            if install:
+                _ensure_launchd_plist(executable or executable_path())
+            _run(["launchctl", "kickstart", "-k", _launchd_target()])
+            return "started"
         case _:
             raise RuntimeError(f"unsupported service platform: {sys.platform}")
-    return "started"
 
 
-def stop_service(executable: Path | None = None) -> str:
+def stop_service(executable: Path | None = None, *, uninstall: bool = False) -> str:
+    """Stop the scheduler service. With ``uninstall`` also unregister and remove it."""
     if is_brew_install(executable):
+        if uninstall:
+            _run(["brew", "services", "stop", BREW_FORMULA])
+            return "uninstalled via brew services"
         _run(["brew", "services", "kill", BREW_FORMULA])
         return "stopped via brew services"
     match sys.platform:
         case "linux":
-            _run(["systemctl", "--user", "stop", SYSTEMD_UNIT])
+            _run(["systemctl", "--user", "stop", SYSTEMD_UNIT], check=False)
+            if uninstall:
+                _run(["systemctl", "--user", "disable", SYSTEMD_UNIT], check=False)
+                paths = _systemd_paths()
+                if paths.unit.exists():
+                    paths.unit.unlink()
+                _run(["systemctl", "--user", "daemon-reload"])
+                return f"uninstalled {SYSTEMD_UNIT}"
+            return "stopped"
         case "darwin":
-            _run(["launchctl", "kill", "TERM", f"gui/{os.getuid()}/{LAUNCHD_LABEL}"])
+            _run(["launchctl", "kill", "TERM", _launchd_target()], check=False)
+            if uninstall:
+                paths = _launchd_paths()
+                _run(["launchctl", "bootout", _launchd_domain(), str(paths.unit)], check=False)
+                if paths.unit.exists():
+                    paths.unit.unlink()
+                return f"uninstalled {LAUNCHD_LABEL}"
+            return "stopped"
         case _:
             raise RuntimeError(f"unsupported service platform: {sys.platform}")
-    return "stopped"
 
 
 def restart_service(executable: Path | None = None) -> str:
@@ -89,52 +103,22 @@ def restart_service(executable: Path | None = None) -> str:
     match sys.platform:
         case "linux":
             _run(["systemctl", "--user", "restart", SYSTEMD_UNIT])
+            return "restarted"
         case "darwin":
-            _run(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{LAUNCHD_LABEL}"])
-        case _:
-            raise RuntimeError(f"unsupported service platform: {sys.platform}")
-    return "restarted"
-
-
-def uninstall_service(executable: Path | None = None) -> str:
-    if is_brew_install(executable):
-        _run(["brew", "services", "stop", BREW_FORMULA])
-        return "uninstalled via brew services"
-    match sys.platform:
-        case "linux":
-            paths = _systemd_paths()
-            _run(["systemctl", "--user", "disable", "--now", SYSTEMD_UNIT], check=False)
-            if paths.unit.exists():
-                paths.unit.unlink()
-            _run(["systemctl", "--user", "daemon-reload"])
-            return f"removed {SYSTEMD_UNIT}"
-        case "darwin":
-            paths = _launchd_paths()
-            _run(["launchctl", "bootout", f"gui/{os.getuid()}", str(paths.unit)], check=False)
-            if paths.unit.exists():
-                paths.unit.unlink()
-            return f"removed {LAUNCHD_LABEL}"
-        case _:
-            raise RuntimeError(f"unsupported service platform: {sys.platform}")
-
-
-def service_status(executable: Path | None = None) -> None:
-    if is_brew_install(executable):
-        _run(["brew", "services", "info", BREW_FORMULA])
-        return
-    match sys.platform:
-        case "linux":
-            _run(["systemctl", "--user", "status", SYSTEMD_UNIT, "--no-pager"])
-        case "darwin":
-            _run(["launchctl", "print", f"gui/{os.getuid()}/{LAUNCHD_LABEL}"])
+            _run(["launchctl", "kickstart", "-k", _launchd_target()])
+            return "restarted"
         case _:
             raise RuntimeError(f"unsupported service platform: {sys.platform}")
 
 
 def service_logs(lines: int, follow: bool, executable: Path | None = None) -> None:
     if is_brew_install(executable):
-        args = ["brew", "services", "info", BREW_FORMULA, "--json"]
-        result = subprocess.run(args, check=True, capture_output=True, text=True)
+        result = subprocess.run(
+            ["brew", "services", "info", BREW_FORMULA, "--json"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
         log_path = _brew_log_path(result.stdout)
         _tail(log_path, lines, follow)
         return
@@ -148,6 +132,42 @@ def service_logs(lines: int, follow: bool, executable: Path | None = None) -> No
             _tail(_launchd_paths().log, lines, follow)
         case _:
             raise RuntimeError(f"unsupported service platform: {sys.platform}")
+
+
+def _ensure_systemd_unit(executable: Path) -> None:
+    paths = _systemd_paths()
+    paths.unit.parent.mkdir(parents=True, exist_ok=True)
+    paths.unit.write_text(_systemd_unit(executable))
+    _run(["systemctl", "--user", "daemon-reload"])
+    _run(["systemctl", "--user", "enable", SYSTEMD_UNIT])
+
+
+def _ensure_launchd_plist(executable: Path) -> None:
+    paths = _launchd_paths()
+    paths.unit.parent.mkdir(parents=True, exist_ok=True)
+    paths.log.parent.mkdir(parents=True, exist_ok=True)
+    paths.unit.write_bytes(_launchd_plist(executable, paths.log))
+    _run(["launchctl", "bootstrap", _launchd_domain(), str(paths.unit)], check=False)
+    _run(["launchctl", "enable", _launchd_target()])
+
+
+def _brew_registered() -> bool:
+    try:
+        result = subprocess.run(
+            ["brew", "services", "info", BREW_FORMULA, "--json"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return False
+    if result.returncode != 0:
+        return False
+    try:
+        data = json.loads(result.stdout or "[]")
+    except json.JSONDecodeError:
+        return False
+    return bool(data)
 
 
 def _systemd_paths() -> ServicePaths:
@@ -164,6 +184,14 @@ def _launchd_paths() -> ServicePaths:
         unit=Path.home() / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL}.plist",
         log=Path.home() / "Library" / "Logs" / f"{SERVICE_NAME}.log",
     )
+
+
+def _launchd_domain() -> str:
+    return f"gui/{os.getuid()}"
+
+
+def _launchd_target() -> str:
+    return f"{_launchd_domain()}/{LAUNCHD_LABEL}"
 
 
 def _systemd_unit(executable: Path) -> str:
@@ -198,8 +226,6 @@ def _launchd_plist(executable: Path, log_path: Path) -> bytes:
 
 
 def _brew_log_path(stdout: str) -> Path:
-    import json
-
     data = json.loads(stdout)
     if data and isinstance(data, list):
         item = data[0]

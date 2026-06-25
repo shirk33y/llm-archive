@@ -126,10 +126,6 @@ class TestServiceE2E:
         )
         assert result["count"] > 0
 
-        # Logs contain dummy
-        logs = sh(la_venv, "logs", env=e2e_env)
-        assert "dummy" in logs
-
         # Embed + semantic search
         output = sh(la_venv, "embed", "--force", env=e2e_env)
         assert "embedded" in output
