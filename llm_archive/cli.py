@@ -201,6 +201,8 @@ def status(db_path: str | None, verbose: bool, json_output: bool):
         state = states.get(source_id, {})
         last = row.get("last_sync")
         last_str = _relative_time(last) if last else "-"
+        one_day_ms = 86_400 * 1000
+        last_old = last is not None and (int(time.time() * 1000) - last) >= one_day_ms
         has_synced = bool(state.get("last_success_at")) or bool(last)
         watch_seen_at = state.get("watch_seen_at")
         watch_age = (
@@ -221,7 +223,9 @@ def status(db_path: str | None, verbose: bool, json_output: bool):
             next_str = _until(next_sync) if next_sync else "-"
         thr = str(row.get("thread_count", 0))
         msg = str(row.get("message_count", 0))
-        if not state.get("enabled"):
+        if source_id not in config.ingestors:
+            st = "unconf"
+        elif not state.get("enabled"):
             st = "off"
         elif state.get("last_error"):
             st = "error"
@@ -229,7 +233,7 @@ def status(db_path: str | None, verbose: bool, json_output: bool):
             st = "sync"
         else:
             st = "ok"
-        rows.append((source_id, st, last_str, thr, msg, next_str, bool(state.get("stale_since"))))
+        rows.append((source_id, st, last_str, thr, msg, next_str, last_old))
 
     w_src = max(max((len(r[0]) for r in rows), default=0), len("SOURCE"), 6)
     w_st = max(max((len(r[1]) for r in rows), default=0), len("STATE"), 5)
