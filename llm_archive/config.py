@@ -58,11 +58,20 @@ class SummarizeConfig(BaseModel):
     min_new_messages: int = Field(default=3, ge=0)
 
 
+class DevConfig(BaseModel):
+    watch: bool = False
+    debounce_ms: int = Field(default=1000, ge=100)
+    gate: bool = True
+    gate_command: str | None = None
+    watch_paths: list[str] = Field(default_factory=list)
+
+
 class AppConfig(BaseModel):
     browser_path: str | None = None
     browser_dir: str | None = None
     embed: EmbedConfig = Field(default_factory=EmbedConfig)
     summarize: SummarizeConfig = Field(default_factory=SummarizeConfig)
+    dev: DevConfig = Field(default_factory=DevConfig)
     ingestors: dict[str, IngestorConfig] = Field(default_factory=dict)
 
     def ingestor(self, source_id: str) -> IngestorConfig:
@@ -149,6 +158,8 @@ def _raw_to_model(data: dict[str, Any]) -> AppConfig:
         model_data["embed"] = data["embed"]
     if "summarize" in data:
         model_data["summarize"] = data["summarize"]
+    if "dev" in data:
+        model_data["dev"] = data["dev"]
     if ingestors:
         model_data["ingestors"] = ingestors
 
@@ -257,12 +268,12 @@ def _write_raw_config(data: dict[str, Any], path: Path) -> None:
 def _toml(data: dict[str, Any]) -> str:
     lines: list[str] = []
     for key, value in data.items():
-        if key in ("ingestors", "embed", "summarize") or isinstance(value, dict):
+        if key in ("ingestors", "embed", "summarize", "dev") or isinstance(value, dict):
             continue
         lines.append(f"{key} = {_toml_value(value)}")
     if lines:
         lines.append("")
-    for section in ("embed", "summarize"):
+    for section in ("embed", "summarize", "dev"):
         if section in data and isinstance(data[section], dict):
             lines.append(f"[{section}]")
             for key, value in data[section].items():
@@ -283,4 +294,6 @@ def _toml_value(value: Any) -> str:
         return "true" if value else "false"
     if isinstance(value, (int, float)):
         return str(value)
+    if isinstance(value, list):
+        return "[" + ", ".join(_toml_value(v) for v in value) + "]"
     return repr(str(value)).replace("'", '"')

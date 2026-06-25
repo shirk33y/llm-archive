@@ -138,3 +138,48 @@ def test_load_config_summarize_custom(tmp_path):
     assert config.summarize.auto is True
     assert config.summarize.model == "anthropic/claude-sonnet-4-20250514"
     assert config.summarize.min_new_messages == 5
+
+
+def test_load_config_dev_defaults(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text('[ingestors.chatgpt]\nmode = "cookies"\n')
+
+    config = load_config(path)
+    assert config.dev.watch is False
+    assert config.dev.debounce_ms == 1000
+    assert config.dev.gate is True
+
+
+def test_load_config_dev_custom(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text(
+        "[dev]\n"
+        "watch = true\n"
+        "debounce_ms = 500\n"
+        "gate = false\n"
+        'gate_command = "ruff check . && pyright"\n'
+        'watch_paths = ["../repo", "/etc/llm"]\n'
+    )
+
+    config = load_config(path)
+    assert config.dev.watch is True
+    assert config.dev.debounce_ms == 500
+    assert config.dev.gate is False
+    assert config.dev.gate_command == "ruff check . && pyright"
+    assert config.dev.watch_paths == ["../repo", "/etc/llm"]
+
+
+def test_dev_section_survives_ingestor_rewrite(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text(
+        '[dev]\nwatch = true\ndebounce_ms = 750\n\n[ingestors.chatgpt]\nmode = "cookies"\n'
+    )
+
+    update_ingestor_config("claude", {"enabled": True}, path)
+
+    config = load_config(path)
+    assert config.dev.watch is True
+    assert config.dev.debounce_ms == 750
+    text = path.read_text()
+    assert "[dev]" in text
+    assert "watch_paths" not in text  # not present originally
