@@ -15,6 +15,7 @@ from llm_archive import db
 from llm_archive.backup import run_backup
 from llm_archive.config import AppConfig, config_path, load_config, read_config_text
 from llm_archive.embed import auto_embed
+from llm_archive.ingestors import service_source_ids
 from llm_archive.jobs import run_sync_job
 from llm_archive.providers import provider_kind, provider_paths
 
@@ -80,7 +81,7 @@ async def run_service(
 
     config = load_config()
     schedule_errors: dict[str, str] = {}
-    for source_id in config.ingestors or {}:
+    for source_id in service_source_ids(config.ingestors or {}):
         ic = config.ingestor(source_id)
         if not ic.enabled or not ic.watch:
             continue
@@ -119,7 +120,7 @@ async def run_service(
                     config_hash=_config_hash(),
                 )
                 active_watch_sources = set(handlers) if observer.is_alive() else set()
-                for source_id in config.ingestors or {}:
+                for source_id in service_source_ids(config.ingestors or {}):
                     provider_config = config.ingestor(source_id)
                     if provider_config.watch and provider_kind(source_id) == "file":
                         db.set_provider_watch_status(
@@ -158,7 +159,7 @@ async def _run_due_syncs(
 ) -> None:
     active_watch_sources = active_watch_sources or set()
     states = db.provider_states(con)
-    for source_id in config.ingestors or {}:
+    for source_id in service_source_ids(config.ingestors or {}):
         provider_config = config.ingestor(source_id)
         if not provider_config.enabled:
             continue

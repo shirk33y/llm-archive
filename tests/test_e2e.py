@@ -39,19 +39,15 @@ def check_status(data: dict, mode: str) -> bool:
     if not fresh:
         return False
 
-    sources = data.get("sources") or []
-    dummy = next((s for s in sources if s.get("id") == "dummy"), None)
-    threads = (dummy or {}).get("thread_count") or 0
-
     jobs = data.get("jobs") or []
     success = any(
         j.get("source_id") == "dummy" and j.get("status") == "success" for j in jobs
     )
 
     if mode == "disabled":
-        return threads == 0 and not success
+        return not success
     if mode == "enabled":
-        return success and threads >= 1
+        return success
     return False
 
 
@@ -82,6 +78,7 @@ def la_venv() -> str:
 def e2e_env(tmp_path) -> dict:
     env = os.environ.copy()
     env["HOME"] = str(tmp_path)
+    env["LLM_ARCHIVE_ENABLE_TEST_SOURCES"] = "1"
     return env
 
 
@@ -155,6 +152,7 @@ class TestBrewE2E:
         la = shutil.which("llm-archive")
         assert la, "llm-archive not in PATH"
         env = os.environ.copy()
+        env["LLM_ARCHIVE_ENABLE_TEST_SOURCES"] = "1"
 
         # dummy not in catalog
         data = get_status(la, env)

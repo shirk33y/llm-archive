@@ -12,6 +12,7 @@ def isolate_archive_paths(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     db_path = tmp_path / "archive.db"
     monkeypatch.setenv("LLM_ARCHIVE_CONFIG", str(config_path))
     monkeypatch.setenv("LLM_ARCHIVE_DB", str(db_path))
+    monkeypatch.delenv("LLM_ARCHIVE_ENABLE_TEST_SOURCES", raising=False)
     monkeypatch.setattr(db, "DB_PATH", db_path)
 
 

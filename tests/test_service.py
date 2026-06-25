@@ -9,6 +9,7 @@ import pytest
 
 from llm_archive import db
 from llm_archive.config import AppConfig, EmbedConfig, IngestorConfig
+from llm_archive.ingestors import get_ingestor
 from llm_archive.service import (
     _FileChangeHandler,
     _config_hash,
@@ -18,13 +19,12 @@ from llm_archive.service import (
 )
 
 
-
-
 @pytest.fixture
 def con(tmp_path):
     c = db.connect(tmp_path / "archive.db")
     yield c
     c.close()
+
 
 def test_path_mtime_file(tmp_path):
     f = tmp_path / "test.txt"
@@ -131,12 +131,59 @@ def _config(*, enabled=True, watch=False, path=None) -> AppConfig:
     )
 
 
+def test_dummy_requires_test_source_env(monkeypatch):
+    with pytest.raises(ValueError, match="Unknown source 'dummy'"):
+        get_ingestor("dummy")
+
+    monkeypatch.setenv("LLM_ARCHIVE_ENABLE_TEST_SOURCES", "1")
+    assert get_ingestor("dummy").source_id == "dummy"
+
+
 @pytest.mark.asyncio
 async def test_run_due_syncs_skips_disabled(tmp_path, con):
     config = _config(enabled=False)
     runner = AsyncMock()
     await _run_due_syncs(con, config, runner, None)
     runner.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_due_syncs_skips_dummy_without_test_source_env(tmp_path, con):
+    config = AppConfig(
+        ingestors={
+            "dummy": IngestorConfig(
+                enabled=True,
+                sync_interval_ms=1_000,
+                min_sync_interval_ms=1_000,
+                watch=False,
+            )
+        }
+    )
+
+    with patch("llm_archive.service.run_sync_job", new_callable=AsyncMock) as mock_job:
+        await _run_due_syncs(con, config, AsyncMock(), None)
+        mock_job.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_run_due_syncs_allows_dummy_with_test_source_env(
+    tmp_path, con, monkeypatch
+):
+    monkeypatch.setenv("LLM_ARCHIVE_ENABLE_TEST_SOURCES", "1")
+    config = AppConfig(
+        ingestors={
+            "dummy": IngestorConfig(
+                enabled=True,
+                sync_interval_ms=1_000,
+                min_sync_interval_ms=1_000,
+                watch=False,
+            )
+        }
+    )
+
+    with patch("llm_archive.service.run_sync_job", new_callable=AsyncMock) as mock_job:
+        await _run_due_syncs(con, config, AsyncMock(), None)
+        mock_job.assert_awaited_once()
 
 
 @pytest.mark.asyncio

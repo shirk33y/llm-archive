@@ -1,6 +1,7 @@
 from __future__ import annotations
 import hashlib
 import json
+import os
 import re
 import socket
 import sqlite3
@@ -16,7 +17,9 @@ from llm_archive.unicode import sanitize_text
 
 logger = get_logger("db")
 
-DB_PATH = Path.home() / ".llm-archive" / "archive.db"
+DB_PATH = Path(
+    os.environ.get("LLM_ARCHIVE_DB", Path.home() / ".llm-archive" / "archive.db")
+)
 
 
 def _migrate_windsurf_prefix(con: sqlite3.Connection) -> None:
@@ -203,9 +206,10 @@ CREATE VIRTUAL TABLE IF NOT EXISTS message_parts_fts USING fts5(
 """
 
 
-def connect(path: Path = DB_PATH) -> sqlite3.Connection:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(path)
+def connect(path: Path | None = None) -> sqlite3.Connection:
+    db_path = path or DB_PATH
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
     for stmt in DDL.split(";"):
         stmt = stmt.strip()

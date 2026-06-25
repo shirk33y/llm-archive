@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+from collections.abc import Mapping
+
 from llm_archive.ingestors.base import BaseIngestor
 from llm_archive.ingestors.chatgpt import ChatGPTIngestor
 from llm_archive.ingestors.claude import ClaudeIngestor
@@ -24,16 +27,29 @@ INGESTORS: dict[str, type[BaseIngestor]] = {
     "chatgpt": ChatGPTIngestor,
 }
 
-# Hidden sources: resolvable by the service/jobs but never advertised in the
-# UI catalog (`sources`, enable/disable choices) or the default config. Used to
-# exercise the scheduler with deterministic data without real provider auth.
-HIDDEN_INGESTORS: dict[str, type[BaseIngestor]] = {
+TEST_SOURCE_ENV = "LLM_ARCHIVE_ENABLE_TEST_SOURCES"
+
+TEST_INGESTORS: dict[str, type[BaseIngestor]] = {
     "dummy": DummyIngestor,
 }
 
 
+def test_sources_enabled() -> bool:
+    return os.environ.get(TEST_SOURCE_ENV) == "1"
+
+
+def service_source_ids(source_ids: Mapping[str, object]) -> list[str]:
+    return [
+        source_id
+        for source_id in source_ids
+        if source_id not in TEST_INGESTORS or test_sources_enabled()
+    ]
+
+
 def get_ingestor(source_id: str) -> BaseIngestor:
-    cls = INGESTORS.get(source_id) or HIDDEN_INGESTORS.get(source_id)
+    cls = INGESTORS.get(source_id)
+    if cls is None and test_sources_enabled():
+        cls = TEST_INGESTORS.get(source_id)
     if not cls:
         available = ", ".join(INGESTORS)
         raise ValueError(f"Unknown source '{source_id}'. Available: {available}")
