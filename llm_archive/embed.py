@@ -4,8 +4,6 @@ import logging
 import struct
 from typing import Optional
 
-import litellm
-
 logger = logging.getLogger("llm_archive.embed")
 
 DEFAULT_MODEL = "BAAI/bge-small-en-v1.5"
@@ -22,6 +20,8 @@ def get_dims(model: str, provider: str = "fastembed") -> int:
     if provider == "fastembed":
         return _FASTEMBED_DIMS.get(model, 384)
     try:
+        import litellm
+
         info = litellm.get_model_info(model)
         return int(info.get("max_input_tokens") or 384)
     except Exception:
@@ -39,6 +39,8 @@ def _get_embedder(model: str = DEFAULT_MODEL):
 
 def embed_text(text: str, model: str = DEFAULT_MODEL, provider: str = "fastembed") -> list[float]:
     if provider == "litellm":
+        import litellm
+
         resp = litellm.embedding(model=model, input=[text])
         return resp["data"][0]["embedding"]
     embedder = _get_embedder(model)
@@ -50,6 +52,8 @@ def embed_batch(texts: list[str], model: str = DEFAULT_MODEL, provider: str = "f
     if not texts:
         return []
     if provider == "litellm":
+        import litellm
+
         resp = litellm.embedding(model=model, input=texts)
         return [d["embedding"] for d in resp["data"]]
     embedder = _get_embedder(model)

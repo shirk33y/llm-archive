@@ -16,9 +16,10 @@ class ComponentFormatter(logging.Formatter):
 
 
 root_logger = logging.getLogger()
-root_logger.setLevel(logging.DEBUG)
+root_logger.setLevel(logging.INFO)
 
-logging.getLogger("httpx").setLevel(logging.WARNING)
+for _name in ("httpx", "httpcore", "litellm"):
+    logging.getLogger(_name).setLevel(logging.WARNING)
 
 
 def _setup_handler():
@@ -56,10 +57,12 @@ def set_verbose(verbose: bool) -> None:
     if verbose:
         root_logger.setLevel(logging.DEBUG)
         logging.getLogger("httpx").setLevel(logging.DEBUG)
+        logging.getLogger("httpcore").setLevel(logging.DEBUG)
         logging.getLogger("litellm").setLevel(logging.INFO)
     else:
         root_logger.setLevel(logging.INFO)
         logging.getLogger("httpx").setLevel(logging.WARNING)
+        logging.getLogger("httpcore").setLevel(logging.WARNING)
         logging.getLogger("litellm").setLevel(logging.WARNING)
 
 

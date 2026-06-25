@@ -5,8 +5,6 @@ import logging
 import time
 from typing import Optional
 
-import litellm
-
 from llm_archive import db
 
 logger = logging.getLogger("llm_archive.summarize")
@@ -68,6 +66,8 @@ def summarize_thread(
     prompt = f"{SYSTEM_PROMPT}\n\nConversation:\n{text}"
 
     try:
+        import litellm
+
         r = litellm.completion(
             model=model,
             messages=[{"role": "user", "content": prompt}],
