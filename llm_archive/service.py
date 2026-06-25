@@ -6,7 +6,7 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Awaitable, Callable
+from typing import TYPE_CHECKING, Awaitable, Callable
 
 from watchdog.events import FileSystemEventHandler, FileSystemEvent
 from watchdog.observers import Observer
@@ -18,6 +18,9 @@ from llm_archive.embed import auto_embed
 from llm_archive.ingestors import service_source_ids
 from llm_archive.jobs import run_sync_job
 from llm_archive.providers import provider_kind, provider_paths
+
+if TYPE_CHECKING:
+    from llm_archive.dev_mode import DevMode
 
 logger = logging.getLogger("llm_archive.service")
 
@@ -107,6 +110,8 @@ async def run_service(
             schedule_errors.update({source_id: str(exc) for source_id in handlers})
             handlers.clear()
 
+    dev_mode = _start_dev_mode(config)
+
     try:
         while True:
             try:
@@ -145,6 +150,8 @@ async def run_service(
                 logger.exception("service loop error")
             await asyncio.sleep(poll_interval)
     finally:
+        if dev_mode is not None:
+            dev_mode.stop()
         if observer.is_alive():
             observer.stop()
             observer.join(timeout=2)
@@ -228,3 +235,14 @@ def _config_hash() -> str:
     except Exception:
         text = ""
     return hashlib.sha1(text.encode()).hexdigest()
+
+
+def _start_dev_mode(config: AppConfig) -> DevMode | None:
+    from llm_archive.dev_mode import DevMode, reexec
+
+    if not config.dev.watch:
+        return None
+    mode = DevMode.from_config(config, reload=reexec)
+    if mode is not None:
+        mode.start()
+    return mode
