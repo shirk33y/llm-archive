@@ -25,6 +25,7 @@ from llm_archive.jobs import ensure_fresh
 from llm_archive.logging import set_console as set_log_console, set_verbose
 from llm_archive.providers import provider_kind
 from llm_archive.setup import disable_provider, enable_provider, setup_summary
+from llm_archive.service_cli import service as service_command
 
 console = Console()
 progress_console = Console()
@@ -36,6 +37,9 @@ def main(verbose: bool):
     """llm-archive — dump and sync AI conversations into a local SQLite database."""
     set_log_console(progress_console)
     set_verbose(verbose)
+
+
+main.add_command(service_command, "service")
 
 
 @main.command()
@@ -965,17 +969,6 @@ def backup(verify: bool, json_output: bool):
         console.print_json(data={"status": "ok", "path": str(target), "verified": verify})
         return
     console.print(f"backup ok: {target}")
-
-
-@main.command()
-def service():
-    """Run scheduler process in foreground."""
-    from llm_archive.service import run_service
-
-    async def runner(src: str, job_force: bool) -> bool:
-        return await _sync_one(src, None, None, job_force, None)
-
-    _run(run_service(runner=runner))
 
 
 @main.group()

@@ -31,7 +31,8 @@ llm-archive search "that thing I forgot"
 Run background sync:
 
 ```sh
-brew services start shirk33y/llm-archive   # Homebrew only
+llm-archive service install
+llm-archive service start
 llm-archive status
 ```
 
@@ -99,10 +100,11 @@ llm-archive status [--verbose]
 llm-archive logs [provider]
 llm-archive backup [--verify]
 llm-archive service
+llm-archive service install|start|stop|restart|status|logs|uninstall
 llm-archive mcp
 ```
 
-`service` runs the scheduler in the foreground. Homebrew runs it with `brew services`; no extra service subcommands.
+`service` runs the scheduler in the foreground. `service install/start/stop/restart/status/logs/uninstall` delegates to `brew services` when run from the Homebrew package. Other installs create a native user service: systemd on Linux, launchd on macOS.
 
 ## Semantic search
 
