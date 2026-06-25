@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -230,7 +231,7 @@ def _detect_browser_dir() -> Path | None:
 def _browser_roots() -> list[Path]:
     config_home = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")).expanduser()
     home = Path.home()
-    if os.sys.platform == "darwin":
+    if sys.platform == "darwin":
         return [
             home / "Library" / "Application Support" / "Firefox" / "Profiles",
             home / "Library" / "Application Support" / "Waterfox" / "Profiles",

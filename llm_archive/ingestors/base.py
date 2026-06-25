@@ -19,7 +19,7 @@ class BaseIngestor(ABC):
         ...
 
     @abstractmethod
-    async def threads(self, since: int | None = None) -> AsyncIterator[IngestedThread]:
+    def threads(self, since: int | None = None) -> AsyncIterator[IngestedThread]:
         """Yield threads, optionally only those updated after `since` (unix ms)."""
         ...
 

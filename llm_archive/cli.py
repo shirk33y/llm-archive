@@ -1,4 +1,5 @@
 from __future__ import annotations
+from collections.abc import Sequence
 import json
 import re
 import shutil
@@ -85,7 +86,7 @@ def enable(
     force: bool,
     dry_run: bool,
 ):
-    """Configure sources, verify auth/path, run first sync."""
+    """Configure sources and verify auth/path."""
     for source in sources:
         _enable_one(source, browser, profile, browser_path, path, force, dry_run)
 
@@ -109,8 +110,7 @@ def _enable_one(
         dry_run=dry_run,
     )
     console.print(setup_summary(source, values))
-    if not dry_run:
-        _run(_sync_command(source, None, path, True, None, False, False))
+    console.print(f"Run `llm-archive sync {source}` to start sync.")
 
 
 @main.command()
@@ -123,7 +123,10 @@ def disable(sources: tuple[str, ...], no_confirm: bool):
     for source in sources:
         disable_provider(source)
         con = db.connect(db.DB_PATH)
-        db.set_provider_enabled(con, source, False)
+        try:
+            db.set_provider_enabled(con, source, False)
+        finally:
+            con.close()
         console.print(f"{source} disabled")
 
 
@@ -134,11 +137,14 @@ def disable(sources: tuple[str, ...], no_confirm: bool):
 def status(db_path: str | None, verbose: bool, json_output: bool):
     """Show service, provider, auth, backup, and freshness state."""
     con = db.connect(Path(db_path) if db_path else db.DB_PATH)
-    stats = db.source_stats(con)
-    states = db.provider_states(con)
-    service_state = db.get_service_state(con)
-    backup_state = db.get_backup_state(con)
-    jobs = db.recent_jobs(con, 10)
+    try:
+        stats = db.source_stats(con)
+        states = db.provider_states(con)
+        service_state = db.get_service_state(con)
+        backup_state = db.get_backup_state(con)
+        jobs = db.recent_jobs(con, 10)
+    finally:
+        con.close()
     config = load_config()
 
     if json_output:
@@ -146,8 +152,8 @@ def status(db_path: str | None, verbose: bool, json_output: bool):
             data={
                 "service": service_state,
                 "backup": backup_state,
-                "providers": list(states.values()),
-                "sources": stats,
+                "providers": [item for key, item in states.items() if key != "dummy"],
+                "sources": [item for item in stats if item["id"] != "dummy"],
                 "jobs": jobs,
             }
         )
@@ -173,22 +179,39 @@ def status(db_path: str | None, verbose: bool, json_output: bool):
         lines.append(f"BACKUP failed  {backup_state['last_error']}")
     else:
         last = _fmt_ts(backup_state["last_success_at"])
-        nxt = _until(backup_state.get("next_backup_at"))
+        next_backup_at = backup_state.get("next_backup_at")
+        nxt = _until(next_backup_at) if isinstance(next_backup_at, int) else "-"
         lines.append(f"BACKUP ok  last {last}, next {nxt}")
 
     lines.append("")
 
     by_source = {row["id"]: row for row in stats}
-    rows: list[tuple[str, str, int, int, str, str]] = []
-    for source_id in sorted(set(by_source) | set(states)):
+    active_syncs = {
+        item["source_id"]
+        for item in jobs
+        if item["kind"] == "sync" and item["status"] == "running" and item["source_id"]
+    }
+    rows: list[tuple[str, str, str, str, str, str, bool]] = []
+    for source_id in sorted((set(by_source) | set(states)) - {"dummy"}):
         row = by_source.get(source_id, {})
         state = states.get(source_id, {})
         last = row.get("last_sync")
         last_str = _relative_time(last) if last else "-"
         has_synced = bool(state.get("last_success_at")) or bool(last)
-        watched = config.ingestor(source_id).watch and provider_kind(source_id) == "file"
+        watch_seen_at = state.get("watch_seen_at")
+        watch_age = (
+            int(time.time() * 1000) - int(watch_seen_at)
+            if isinstance(watch_seen_at, int)
+            else 91_000
+        )
+        watched = (
+            config.ingestor(source_id).watch
+            and provider_kind(source_id) == "file"
+            and state.get("watch_active")
+            and watch_age <= 90_000
+        )
         if watched and has_synced:
-            next_str = "live"
+            next_str = "watching"
         else:
             next_sync = state.get("next_sync_at")
             next_str = _until(next_sync) if next_sync else "-"
@@ -197,23 +220,26 @@ def status(db_path: str | None, verbose: bool, json_output: bool):
         if not state.get("enabled"):
             st = "off"
         elif state.get("last_error"):
-            st = "err"
-        elif state.get("stale_since"):
-            st = "stale"
+            st = "error"
+        elif source_id in active_syncs:
+            st = "sync"
         else:
             st = "ok"
-        rows.append((source_id, st, thr, msg, last_str, next_str))
+        rows.append((source_id, st, last_str, thr, msg, next_str, bool(state.get("stale_since"))))
 
     w_src = max(max((len(r[0]) for r in rows), default=0), len("SOURCE"), 6)
     w_st = max(max((len(r[1]) for r in rows), default=0), len("STATE"), 5)
-    w_thr = max(max((len(r[2]) for r in rows), default=0), len("THR"), 3)
-    w_msg = max(max((len(r[3]) for r in rows), default=0), len("MSG"), 3)
-    w_lst = max(max((len(r[4]) for r in rows), default=0), len("LAST"), 5)
-    hdr = f"{'SOURCE':<{w_src}}  {('STATE'):<{w_st}}  {('THR'):>{w_thr}}  {('MSG'):>{w_msg}}  {('LAST'):<{w_lst}}  NEXT"
+    w_lst = max(max((len(r[2]) for r in rows), default=0), len("LAST"), 5)
+    w_thr = max(max((len(r[3]) for r in rows), default=0), len("THR"), 3)
+    w_msg = max(max((len(r[4]) for r in rows), default=0), len("MSG"), 3)
+    hdr = f"{'SOURCE':<{w_src}}  {('STATE'):<{w_st}}  {('LAST'):<{w_lst}}  {('THR'):>{w_thr}}  {('MSG'):>{w_msg}}  NEXT"
     lines.append(hdr)
-    for src, st, thr, msg, lst, nxt in rows:
+    for src, st, lst, thr, msg, nxt, stale in rows:
+        lst_cell = f"{lst:<{w_lst}}"
+        if stale:
+            lst_cell = f"[orange3]{lst_cell}[/orange3]"
         lines.append(
-            f"{src:<{w_src}}  {st:<{w_st}}  {thr:>{w_thr}}  {msg:>{w_msg}}  {lst:<{w_lst}}  {nxt}"
+            f"{src:<{w_src}}  {st:<{w_st}}  {lst_cell}  {thr:>{w_thr}}  {msg:>{w_msg}}  {nxt}"
         )
 
     for line in lines:
@@ -261,57 +287,60 @@ def search(
             )
         )
     con = db.connect(Path(db_path) if db_path else db.DB_PATH)
-    if semantic:
-        from llm_archive import embed as embed_mod
+    try:
+        if semantic:
+            from llm_archive import embed as embed_mod
 
-        model = embed_mod.DEFAULT_MODEL
-        has_vec, _ = db.init_embeddings(con, embed_mod.get_dims(model))
-        if not has_vec:
-            console.print("[red]sqlite-vec not installed.[/red] Run: [bold]pip install sqlite-vec[/bold]")
-            raise SystemExit(1)
-        try:
-            vector = embed_mod.embed_text(phrase, model)
-        except Exception as exc:
-            console.print(f"[red]Embedding failed[/red] — {exc}")
-            raise SystemExit(1)
-        blob = embed_mod.serialize(vector)
-        rows = db.semantic_search_threads(con, blob, limit=limit, source_id=provider_filter)
-        if json_output:
-            console.print_json(data={"query": phrase, "results": rows, "count": len(rows)})
-            return
-        if not rows:
-            console.print("No matches.")
-            return
-        formatted_rows = []
-        for i, row in enumerate(rows):
-            if i:
-                formatted_rows.append(None)
-            title = row["title"] or "untitled"
-            short_id = f"t{to_base53(row['thread_rowid'])}"
-            rel_time = _relative_time(row["updated_at"])
-            dist = f"{row['distance']:.3f}"
-            formatted_rows.append(
-                {"id": short_id, "time": rel_time, "source": row["source_id"], "text": title, "dist": dist}
-            )
-        max_id_width = max((len(r["id"]) for r in formatted_rows if r is not None), default=0)
-        max_time_width = max((len(r["time"]) for r in formatted_rows if r is not None), default=0)
-        lines: list[Text | str] = []
-        for row in formatted_rows:
-            if row is None:
-                lines.append("")
-            else:
-                line = _search_thread_line(
-                    row["id"], row["time"], row["source"], row["text"], max_id_width, max_time_width
+            model = embed_mod.DEFAULT_MODEL
+            has_vec, _ = db.init_embeddings(con, embed_mod.get_dims(model))
+            if not has_vec:
+                console.print("[red]sqlite-vec not installed.[/red] Run: [bold]pip install sqlite-vec[/bold]")
+                raise SystemExit(1)
+            try:
+                vector = embed_mod.embed_text(phrase, model)
+            except Exception as exc:
+                console.print(f"[red]Embedding failed[/red] — {exc}")
+                raise SystemExit(1)
+            blob = embed_mod.serialize(vector)
+            rows = db.semantic_search_threads(con, blob, limit=limit, source_id=provider_filter)
+            if json_output:
+                console.print_json(data={"query": phrase, "results": rows, "count": len(rows)})
+                return
+            if not rows:
+                console.print("No matches.")
+                return
+            formatted_rows = []
+            for i, row in enumerate(rows):
+                if i:
+                    formatted_rows.append(None)
+                title = row["title"] or "untitled"
+                short_id = f"t{to_base53(row['thread_rowid'])}"
+                rel_time = _relative_time(row["updated_at"])
+                dist = f"{row['distance']:.3f}"
+                formatted_rows.append(
+                    {"id": short_id, "time": rel_time, "source": row["source_id"], "text": title, "dist": dist}
                 )
-                line.append(f"  {row['dist']}", style="dim cyan")
-                lines.append(line)
-        _print_lines(lines)
-        return
-    rows = (
-        db.search_threads(con, phrase, limit=limit)
-        if threads_only
-        else db.search_messages(con, phrase, limit=limit)
-    )
+            max_id_width = max((len(r["id"]) for r in formatted_rows if r is not None), default=0)
+            max_time_width = max((len(r["time"]) for r in formatted_rows if r is not None), default=0)
+            lines: list[Text | str | Markdown] = []
+            for row in formatted_rows:
+                if row is None:
+                    lines.append("")
+                else:
+                    line = _search_thread_line(
+                        row["id"], row["time"], row["source"], row["text"], max_id_width, max_time_width
+                    )
+                    line.append(f"  {row['dist']}", style="dim cyan")
+                    lines.append(line)
+            _print_lines(lines)
+            return
+        rows = (
+            db.search_threads(con, phrase, limit=limit)
+            if threads_only
+            else db.search_messages(con, phrase, limit=limit)
+        )
+    finally:
+        con.close()
     if provider_filter:
         rows = [row for row in rows if row["source_id"] == provider_filter]
     if json_output:
@@ -320,7 +349,7 @@ def search(
     if not rows:
         console.print("No matches.")
         return
-    lines: list[Text | str] = []
+    lines: list[Text | str | Markdown] = []
     if threads_only:
         formatted_rows = []
         for i, row in enumerate(rows):
@@ -440,14 +469,16 @@ def search(
 def show(thread: str, db_path: str | None):
     """Show a full conversation by ID (short ID like 't5' or full UUID)."""
     con = db.connect(Path(db_path) if db_path else db.DB_PATH)
-
-    row = db.resolve_short_id(con, thread) or db.get_thread(con, thread)
+    try:
+        row = db.resolve_short_id(con, thread) or db.get_thread(con, thread)
+    finally:
+        con.close()
 
     if row is None:
         console.print(f"Thread not found: {thread}")
         raise SystemExit(1)
     info = row["thread"]
-    lines: list[Text | str] = []
+    lines: list[Text | str | Markdown] = []
     title = info["title"] or "untitled"
     lines.append(_header(info["source_id"], info["id"], title))
     lines.append("")
@@ -490,7 +521,10 @@ def resume(thread_id: str, db_path: str | None):
     import webbrowser
 
     con = db.connect(Path(db_path) if db_path else db.DB_PATH)
-    row = db.resolve_short_id(con, thread_id) or db.get_thread(con, thread_id)
+    try:
+        row = db.resolve_short_id(con, thread_id) or db.get_thread(con, thread_id)
+    finally:
+        con.close()
     if not row:
         console.print(f"Thread not found: {thread_id}")
         raise SystemExit(1)
@@ -611,7 +645,7 @@ def _until(ms: int) -> str:
     remaining = int(ms - time.time() * 1000)
     if remaining <= 0:
         overdue = format_duration_ms(-remaining)
-        return f"+{overdue}"
+        return overdue
     return format_duration_ms(remaining)
 
 
@@ -761,7 +795,7 @@ def _part_label(kind: str, data: dict, part: dict | None = None) -> str:
     return ""
 
 
-def _print_lines(lines: list[Text | str | Markdown]) -> None:
+def _print_lines(lines: Sequence[Text | str | Markdown]) -> None:
     def _line_count(item) -> int:
         if isinstance(item, Markdown):
             return 5
@@ -824,86 +858,89 @@ def embed(
     model = embed_mod.DEFAULT_MODEL
     dims = embed_mod.get_dims(model)
     con = db.connect(Path(db_path) if db_path else db.DB_PATH)
-    has_vec, dim_mismatch = db.init_embeddings(con, dims)
-    if not has_vec:
-        console.print(
-            "[red]sqlite-vec not installed.[/red] Run: [bold]pip install sqlite-vec[/bold]"
-        )
-        return
+    try:
+        has_vec, dim_mismatch = db.init_embeddings(con, dims)
+        if not has_vec:
+            console.print(
+                "[red]sqlite-vec not installed.[/red] Run: [bold]pip install sqlite-vec[/bold]"
+            )
+            return
 
-    if dim_mismatch and not force:
-        existing_count = con.execute("SELECT COUNT(*) FROM thread_embeddings").fetchone()[0]
-        console.print(
-            f"[yellow]Dimension mismatch:[/yellow] existing embeddings use different dimensions.\n"
-            f"  {existing_count} embeddings will be lost if you rebuild.\n"
-            f"  Run [bold]llm-archive embed --force[/bold] to rebuild with {dims}d vectors."
-        )
-        return
+        if dim_mismatch and not force:
+            existing_count = con.execute("SELECT COUNT(*) FROM thread_embeddings").fetchone()[0]
+            console.print(
+                f"[yellow]Dimension mismatch:[/yellow] existing embeddings use different dimensions.\n"
+                f"  {existing_count} embeddings will be lost if you rebuild.\n"
+                f"  Run [bold]llm-archive embed --force[/bold] to rebuild with {dims}d vectors."
+            )
+            return
 
-    if dim_mismatch and force:
-        con.execute("DELETE FROM thread_embeddings")
-        con.execute("DROP TABLE IF EXISTS vec_threads")
-        db.init_embeddings(con, dims)
+        if dim_mismatch and force:
+            con.execute("DELETE FROM thread_embeddings")
+            con.execute("DROP TABLE IF EXISTS vec_threads")
+            db.init_embeddings(con, dims)
 
-    thread_ids = embed_mod.threads_needing_embedding(con, source, force)
-    if not thread_ids:
-        console.print("All threads already embedded. Use [bold]--force[/bold] to re-embed.")
-        return
+        thread_ids = embed_mod.threads_needing_embedding(con, source, force)
+        if not thread_ids:
+            console.print("All threads already embedded. Use [bold]--force[/bold] to re-embed.")
+            return
 
-    console.print(f"Embedding [bold]{len(thread_ids)}[/bold] threads using [cyan]{model}[/cyan]...")
-    now = int(_time.time() * 1000)
-    BATCH_SIZE = 256
+        console.print(f"Embedding [bold]{len(thread_ids)}[/bold] threads using [cyan]{model}[/cyan]...")
+        now = int(_time.time() * 1000)
+        BATCH_SIZE = 256
 
-    errors = 0
-    skipped = 0
-    done = 0
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TaskProgressColumn(),
-        console=progress_console,
-        transient=True,
-    ) as progress:
-        task = progress.add_task("Embedding", total=len(thread_ids))
-        for i in range(0, len(thread_ids), BATCH_SIZE):
-            batch_ids = thread_ids[i : i + BATCH_SIZE]
-            texts = []
-            valid_ids = []
-            for tid in batch_ids:
+        errors = 0
+        skipped = 0
+        done = 0
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            console=progress_console,
+            transient=True,
+        ) as progress:
+            task = progress.add_task("Embedding", total=len(thread_ids))
+            for i in range(0, len(thread_ids), BATCH_SIZE):
+                batch_ids = thread_ids[i : i + BATCH_SIZE]
+                texts = []
+                valid_ids = []
+                for tid in batch_ids:
+                    try:
+                        text = embed_mod.extract_thread_text(con, tid)
+                        if text.strip():
+                            texts.append(text)
+                            valid_ids.append(tid)
+                        else:
+                            skipped += 1
+                    except Exception as e:
+                        errors += 1
+                        console.print(f"  [red]Error[/red] {tid}: {e}")
+
+                if not texts:
+                    progress.advance(task, len(batch_ids))
+                    continue
+
                 try:
-                    text = embed_mod.extract_thread_text(con, tid)
-                    if text.strip():
-                        texts.append(text)
-                        valid_ids.append(tid)
-                    else:
-                        skipped += 1
+                    vectors = embed_mod.embed_batch(texts, model)
+                    for tid, vector in zip(valid_ids, vectors):
+                        blob = embed_mod.serialize(vector)
+                        db.upsert_thread_embedding(con, tid, model, blob, now)
+                    done += len(valid_ids)
                 except Exception as e:
-                    errors += 1
-                    console.print(f"  [red]Error[/red] {tid}: {e}")
+                    errors += len(valid_ids)
+                    console.print(f"  [red]Batch error:[/red] {e}")
 
-            if not texts:
                 progress.advance(task, len(batch_ids))
-                continue
 
-            try:
-                vectors = embed_mod.embed_batch(texts, model)
-                for tid, vector in zip(valid_ids, vectors):
-                    blob = embed_mod.serialize(vector)
-                    db.upsert_thread_embedding(con, tid, model, blob, now)
-                done += len(valid_ids)
-            except Exception as e:
-                errors += len(valid_ids)
-                console.print(f"  [red]Batch error:[/red] {e}")
-
-            progress.advance(task, len(batch_ids))
-
-    parts = [f"[green]{done}[/green] embedded"]
-    if skipped:
-        parts.append(f"[dim]{skipped}[/dim] skipped (empty)")
-    if errors:
-        parts.append(f"[red]{errors}[/red] errors")
-    console.print("  " + ", ".join(parts))
+        parts = [f"[green]{done}[/green] embedded"]
+        if skipped:
+            parts.append(f"[dim]{skipped}[/dim] skipped (empty)")
+        if errors:
+            parts.append(f"[red]{errors}[/red] errors")
+        console.print("  " + ", ".join(parts))
+    finally:
+        con.close()
 
 
 @main.command()
@@ -922,6 +959,8 @@ def backup(verify: bool, json_output: bool):
             console.print_json(data={"status": "failed", "error": str(exc)})
             return
         raise click.ClickException(str(exc))
+    finally:
+        con.close()
     if json_output:
         console.print_json(data={"status": "ok", "path": str(target), "verified": verify})
         return
@@ -974,7 +1013,10 @@ def config_validate():
 def logs(source: str | None):
     """Show recent service/provider job history."""
     con = db.connect(db.DB_PATH)
-    rows = db.recent_jobs(con, 30)
+    try:
+        rows = db.recent_jobs(con, 30)
+    finally:
+        con.close()
     if source:
         rows = [row for row in rows if row.get("source_id") == source]
     for row in rows:
@@ -1001,58 +1043,61 @@ def sum_cmd(
     from llm_archive import summarize as sum_mod
 
     con = db.connect(Path(db_path) if db_path else db.DB_PATH)
-    threads = db.threads_needing_summary(con, source, force=force)
+    try:
+        threads = db.threads_needing_summary(con, source, force=force)
 
-    if not threads:
-        console.print("No threads need summarizing.")
-        return
+        if not threads:
+            console.print("No threads need summarizing.")
+            return
 
-    if limit > 0:
-        threads = threads[:limit]
+        if limit > 0:
+            threads = threads[:limit]
 
-    console.print(
-        f"Summarizing [bold]{len(threads)}[/bold] threads using "
-        f"[cyan]{model}[/cyan]..."
-    )
+        console.print(
+            f"Summarizing [bold]{len(threads)}[/bold] threads using "
+            f"[cyan]{model}[/cyan]..."
+        )
 
-    done = 0
-    errors = 0
-    t_start = time.time()
+        done = 0
+        errors = 0
+        t_start = time.time()
 
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TaskProgressColumn(),
-        console=progress_console,
-        transient=True,
-    ) as progress:
-        task = progress.add_task("Summarizing", total=len(threads))
-        for t in threads:
-            tid = t["id"]
-            result = sum_mod.summarize_thread(con, tid, model)
-            if result:
-                db.upsert_thread_summary(
-                    con,
-                    tid,
-                    result.get("tiny", ""),
-                    result.get("small", ""),
-                    result.get("medium", ""),
-                    result.get("large", ""),
-                    model,
-                    int(time.time() * 1000),
-                )
-                done += 1
-            else:
-                errors += 1
-            progress.advance(task, 1)
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            console=progress_console,
+            transient=True,
+        ) as progress:
+            task = progress.add_task("Summarizing", total=len(threads))
+            for t in threads:
+                tid = t["id"]
+                result = sum_mod.summarize_thread(con, tid, model)
+                if result:
+                    db.upsert_thread_summary(
+                        con,
+                        tid,
+                        result.get("tiny", ""),
+                        result.get("small", ""),
+                        result.get("medium", ""),
+                        result.get("large", ""),
+                        model,
+                        int(time.time() * 1000),
+                    )
+                    done += 1
+                else:
+                    errors += 1
+                progress.advance(task, 1)
 
-    elapsed = time.time() - t_start
-    parts = [f"[green]{done}[/green] summarized"]
-    if errors:
-        parts.append(f"[red]{errors}[/red] errors")
-    parts.append(f"({elapsed:.0f}s, {elapsed/max(done,1):.1f}s/thread)")
-    console.print("  " + ", ".join(parts))
+        elapsed = time.time() - t_start
+        parts = [f"[green]{done}[/green] summarized"]
+        if errors:
+            parts.append(f"[red]{errors}[/red] errors")
+        parts.append(f"({elapsed:.0f}s, {elapsed/max(done,1):.1f}s/thread)")
+        console.print("  " + ", ".join(parts))
+    finally:
+        con.close()
 
 
 @main.command()

@@ -780,11 +780,12 @@ def test_sync_failed_message_format():
     assert "auth_failed" in r.reason
 
 
-def test_status_next_shows_live_for_watched_file_provider(tmp_path, monkeypatch):
+def test_status_next_shows_watching_for_active_watched_file_provider(tmp_path, monkeypatch):
     db_path = tmp_path / "archive.db"
     con = cli.db.connect(db_path)
     now = cli.db.now_ms()
     cli.db.set_provider_sync_success(con, "claudecode", now)
+    cli.db.set_provider_watch_status(con, "claudecode", active=True)
 
     config_path = tmp_path / "config.toml"
     config_path.write_text("[ingestors.claudecode]\nenabled = true\n")
@@ -792,7 +793,31 @@ def test_status_next_shows_live_for_watched_file_provider(tmp_path, monkeypatch)
 
     result = CliRunner().invoke(cli.main, ["status", "--db-path", str(db_path)])
     assert result.exit_code == 0
-    assert "live" in result.output
+    assert "watching" in result.output
+
+
+def test_status_next_shows_time_for_watched_file_provider_without_active_watch(
+    tmp_path,
+    monkeypatch,
+):
+    db_path = tmp_path / "archive.db"
+    con = cli.db.connect(db_path)
+    now = cli.db.now_ms()
+    cli.db.set_provider_sync_success(con, "claudecode", now)
+    cli.db.set_provider_next_sync(con, "claudecode", now + 10_000)
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("[ingestors.claudecode]\nenabled = true\n")
+    monkeypatch.setenv("LLM_ARCHIVE_CONFIG", str(config_path))
+
+    result = CliRunner().invoke(cli.main, ["status", "--db-path", str(db_path)])
+    assert result.exit_code == 0
+    for line in result.output.splitlines():
+        if line.startswith("claudecode"):
+            assert "watching" not in line
+            assert line.endswith("s")
+            assert not line.endswith("-")
+            break
 
 
 def test_status_next_shows_dash_before_first_sync(tmp_path, monkeypatch):
@@ -826,8 +851,63 @@ def test_status_next_shows_time_for_web_provider(tmp_path, monkeypatch):
     assert result.exit_code == 0
     for line in result.output.splitlines():
         if line.startswith("deepseek"):
-            assert "+" in line or "live" not in line
+            assert "+" not in line
+            assert "watching" not in line
             break
+
+
+def test_status_hides_dummy_and_keeps_stale_out_of_state(tmp_path, monkeypatch):
+    db_path = tmp_path / "archive.db"
+    con = cli.db.connect(db_path)
+    now = cli.db.now_ms()
+    cli.db.set_last_sync(con, "codex", now - 172_800_000)
+    cli.db.ensure_provider_state(con, "codex", enabled=True)
+    cli.db.mark_provider_stale(con, "codex")
+    cli.db.set_last_sync(con, "dummy", now)
+    cli.db.ensure_provider_state(con, "dummy", enabled=True)
+    con.close()
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("[ingestors.codex]\nenabled = true\n")
+    monkeypatch.setenv("LLM_ARCHIVE_CONFIG", str(config_path))
+
+    result = CliRunner().invoke(cli.main, ["status", "--db-path", str(db_path)])
+
+    assert result.exit_code == 0
+    assert "dummy" not in result.output
+    assert "stale" not in result.output
+    for line in result.output.splitlines():
+        if line.startswith("SOURCE"):
+            assert line.index("LAST") < line.index("THR")
+        if line.startswith("codex"):
+            fields = line.split()
+            assert fields[:3] == ["codex", "ok", "2d"]
+
+    json_result = CliRunner().invoke(cli.main, ["status", "--json", "--db-path", str(db_path)])
+
+    assert json_result.exit_code == 0
+    data = json.loads(json_result.output)
+    assert all(item["id"] != "dummy" for item in data["sources"])
+    assert all(item["source_id"] != "dummy" for item in data["providers"])
+
+
+def test_status_shows_running_sync_state(tmp_path, monkeypatch):
+    db_path = tmp_path / "archive.db"
+    con = cli.db.connect(db_path)
+    cli.db.ensure_provider_state(con, "codex", enabled=True)
+    cli.db.create_job(con, "sync", "codex")
+    con.close()
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("[ingestors.codex]\nenabled = true\n")
+    monkeypatch.setenv("LLM_ARCHIVE_CONFIG", str(config_path))
+
+    result = CliRunner().invoke(cli.main, ["status", "--db-path", str(db_path)])
+
+    assert result.exit_code == 0
+    for line in result.output.splitlines():
+        if line.startswith("codex"):
+            assert line.split()[1] == "sync"
 
 
 def test_search_no_sync_by_default(tmp_path, monkeypatch):
@@ -1230,14 +1310,17 @@ class TestEnable:
             return {"enabled": True, "path": f"/fake/{source}"}
 
         monkeypatch.setattr(cli, "enable_provider", fake_enable)
-        def fake_run(coro, *a, **kw):
-            coro.close()
+        monkeypatch.setattr(
+            cli,
+            "_run",
+            lambda coro: pytest.fail("enable must not start sync"),
+        )
 
-        monkeypatch.setattr(cli, "_run", fake_run)
 
         result = CliRunner().invoke(cli.main, ["enable", "codex"])
         assert result.exit_code == 0
         assert results == ["codex"]
+        assert "llm-archive sync codex" in result.output
 
     def test_enable_multiple_providers(self, monkeypatch):
         results = []
@@ -1246,11 +1329,12 @@ class TestEnable:
             results.append(source)
             return {"enabled": True, "path": f"/fake/{source}"}
 
-        def fake_run(coro, *a, **kw):
-            coro.close()
-
         monkeypatch.setattr(cli, "enable_provider", fake_enable)
-        monkeypatch.setattr(cli, "_run", fake_run)
+        monkeypatch.setattr(
+            cli,
+            "_run",
+            lambda coro: pytest.fail("enable must not start sync"),
+        )
 
         result = CliRunner().invoke(cli.main, ["enable", "codex", "chatgpt"])
         assert result.exit_code == 0

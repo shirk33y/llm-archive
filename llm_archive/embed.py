@@ -23,7 +23,7 @@ def get_dims(model: str, provider: str = "fastembed") -> int:
         return _FASTEMBED_DIMS.get(model, 384)
     try:
         info = litellm.get_model_info(model)
-        return info.get("max_input_tokens", 384)
+        return int(info.get("max_input_tokens") or 384)
     except Exception:
         return 384
 

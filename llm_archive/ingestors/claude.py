@@ -99,9 +99,12 @@ class ClaudeIngestor(BaseIngestor):
         data = await self._get(client, f"{API_BASE}/organizations")
         # data is a list of orgs
         if isinstance(data, list):
-            self._org_id = data[0]["uuid"]
+            uuid = data[0]["uuid"]
         else:
-            self._org_id = data["uuid"]
+            uuid = data["uuid"]
+        if not isinstance(uuid, str):
+            raise ValueError("Claude organization response missing uuid")
+        self._org_id = uuid
         return self._org_id
 
     async def threads(self, since: int | None = None, existing_thread_ids: set[str] | None = None, on_total = None) -> AsyncIterator[IngestedThread]:

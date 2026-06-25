@@ -95,7 +95,10 @@ CREATE TABLE IF NOT EXISTS provider_state (
     last_error            TEXT,
     failure_count         INTEGER NOT NULL DEFAULT 0,
     auth_status           TEXT,
-    path_status           TEXT
+    path_status           TEXT,
+    watch_active          INTEGER NOT NULL DEFAULT 0,
+    watch_seen_at         INTEGER,
+    watch_error           TEXT
 );
 
 CREATE TABLE IF NOT EXISTS jobs (
@@ -208,6 +211,9 @@ def connect(path: Path = DB_PATH) -> sqlite3.Connection:
         stmt = stmt.strip()
         if stmt:
             con.execute(stmt)
+    _ensure_column(con, "provider_state", "watch_active", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(con, "provider_state", "watch_seen_at", "INTEGER")
+    _ensure_column(con, "provider_state", "watch_error", "TEXT")
     if not con.execute("SELECT count(*) FROM messages_fts").fetchone()[0]:
         con.execute(
             "INSERT INTO messages_fts(id, thread_id, content_clean) "
@@ -224,6 +230,17 @@ def connect(path: Path = DB_PATH) -> sqlite3.Connection:
     _migrate_windsurf_prefix(con)
     con.commit()
     return con
+
+
+def _ensure_column(
+    con: sqlite3.Connection,
+    table: str,
+    column: str,
+    definition: str,
+) -> None:
+    columns = {row["name"] for row in con.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in columns:
+        con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 def _thread_sha1(thread: IngestedThread) -> str:
@@ -509,6 +526,25 @@ def set_provider_sync_failure(
     con.commit()
 
 
+def set_provider_watch_status(
+    con: sqlite3.Connection,
+    source_id: str,
+    *,
+    active: bool,
+    error: str | None = None,
+) -> None:
+    ensure_provider_state(con, source_id)
+    con.execute(
+        """
+        UPDATE provider_state
+        SET watch_active=?, watch_seen_at=?, watch_error=?
+        WHERE source_id=?
+        """,
+        (1 if active else 0, now_ms() if active else None, error, source_id),
+    )
+    con.commit()
+
+
 def provider_states(con: sqlite3.Connection) -> dict[str, dict]:
     rows = con.execute("SELECT * FROM provider_state ORDER BY source_id").fetchall()
     return {row["source_id"]: dict(row) for row in rows}
@@ -563,7 +599,9 @@ def create_job(
         (kind, source_id, status, reason, ts, ts, 1 if force else 0),
     )
     con.commit()
-    return int(cur.lastrowid)
+    if cur.lastrowid is None:
+        raise RuntimeError("failed to create job")
+    return cur.lastrowid
 
 
 def update_job(

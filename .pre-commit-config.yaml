@@ -7,6 +7,12 @@ repos:
         language: system
         types: [python]
         pass_filenames: false
+      - id: pyright
+        name: pyright
+        entry: uv run pyright
+        language: system
+        types: [python]
+        pass_filenames: false
       - id: unit-tests
         name: unit tests
         entry: uv run pytest -q --cov-fail-under=70

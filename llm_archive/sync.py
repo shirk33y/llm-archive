@@ -68,16 +68,19 @@ async def _sync_command(
                 console.print(f"  [green]{count}[/green] threads auto-embedded")
         finally:
             con.close()
-        if result.status == "failed":
-            console.print(f"  [red]{src}:[/red] {result.reason}")
-        elif result.status == "running":
-            console.print(f"  [yellow]{src}:[/yellow] {result.reason}")
-        elif result.status == "joined":
-            console.print(f"  {src}: synced (joined running job)")
-        elif result.status == "throttled":
-            console.print(f"  {src}: {result.reason}")
-        elif result.status == "skipped":
-            logger.info(f"  {src}: {result.reason}")
+    if not json_output:
+        for result in results:
+            src = result.source_id
+            if result.status == "failed":
+                console.print(f"  [red]{src}:[/red] {result.reason}")
+            elif result.status == "running":
+                console.print(f"  [yellow]{src}:[/yellow] {result.reason}")
+            elif result.status == "joined":
+                console.print(f"  {src}: synced (joined running job)")
+            elif result.status == "throttled":
+                console.print(f"  {src}: {result.reason}")
+            elif result.status == "skipped":
+                logger.info(f"  {src}: {result.reason}")
     if json_output:
         console.print_json(
             data=[
@@ -100,33 +103,36 @@ async def _sync(
     auth_mode: str | None = None,
 ):
     con = db.connect(Path(db_path_str) if db_path_str else db.DB_PATH)
-    sources = [source] if source else list(INGESTORS)
+    try:
+        sources = [source] if source else list(INGESTORS)
 
-    for src in sources:
-        since = None if force else db.get_last_sync(con, src)
-        if since is not None and _source_thread_count(con, src) == 0:
-            since = None
-        ingestor = get_ingestor(src)
-        if path and hasattr(ingestor, "path") and src == source:
-            ingestor.path = Path(path)
-        source_config = {}
-        if path and src == source:
-            source_config["path"] = path
-        if src == source and auth_mode:
-            source_config["mode"] = auth_mode
-        db.upsert_source(con, src, source_config)
-        logger.info(f"Syncing: {src}")
+        for src in sources:
+            since = None if force else db.get_last_sync(con, src)
+            if since is not None and _source_thread_count(con, src) == 0:
+                since = None
+            ingestor = get_ingestor(src)
+            if path and hasattr(ingestor, "path") and src == source:
+                setattr(ingestor, "path", Path(path))
+            source_config = {}
+            if path and src == source:
+                source_config["path"] = path
+            if src == source and auth_mode:
+                source_config["mode"] = auth_mode
+            db.upsert_source(con, src, source_config)
+            logger.info(f"Syncing: {src}")
 
-        try:
-            if since is None:
-                await ingestor.init(path=path if src == source else None)
-            if not await ingestor.prepare():
-                continue
-            ok = await _do_ingest(con, ingestor, since=since, force=force)
-            if ok:
-                db.set_last_sync(con, src, int(time.time() * 1000))
-        except Exception as e:
-            console.print(f"[red]Error syncing {src}:[/red] {e}")
+            try:
+                if since is None:
+                    await ingestor.init(path=path if src == source else None)
+                if not await ingestor.prepare():
+                    continue
+                ok = await _do_ingest(con, ingestor, since=since, force=force)
+                if ok:
+                    db.set_last_sync(con, src, int(time.time() * 1000))
+            except Exception as e:
+                console.print(f"[red]Error syncing {src}:[/red] {e}")
+    finally:
+        con.close()
 
 
 async def _sync_one(
@@ -137,19 +143,22 @@ async def _sync_one(
     auth_mode: str | None = None,
 ) -> bool:
     con = db.connect(Path(db_path_str) if db_path_str else db.DB_PATH)
-    since = None if force else db.get_last_sync(con, source)
-    if since is not None and _source_thread_count(con, source) == 0:
-        since = None
-    ingestor = get_ingestor(source)
-    if path and hasattr(ingestor, "path"):
-        ingestor.path = Path(path)
-    db.upsert_source(con, source, {"path": path} if path else {})
-    logger.info(f"Syncing: {source}")
-    if since is None:
-        await ingestor.init(path=path)
-    if not await ingestor.prepare():
-        return False
-    return await _do_ingest(con, ingestor, since=since, force=force)
+    try:
+        since = None if force else db.get_last_sync(con, source)
+        if since is not None and _source_thread_count(con, source) == 0:
+            since = None
+        ingestor = get_ingestor(source)
+        if path and hasattr(ingestor, "path"):
+            setattr(ingestor, "path", Path(path))
+        db.upsert_source(con, source, {"path": path} if path else {})
+        logger.info(f"Syncing: {source}")
+        if since is None:
+            await ingestor.init(path=path)
+        if not await ingestor.prepare():
+            return False
+        return await _do_ingest(con, ingestor, since=since, force=force)
+    finally:
+        con.close()
 
 
 def _source_thread_count(con, source: str) -> int:

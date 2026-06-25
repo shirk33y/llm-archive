@@ -274,8 +274,31 @@ async def test_watched_provider_skips_timer_when_not_stale(tmp_path, con):
     )
 
     with patch("llm_archive.service.run_sync_job", new_callable=AsyncMock) as mock_job:
-        await _run_due_syncs(con, config, AsyncMock(), None)
+        await _run_due_syncs(con, config, AsyncMock(), None, {"claudecode"})
         mock_job.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_watched_provider_uses_timer_when_watch_not_active(tmp_path, con):
+    db.ensure_provider_state(con, "claudecode")
+    con.execute(
+        "UPDATE provider_state SET last_success_at=5000, next_sync_at=1 WHERE source_id='claudecode'"
+    ).connection.commit()
+
+    config = AppConfig(
+        ingestors={
+            "claudecode": IngestorConfig(
+                enabled=True,
+                sync_interval_ms=10_000,
+                min_sync_interval_ms=10_000,
+                watch=True,
+            )
+        }
+    )
+
+    with patch("llm_archive.service.run_sync_job", new_callable=AsyncMock) as mock_job:
+        await _run_due_syncs(con, config, AsyncMock(), None, set())
+        mock_job.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -366,7 +389,7 @@ async def test_watched_provider_skips_after_successful_sync_not_stale(tmp_path, 
     )
 
     with patch("llm_archive.service.run_sync_job", new_callable=AsyncMock) as mock_job:
-        await _run_due_syncs(con, config, AsyncMock(), None)
+        await _run_due_syncs(con, config, AsyncMock(), None, {"claudecode"})
         mock_job.assert_not_awaited()
 
 def test_auto_embed_config_default_is_enabled():

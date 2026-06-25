@@ -4,6 +4,10 @@
 
 After cloning: `uv sync --extra dev && uv run pre-commit install`
 
+## Tests
+
+Use temporary databases for all tests and verification. Do not run test operations against the user's configured archive database unless explicitly asked.
+
 ## Commits
 
 `type(scope): description` — lowercase, imperative, no trailing period. Scope optional.

@@ -79,6 +79,7 @@ async def run_service(
         return cb
 
     config = load_config()
+    schedule_errors: dict[str, str] = {}
     for source_id in config.ingestors or {}:
         ic = config.ingestor(source_id)
         if not ic.enabled or not ic.watch:
@@ -92,10 +93,18 @@ async def run_service(
             if handler is None:
                 handler = _FileChangeHandler(source_id, FILE_SYNC_INTERVAL_MS / 1000, _sync_file_handler(source_id))
                 handlers[source_id] = handler
-            observer.schedule(handler, str(p), recursive=True)
+            try:
+                observer.schedule(handler, str(p), recursive=True)
+            except OSError as exc:
+                schedule_errors[source_id] = str(exc)
+                handlers.pop(source_id, None)
     if handlers:
-        observer.daemon = True
-        observer.start()
+        try:
+            observer.daemon = True
+            observer.start()
+        except OSError as exc:
+            schedule_errors.update({source_id: str(exc) for source_id in handlers})
+            handlers.clear()
 
     try:
         while True:
@@ -109,6 +118,16 @@ async def run_service(
                     version="0.1.0",
                     config_hash=_config_hash(),
                 )
+                active_watch_sources = set(handlers) if observer.is_alive() else set()
+                for source_id in config.ingestors or {}:
+                    provider_config = config.ingestor(source_id)
+                    if provider_config.watch and provider_kind(source_id) == "file":
+                        db.set_provider_watch_status(
+                            con,
+                            source_id,
+                            active=source_id in active_watch_sources,
+                            error=schedule_errors.get(source_id),
+                        )
                 for source_id, flag in list(stale_flags.items()):
                     if flag:
                         stale_flags[source_id] = False
@@ -117,7 +136,7 @@ async def run_service(
                                 h._flush()
                                 break
                         db.mark_provider_stale(con, source_id)
-                await _run_due_syncs(con, config, runner, db_path)
+                await _run_due_syncs(con, config, runner, db_path, active_watch_sources)
                 if config.embed.auto:
                     auto_embed(con)
                 await _run_due_backup(con, db_path)
@@ -130,7 +149,14 @@ async def run_service(
             observer.join(timeout=2)
 
 
-async def _run_due_syncs(con, config: AppConfig, runner: SyncRunner, db_path: Path | None) -> None:
+async def _run_due_syncs(
+    con,
+    config: AppConfig,
+    runner: SyncRunner,
+    db_path: Path | None,
+    active_watch_sources: set[str] | None = None,
+) -> None:
+    active_watch_sources = active_watch_sources or set()
     states = db.provider_states(con)
     for source_id in config.ingestors or {}:
         provider_config = config.ingestor(source_id)
@@ -145,7 +171,11 @@ async def _run_due_syncs(con, config: AppConfig, runner: SyncRunner, db_path: Pa
             db.set_provider_next_sync(con, source_id, due_at)
         is_due = due_at is None or int(due_at) <= db.now_ms()
         has_synced = bool(state.get("last_success_at")) or bool(db.get_last_sync(con, source_id))
-        watched = provider_config.watch and provider_kind(source_id) == "file"
+        watched = (
+            provider_config.watch
+            and provider_kind(source_id) == "file"
+            and source_id in active_watch_sources
+        )
 
         if watched and has_synced:
             if not is_stale:
