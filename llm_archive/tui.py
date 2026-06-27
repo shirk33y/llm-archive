@@ -4,7 +4,7 @@ from pathlib import Path
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical, VerticalScroll
+from textual.containers import Vertical
 from textual.screen import Screen
 from textual.widgets import Input, Static, ListView, ListItem, Label
 from textual.reactive import reactive
@@ -157,50 +157,206 @@ class MessageRow:
         return line
 
 
+_ROLE_STYLES: dict[str, str] = {
+    "user": "bold cyan",
+    "assistant": "bold green",
+    "tool": "dark_orange",
+    "system": "grey50",
+}
+
+_SUMMARY_SIZES = ["full", "tiny", "small", "medium", "large"]
+
+_RESUME_URLS = {
+    "chatgpt": "https://chatgpt.com/c/{id}",
+    "claude": "https://claude.ai/chat/{id}",
+    "deepseek": "https://chat.deepseek.com/a/chat/s/{id}",
+}
+_RESUME_COMMANDS = {
+    "claudecode": "claude --resume {id}",
+    "codex": "codex resume {id}",
+    "opencode": "opencode --session {id}",
+}
+_RESUME_UNSUPPORTED = {"cursor", "windsurf", "gemini"}
+
+
 class ShowScreen(Screen):
-    """Full-screen thread view."""
-    
+    """Thread viewer — delegates to less/bat for scrolling, search, markdown."""
+
     BINDINGS = [
-        Binding("h", "app.pop_screen", "Back", priority=True),
-        Binding("left", "app.pop_screen", "Back", priority=True),
+        Binding("l", "open_pager", "View", priority=True),
+        Binding("s", "cycle_summary", "Summary", priority=True),
+        Binding("enter", "resume_session", "Resume", priority=True),
+        Binding("q", "app.pop_screen", "Back", priority=True),
         Binding("escape", "app.pop_screen", "Back", priority=True),
-        Binding("q", "app.quit", "Quit", priority=True),
+        Binding("h", "app.pop_screen", "Back", priority=True),
     ]
-    
-    def __init__(self, thread_data: dict):
+
+    def __init__(self, thread_data: dict, con=None):
         super().__init__()
         self.thread_data = thread_data
-    
+        self.con = con
+        self._summary_idx = 0
+
     def compose(self) -> ComposeResult:
         with Vertical():
-            header = self._render_header()
-            yield Static(header, classes="header", markup=False)
-            with VerticalScroll():
-                content = self._render_content()
-                yield Static(content, classes="content", markup=False)
-    
-    def _render_header(self) -> str:
+            yield Static(self._build_header(), id="ss-header")
+            yield Static(self._build_hint(), id="ss-hint")
+
+    def on_mount(self):
+        self._open_pager()
+
+    def _build_header(self) -> Text:
         t = self.thread_data["thread"]
-        title = t["title"] or "untitled"
-        return f"◀ {t['source_id']} · {title}\n"
-    
-    def _render_content(self) -> str:
-        lines = []
-        for msg in self.thread_data["messages"]:
-            ts = msg.get("created_at", 0)
-            from datetime import datetime, timezone
-            dt = datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
-            time_str = dt.strftime("%Y-%m-%d %H:%M:%S")
+        title = t.get("title") or "untitled"
+        source = t.get("source_id", "?")
+        ts = t.get("updated_at") or t.get("created_at", 0)
+        msgs = len(self.thread_data["messages"])
+        line = Text()
+        line.append(f" {source} ", style=f"bold {_source_color(source)}")
+        line.append(_truncate(title, 80), style="bold white")
+        if ts:
+            line.append(f"  {_relative_time(ts)}", style="dim yellow")
+        line.append(f"  {msgs} msgs", style="dim grey50")
+        size = _SUMMARY_SIZES[self._summary_idx]
+        if size != "full":
+            line.append(f"  ⟦{size}⟧", style="dim magenta")
+        return line
+
+    def _build_hint(self) -> Text:
+        return Text(
+            "\n\n  l:view  s:summary  enter:resume  q:back",
+            style="dim",
+        )
+
+    def _render_content(self, width: int = 80) -> str:
+        """Render thread to ANSI-styled text for less -R or bat."""
+        from io import StringIO
+        from rich.console import Console
+        from rich.markdown import Markdown
+
+        buf = StringIO()
+        console = Console(
+            file=buf, width=width,
+            force_terminal=True, color_system="256",
+        )
+
+        t = self.thread_data["thread"]
+        source = t.get("source_id", "?")
+        title = t.get("title") or "untitled"
+        ts = t.get("updated_at") or t.get("created_at", 0)
+
+        hdr = Text()
+        hdr.append(source, style=f"bold {_source_color(source)}")
+        hdr.append(f"  {title}  ", style="bold white")
+        hdr.append(_relative_time(ts), style="dim yellow")
+        console.print(hdr)
+        console.print()
+
+        size = _SUMMARY_SIZES[self._summary_idx]
+        if size != "full":
+            summary = self._get_summary(size)
+            if summary:
+                console.print(Markdown(summary))
+                console.print()
+                console.print(
+                    Text(f"⟦{size} · s:cycle · l:full · enter:resume · q:back⟧", style="dim")
+                )
+                return buf.getvalue()
+
+        messages = self.thread_data["messages"]
+        for msg in messages:
             role = msg.get("role", "unknown")
-            lines.append(f"\n─ {time_str} · {role} ─".rjust(60, "─"))
-            
+            style = _ROLE_STYLES.get(role, "grey50")
+            console.print(Text(f"── {role} ──", style=style))
+
             for part in msg.get("parts", []):
                 if not part.get("visible"):
                     continue
-                text = part.get("text", "")
-                if text:
-                    lines.append(text)
-        return "\n".join(lines)
+                content = part.get("text", "")
+                if not content:
+                    continue
+                if role in ("user", "assistant"):
+                    console.print(Markdown(content))
+                else:
+                    console.print(content, style="dim")
+            console.print()
+
+        console.print(
+            Text(f"{len(messages)} messages · s:summary · enter:resume · q:back", style="dim")
+        )
+        return buf.getvalue()
+
+    def _get_summary(self, size: str) -> str | None:
+        if not self.con:
+            return None
+        row = db.get_thread_summary(self.con, self.thread_data["thread"]["id"])
+        if not row:
+            return None
+        return row.get(size)
+
+    def _open_pager(self):
+        import os
+        import shutil
+        import subprocess
+        import tempfile
+
+        try:
+            width = max(self.app.console.size.width - 2, 40)
+        except Exception:
+            width = 80
+
+        content = self._render_content(width)
+        fd, path = tempfile.mkstemp(suffix=".md", prefix="llm-archive-")
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(content)
+
+            bat = shutil.which("bat") or shutil.which("batcat")
+            if bat:
+                cmd = [bat, "--paging=always", "--style=plain", "--color=always", path]
+            elif shutil.which("less"):
+                cmd = ["less", "-R", path]
+            else:
+                print(content)
+                return
+
+            with self.app.suspend():
+                subprocess.run(cmd)
+        except Exception:
+            pass
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+    def action_open_pager(self):
+        self._open_pager()
+
+    def action_cycle_summary(self):
+        for _ in range(len(_SUMMARY_SIZES)):
+            self._summary_idx = (self._summary_idx + 1) % len(_SUMMARY_SIZES)
+            size = _SUMMARY_SIZES[self._summary_idx]
+            if size == "full" or self._get_summary(size):
+                break
+        self.query_one("#ss-header", Static).update(self._build_header())
+        self._open_pager()
+
+    def action_resume_session(self):
+        t = self.thread_data["thread"]
+        source = t.get("source_id", "")
+        local_id = _local_id(t["id"])
+        if source in _RESUME_UNSUPPORTED:
+            self.app.bell()
+            return
+        if source in _RESUME_URLS:
+            import webbrowser
+            webbrowser.open(_RESUME_URLS[source].format(id=local_id))
+        elif source in _RESUME_COMMANDS:
+            import subprocess
+            subprocess.Popen(_RESUME_COMMANDS[source].format(id=local_id).split())
+        else:
+            self.app.bell()
 
 
 class ListScreen(Screen):
@@ -357,7 +513,7 @@ class ListScreen(Screen):
         if not data:
             data = db.get_thread(self.con, short_id)
         if data:
-            self.app.push_screen(ShowScreen(data))
+            self.app.push_screen(ShowScreen(data, self.con))
 
     def on_input_changed(self, event: Input.Changed):
         if event.input.id == "search":
@@ -411,6 +567,15 @@ class ArchiveApp(App):
         background: $surface-darken-1;
         color: $text-muted;
         text-style: dim;
+    }
+    #ss-header {
+        height: 1;
+        background: $surface-darken-1;
+        padding: 0 1;
+    }
+    #ss-hint {
+        padding: 1 1;
+        color: $text-muted;
     }
     """
     

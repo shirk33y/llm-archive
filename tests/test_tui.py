@@ -30,6 +30,7 @@ from llm_archive.tui import (
     _source_color,
     _SOURCE_COLORS,
     _SOURCE_PALETTE,
+    _SUMMARY_SIZES,
     _truncate,
 )
 
@@ -384,10 +385,14 @@ class TestThreadView:
 
 
 class TestShowScreenContent:
-    """ShowScreen must render message content with special chars safely."""
+    """ShowScreen renders content safely — markup chars, role labels, markdown."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_pager(self, monkeypatch):
+        monkeypatch.setattr(ShowScreen, "_open_pager", lambda self: None)
 
     async def test_brackets_in_content(self, con):
-        """Rich markup chars like [array] must not crash the renderer."""
+        """Rich markup chars like [array] must not crash rendering."""
         _seed_db(con, n_threads=1)
         con.execute(
             "UPDATE message_parts SET text=? WHERE message_id='test:m1a' AND ord=0",
@@ -418,15 +423,266 @@ class TestShowScreenContent:
             assert isinstance(app.screen, ShowScreen)
             assert not app._exception
 
-    async def test_show_screen_displays_content(self, app):
+    async def test_render_includes_messages(self, app):
+        """_render_content produces text with message content."""
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("l")
+            await pilot.pause()
+            output = app.screen._render_content(width=80)
+            assert "hello world" in output
+            assert "reply" in output
+
+    async def test_render_includes_role_labels(self, app):
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("l")
+            await pilot.pause()
+            output = app.screen._render_content(width=80)
+            assert "user" in output
+            assert "assistant" in output
+
+    async def test_render_has_no_cap(self, con):
+        """All messages appear in render — no cap."""
+        _seed_db(con, n_threads=1)
+        import time
+        now = int(time.time() * 1000)
+        for i in range(2, 602):
+            mid = f"test:extra{i}"
+            con.execute(
+                "INSERT INTO messages(id, thread_id, role, content, content_clean, created_at) "
+                "VALUES (?,?,?,?,?,?)",
+                (mid, "test:t1", "user", f"msg {i}", f"msg {i}", now + i),
+            )
+            con.execute(
+                "INSERT INTO message_parts(message_id, ord, kind, text, visible, searchable) "
+                "VALUES (?,?,?, ?,?,?)",
+                (mid, 0, "text", f"message body {i}", 1, 1),
+            )
+        con.commit()
+        app = ArchiveApp(db_path=Path(con.execute("PRAGMA database_list").fetchone()[2]))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("l")
+            await pilot.pause()
+            output = app.screen._render_content(width=80)
+            assert "message body 2" in output
+            assert "message body 601" in output
+            assert not app._exception
+
+
+class TestShowScreenBack:
+    """q closes thread view, returns to list — does NOT quit app."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_pager(self, monkeypatch):
+        monkeypatch.setattr(ShowScreen, "_open_pager", lambda self: None)
+
+    async def test_q_returns_to_list(self, app):
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("l")
+            await pilot.pause()
+            assert isinstance(app.screen, ShowScreen)
+            await pilot.press("q")
+            await pilot.pause()
+            assert isinstance(app.screen, ListScreen)
+
+    async def test_escape_returns_to_list(self, app):
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("l")
+            await pilot.pause()
+            assert isinstance(app.screen, ShowScreen)
+            await pilot.press("escape")
+            await pilot.pause()
+            assert isinstance(app.screen, ListScreen)
+
+
+class TestShowScreenSummary:
+    """s key cycles through summary sizes, skipping missing ones."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_pager(self, monkeypatch):
+        monkeypatch.setattr(ShowScreen, "_open_pager", lambda self: None)
+
+    @staticmethod
+    def _seed_with_summary(con):
+        from llm_archive.db import init_summaries, upsert_thread_summary
+        import time
+        init_summaries(con)
+        upsert_thread_summary(
+            con, "test:t1",
+            tiny="tiny summary text",
+            small="small summary text",
+            medium="medium summary text",
+            large="large summary text",
+            model="test-model",
+            summarized_at=int(time.time()),
+        )
+        con.commit()
+
+    async def test_cycle_to_tiny(self, con):
+        _seed_db(con, n_threads=1)
+        self._seed_with_summary(con)
+        app = ArchiveApp(db_path=Path(con.execute("PRAGMA database_list").fetchone()[2]))
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("l")
             await pilot.pause()
             screen = app.screen
-            assert isinstance(screen, ShowScreen)
-            content = screen._render_content()
-            assert "hello world" in content
+            assert screen._summary_idx == 0
+            await pilot.press("s")
+            await pilot.pause()
+            assert _SUMMARY_SIZES[screen._summary_idx] == "tiny"
+            output = screen._render_content(width=80)
+            assert "tiny summary text" in output
+
+    async def test_cycle_to_small(self, con):
+        _seed_db(con, n_threads=1)
+        self._seed_with_summary(con)
+        app = ArchiveApp(db_path=Path(con.execute("PRAGMA database_list").fetchone()[2]))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("l")
+            await pilot.pause()
+            screen = app.screen
+            await pilot.press("s")
+            await pilot.pause()
+            await pilot.press("s")
+            await pilot.pause()
+            assert _SUMMARY_SIZES[screen._summary_idx] == "small"
+
+    async def test_cycle_wraps_to_full(self, con):
+        _seed_db(con, n_threads=1)
+        self._seed_with_summary(con)
+        app = ArchiveApp(db_path=Path(con.execute("PRAGMA database_list").fetchone()[2]))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("l")
+            await pilot.pause()
+            screen = app.screen
+            for _ in range(len(_SUMMARY_SIZES)):
+                await pilot.press("s")
+                await pilot.pause()
+            assert screen._summary_idx == 0
+
+    async def test_no_summary_stays_full(self, con):
+        """Cycling when no summary exists stays on full messages."""
+        _seed_db(con, n_threads=1)
+        app = ArchiveApp(db_path=Path(con.execute("PRAGMA database_list").fetchone()[2]))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("l")
+            await pilot.pause()
+            screen = app.screen
+            await pilot.press("s")
+            await pilot.pause()
+            assert screen._summary_idx == 0
+            output = screen._render_content(width=80)
+            assert "hello world" in output
+
+    async def test_partial_summary_skips_missing(self, con):
+        """Only tiny exists — cycling skips small/medium/large."""
+        _seed_db(con, n_threads=1)
+        from llm_archive.db import init_summaries, upsert_thread_summary
+        import time
+        init_summaries(con)
+        upsert_thread_summary(
+            con, "test:t1",
+            tiny="only tiny", small=None, medium=None, large=None,
+            model="m", summarized_at=int(time.time()),
+        )
+        con.commit()
+        app = ArchiveApp(db_path=Path(con.execute("PRAGMA database_list").fetchone()[2]))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("l")
+            await pilot.pause()
+            screen = app.screen
+            await pilot.press("s")
+            await pilot.pause()
+            assert _SUMMARY_SIZES[screen._summary_idx] == "tiny"
+            await pilot.press("s")
+            await pilot.pause()
+            assert screen._summary_idx == 0  # wraps to full
+
+    async def test_header_shows_size_label(self, con):
+        _seed_db(con, n_threads=1)
+        self._seed_with_summary(con)
+        app = ArchiveApp(db_path=Path(con.execute("PRAGMA database_list").fetchone()[2]))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("l")
+            await pilot.pause()
+            screen = app.screen
+            assert "⟦" not in str(screen._build_header())
+            await pilot.press("s")
+            await pilot.pause()
+            assert "⟦tiny⟧" in str(screen._build_header())
+
+
+class TestShowScreenResume:
+    """Enter resumes session via browser/CLI command."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_pager(self, monkeypatch):
+        monkeypatch.setattr(ShowScreen, "_open_pager", lambda self: None)
+
+    async def test_resume_calls_webbrowser(self, con, monkeypatch):
+        _seed_db(con, n_threads=1, sources=["chatgpt"])
+        opened = []
+        monkeypatch.setattr("webbrowser.open", lambda url: opened.append(url))
+        app = ArchiveApp(db_path=Path(con.execute("PRAGMA database_list").fetchone()[2]))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("l")
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+        assert opened
+
+    async def test_resume_unsupported_bells(self, con, monkeypatch):
+        _seed_db(con, n_threads=1, sources=["gemini"])
+        monkeypatch.setattr("webbrowser.open", lambda url: None)
+        app = ArchiveApp(db_path=Path(con.execute("PRAGMA database_list").fetchone()[2]))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("l")
+            await pilot.pause()
+            assert isinstance(app.screen, ShowScreen)
+            await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(app.screen, ShowScreen)
+
+
+class TestShowScreenPager:
+    """Pager auto-opens on mount and on 'l' key."""
+
+    async def test_pager_called_on_mount(self, con, monkeypatch):
+        calls = []
+        monkeypatch.setattr(ShowScreen, "_open_pager", lambda self: calls.append(True))
+        _seed_db(con, n_threads=1)
+        app = ArchiveApp(db_path=Path(con.execute("PRAGMA database_list").fetchone()[2]))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("l")
+            await pilot.pause()
+        assert calls
+
+    async def test_pager_reopened_with_l(self, con, monkeypatch):
+        calls = []
+        monkeypatch.setattr(ShowScreen, "_open_pager", lambda self: calls.append(True))
+        _seed_db(con, n_threads=1)
+        app = ArchiveApp(db_path=Path(con.execute("PRAGMA database_list").fetchone()[2]))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("l")
+            await pilot.pause()
+            initial = len(calls)
+            await pilot.press("l")
+            await pilot.pause()
+            assert len(calls) > initial
 
 
 class TestEmptyDB:
