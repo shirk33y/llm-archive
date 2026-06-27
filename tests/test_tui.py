@@ -543,8 +543,9 @@ class TestShowScreenContent:
             await pilot.press("l")
             await pilot.pause()
             output = app.screen._render_content(width=80)
-            assert output.count("── assistant ──") == 1
-            assert output.count("── user ──") == 1
+            assert output.count("assistant") == 1
+            assert output.count("user") == 1
+            assert "─" * 4 in output
 
 
 class TestShowScreenBack:

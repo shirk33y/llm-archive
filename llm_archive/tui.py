@@ -164,6 +164,30 @@ _ROLE_STYLES: dict[str, str] = {
     "system": "grey50",
 }
 
+_SEP_LINE_STYLE = "dim hot_pink"
+_SEP_NUM_STYLE = "bold light_goldenrod1"
+_SEP_TIME_STYLE = "hot_pink"
+
+
+def _role_separator(role: str, msg_num: int, rel_time: str, width: int) -> "Text":
+    """Full-width role separator: ── 1 ────...── user ────...── 9m ──"""
+    num_str = str(msg_num)
+    overhead = 10  # "── " + " " + " " + " " + " " + " ──"
+    fixed = overhead + len(num_str) + len(role) + len(rel_time)
+    total_fill = max(width - fixed, 0)
+    fill1 = total_fill // 2
+    fill2 = total_fill - fill1
+
+    line = Text()
+    line.append("── ", style=_SEP_LINE_STYLE)
+    line.append(num_str, style=_SEP_NUM_STYLE)
+    line.append(" " + "─" * fill1 + " ", style=_SEP_LINE_STYLE)
+    line.append(role, style=_ROLE_STYLES.get(role, "grey50"))
+    line.append(" " + "─" * fill2 + " ", style=_SEP_LINE_STYLE)
+    line.append(rel_time, style=_SEP_TIME_STYLE)
+    line.append(" ──", style=_SEP_LINE_STYLE)
+    return line
+
 _SUMMARY_SIZES = ["full", "tiny", "small", "medium", "large"]
 
 _RESUME_URLS = {
@@ -269,7 +293,7 @@ class ShowScreen(Screen):
 
         messages = self.thread_data["messages"]
         last_role: str | None = None
-        for msg in messages:
+        for msg_num, msg in enumerate(messages, 1):
             role = msg.get("role", "unknown")
 
             for part in msg.get("parts", []):
@@ -280,16 +304,15 @@ class ShowScreen(Screen):
                 if not text:
                     continue
 
+                if role != last_role:
+                    rel = _relative_time(msg.get("created_at", 0))
+                    console.print(_role_separator(role, msg_num, rel, width))
+                    last_role = role
+
                 if kind == "text":
-                    if role != last_role:
-                        console.print(Text(f"── {role} ──", style=_ROLE_STYLES.get(role, "grey50")))
-                        last_role = role
                     console.print(Markdown(text))
 
                 elif self._verbose:
-                    if role != last_role:
-                        console.print(Text(f"── {role} ──", style=_ROLE_STYLES.get(role, "grey50")))
-                        last_role = role
                     if kind == "tool_call":
                         tool = part.get("tool_name", "?")
                         console.print(Text(f"  ▸ {tool}: {text[:200]}", style="dim cyan"))
