@@ -176,7 +176,6 @@ class ListScreen(Screen):
         Binding("j", "cursor_down", "Down", priority=True),
         Binding("k", "cursor_up", "Up", priority=True),
         Binding("l", "select", "Open", priority=True),
-        Binding("h", "collapse", "Collapse", priority=True),
         Binding("escape", "clear_search", "Clear", priority=True),
     ]
     
@@ -306,23 +305,13 @@ class ListScreen(Screen):
         if row is None:
             return
         if isinstance(row, ThreadRow):
-            if not self.show_deep:
-                row.expanded = not row.expanded
-                self._refresh_list()
-            else:
-                self._show_thread(row.short_id)
+            self._show_thread(row.short_id)
         else:
             thread_id = f"t{to_base53(row.thread_rowid)}"
             self._show_thread(thread_id)
 
     def on_list_view_selected(self, event: ListView.Selected):
         self.action_select()
-
-    def action_collapse(self):
-        row = self._current_row()
-        if row is not None and isinstance(row, ThreadRow):
-            row.expanded = False
-            self._refresh_list()
 
     def _show_thread(self, short_id: str):
         data = db.resolve_short_id(self.con, short_id)

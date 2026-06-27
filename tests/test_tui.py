@@ -204,8 +204,16 @@ class TestSearch:
 class TestThreadView:
     """Opening a thread shows ShowScreen."""
 
+    async def test_open_thread_title_mode(self, app):
+        """l opens thread in title filter mode (default)."""
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("l")
+            await pilot.pause()
+            assert isinstance(app.screen, ShowScreen)
+
     async def test_open_thread_with_l(self, app):
-        """l key opens thread in deep mode."""
+        """l opens thread in deep mode."""
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("tab")
@@ -217,8 +225,6 @@ class TestThreadView:
     async def test_open_thread_with_enter(self, app):
         """Enter handled natively by ListView, fires on_list_view_selected."""
         async with app.run_test() as pilot:
-            await pilot.pause()
-            await pilot.press("tab")
             await pilot.pause()
             await pilot.press("enter")
             await pilot.pause()
