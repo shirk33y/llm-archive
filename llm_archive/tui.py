@@ -190,6 +190,28 @@ def _role_separator(role: str, msg_num: int, rel_time: str, width: int) -> "Text
 
 _SUMMARY_SIZES = ["full", "tiny", "small", "medium", "large"]
 
+
+def _make_markdown():
+    from rich.markdown import Markdown
+    from markdown_it import MarkdownIt
+
+    parser = MarkdownIt().enable("strikethrough").enable("table")
+
+    def _fast_md(markup: str) -> Markdown:
+        md = Markdown.__new__(Markdown)
+        md.markup = markup
+        md.parsed = parser.parse(markup)
+        md.code_theme = "monokai"
+        md.justify = None
+        md.style = "none"
+        md.hyperlinks = True
+        md.inline_code_lexer = None
+        md.inline_code_theme = "monokai"
+        return md
+
+    return _fast_md
+
+
 _RESUME_URLS = {
     "chatgpt": "https://chatgpt.com/c/{id}",
     "claude": "https://claude.ai/chat/{id}",
@@ -258,7 +280,8 @@ class ShowScreen(Screen):
         """Render thread to ANSI-styled text for less -R or bat."""
         from io import StringIO
         from rich.console import Console
-        from rich.markdown import Markdown
+
+        fast_md = _make_markdown()
 
         buf = StringIO()
         console = Console(
@@ -284,7 +307,7 @@ class ShowScreen(Screen):
         if size != "full":
             summary = self._get_summary(size)
             if summary:
-                console.print(Markdown(summary))
+                console.print(fast_md(summary))
                 console.print()
                 console.print(
                     Text(f"⟦{size} · s:cycle · l:full · enter:resume · q:back⟧", style="dim")
@@ -296,6 +319,7 @@ class ShowScreen(Screen):
         for msg_num, msg in enumerate(messages, 1):
             role = msg.get("role", "unknown")
 
+            text_batch: list[str] = []
             for part in msg.get("parts", []):
                 if not part.get("visible"):
                     continue
@@ -304,15 +328,24 @@ class ShowScreen(Screen):
                 if not text:
                     continue
 
+                if kind == "text":
+                    text_batch.append(text)
+                    continue
+
+                if text_batch:
+                    if role != last_role:
+                        rel = _relative_time(msg.get("created_at", 0))
+                        console.print(_role_separator(role, msg_num, rel, width))
+                        last_role = role
+                    console.print(fast_md("\n\n".join(text_batch)))
+                    text_batch = []
+
                 if role != last_role:
                     rel = _relative_time(msg.get("created_at", 0))
                     console.print(_role_separator(role, msg_num, rel, width))
                     last_role = role
 
-                if kind == "text":
-                    console.print(Markdown(text))
-
-                elif self._verbose:
+                if self._verbose:
                     if kind == "tool_call":
                         tool = part.get("tool_name", "?")
                         console.print(Text(f"  ▸ {tool}: {text[:200]}", style="dim cyan"))
@@ -324,6 +357,13 @@ class ShowScreen(Screen):
                         console.print(Text(f"  ℹ {text[:300]}", style="dim italic"))
                     else:
                         console.print(Text(f"  [{kind}] {text[:150]}", style="dim grey37"))
+
+            if text_batch:
+                if role != last_role:
+                    rel = _relative_time(msg.get("created_at", 0))
+                    console.print(_role_separator(role, msg_num, rel, width))
+                    last_role = role
+                console.print(fast_md("\n\n".join(text_batch)))
 
         console.print(
             Text(f"\n{len(messages)} messages · v:verbose · s:summary · enter:resume · q:back", style="dim")
