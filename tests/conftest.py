@@ -6,6 +6,33 @@ import pytest
 from llm_archive import db
 
 
+def pytest_addoption(parser):
+    parser.addoption("--profile", action="store_true", default=False,
+                     help="Record cProfile per perf test to .profiles/")
+
+
+def pytest_configure(config):
+    config._profile = config.getoption("--profile")
+
+
+@pytest.fixture(autouse=True)
+def _record_profile(request):
+    if not request.node.get_closest_marker("perf") or not request.config._profile:
+        yield
+        return
+    import cProfile
+    import pathlib
+
+    profiler = cProfile.Profile()
+    profiler.enable()
+    yield
+    profiler.disable()
+    prof_dir = pathlib.Path(".profiles")
+    prof_dir.mkdir(exist_ok=True)
+    name = request.node.name.replace("[", "_").replace("]", "")
+    profiler.dump_stats(str(prof_dir / f"{name}.prof"))
+
+
 @pytest.fixture(autouse=True)
 def isolate_archive_paths(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     config_path = tmp_path / "config.toml"

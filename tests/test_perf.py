@@ -4,6 +4,7 @@ Synthetic data mimics real thread shapes (part counts, text length ranges) from 
 production archive. No real conversation data is stored.
 
 Run:    uv run pytest tests/test_perf.py -v -m perf --override-ini='addopts=""'
+Profile: uv run pytest tests/test_perf.py -v -m perf -o addopts="" --profile
 """
 
 from __future__ import annotations
@@ -151,75 +152,81 @@ def xl_db(perf_con):
     return perf_con
 
 
+@pytest.fixture
+def tol(request):
+    """Multiply timing thresholds when cProfile overhead is active."""
+    return 3.0 if request.config.getoption("--profile", default=False) else 1.0
+
+
 # ─── DB layer ──────────────────────────────────────────────────────────────────
 
 class TestDB:
-    def test_list_threads(self, mixed_db):
+    def test_list_threads(self, mixed_db, tol):
         elapsed, threads = _timed(db.list_threads, mixed_db)
-        assert elapsed < 0.1, f"list_threads {elapsed:.3f}s"
+        assert elapsed < 0.1 * tol, f"list_threads {elapsed:.3f}s"
         assert len(threads) > 50
 
-    def test_fetch_xl_thread(self, xl_db):
+    def test_fetch_xl_thread(self, xl_db, tol):
         thread = _thread_row(xl_db, "perf:xl")
         elapsed, data = _timed(db._fetch_thread_data, xl_db, thread)
-        assert elapsed < 1.0, f"_fetch_thread_data {elapsed:.3f}s"
+        assert elapsed < 1.0 * tol, f"_fetch_thread_data {elapsed:.3f}s"
         part_count = sum(len(m.get("parts", [])) for m in data["messages"])
         assert part_count > 1000, f"only {part_count} parts"
 
-    def test_fetch_repeated(self, xl_db):
+    def test_fetch_repeated(self, xl_db, tol):
         thread = _thread_row(xl_db, "perf:xl")
         times = [_timed(db._fetch_thread_data, xl_db, thread)[0] for _ in range(3)]
         avg = sum(times) / 3
-        assert avg < 1.0, f"avg fetch {avg:.3f}s"
+        assert avg < 1.0 * tol, f"avg fetch {avg:.3f}s"
 
-    def test_search(self, mixed_db):
+    def test_search(self, mixed_db, tol):
         elapsed, results = _timed(db.search_messages, mixed_db, "lorem", limit=50)
-        assert elapsed < 0.5, f"search {elapsed:.3f}s"
+        assert elapsed < 0.5 * tol, f"search {elapsed:.3f}s"
         assert len(results) > 0
 
-    def test_search_threads(self, mixed_db):
+    def test_search_threads(self, mixed_db, tol):
         elapsed, _ = _timed(db.search_threads, mixed_db, "lorem", limit=50)
-        assert elapsed < 0.5, f"search_threads {elapsed:.3f}s"
+        assert elapsed < 0.5 * tol, f"search_threads {elapsed:.3f}s"
 
-    def test_search_no_results(self, mixed_db):
+    def test_search_no_results(self, mixed_db, tol):
         elapsed, _ = _timed(db.search_messages, mixed_db, "zzzznotfound", limit=50)
-        assert elapsed < 0.2, f"empty search {elapsed:.3f}s"
+        assert elapsed < 0.2 * tol, f"empty search {elapsed:.3f}s"
 
 
 # ─── Render layer ───────────────────────────────────────────────────────────────
 
 class TestRender:
-    def test_render_xl(self, xl_db):
+    def test_render_xl(self, xl_db, tol):
         from llm_archive.tui import ShowScreen
         thread = _thread_row(xl_db, "perf:xl")
         data = db._fetch_thread_data(xl_db, thread)
         screen = ShowScreen(data, xl_db)
         elapsed, output = _timed(screen._render_content, 120)
-        assert elapsed < 0.5, f"render {elapsed:.3f}s"
+        assert elapsed < 0.5 * tol, f"render {elapsed:.3f}s"
         assert len(output) > 5000
 
-    def test_render_xl_verbose(self, xl_db):
+    def test_render_xl_verbose(self, xl_db, tol):
         from llm_archive.tui import ShowScreen
         thread = _thread_row(xl_db, "perf:xl")
         data = db._fetch_thread_data(xl_db, thread)
         screen = ShowScreen(data, xl_db)
         screen._verbose = True
         elapsed, output = _timed(screen._render_content, 120)
-        assert elapsed < 1.0, f"verbose render {elapsed:.3f}s"
+        assert elapsed < 1.0 * tol, f"verbose render {elapsed:.3f}s"
         assert len(output) > 20000
 
-    def test_role_separator_perf(self):
+    def test_role_separator_perf(self, tol):
         t0 = time.perf_counter()
         for i in range(1000):
             _role_separator("assistant", i, "9m", 120)
         elapsed = time.perf_counter() - t0
-        assert elapsed < 0.05, f"1000 separators {elapsed:.3f}s"
+        assert elapsed < 0.05 * tol, f"1000 separators {elapsed:.3f}s"
 
 
 # ─── TUI startup + list render ─────────────────────────────────────────────────
 
 class TestTUIStartup:
-    async def test_app_startup_and_list(self, mixed_db, monkeypatch):
+    async def test_app_startup_and_list(self, mixed_db, monkeypatch, tol):
         from pathlib import Path as P
         from llm_archive.tui import ArchiveApp, ShowScreen
         monkeypatch.setattr(ShowScreen, "_open_pager", lambda _self: None)
@@ -229,7 +236,7 @@ class TestTUIStartup:
         async with app.run_test() as pilot:
             await pilot.pause()
             elapsed = time.perf_counter() - t0
-            assert elapsed < 2.0, f"startup+list {elapsed:.3f}s"
+            assert elapsed < 2.0 * tol, f"startup+list {elapsed:.3f}s"
             listview = app.screen.query_one("ListView")
             assert len(listview) > 50
 
@@ -252,7 +259,7 @@ class TestTUIStartup:
             listview = app.screen.query_one("ListView")
             assert len(listview) > 100
 
-    async def test_open_thread_from_list(self, mixed_db, monkeypatch):
+    async def test_open_thread_from_list(self, mixed_db, monkeypatch, tol):
         from pathlib import Path as P
         from llm_archive.tui import ArchiveApp, ShowScreen, ListScreen
         monkeypatch.setattr(ShowScreen, "_open_pager", lambda _self: None)
@@ -266,13 +273,13 @@ class TestTUIStartup:
             await pilot.press("enter")
             await pilot.pause()
             elapsed = time.perf_counter() - t0
-            assert elapsed < 2.0, f"open thread {elapsed:.3f}s"
+            assert elapsed < 2.0 * tol, f"open thread {elapsed:.3f}s"
 
 
 # ─── Full pipeline ─────────────────────────────────────────────────────────────
 
 class TestPipeline:
-    def test_open_xl_pipeline(self, xl_db):
+    def test_open_xl_pipeline(self, xl_db, tol):
         from llm_archive.tui import ShowScreen
         t_list, threads = _timed(db.list_threads, xl_db)
         thread = _thread_row(xl_db, "perf:xl")
@@ -280,12 +287,12 @@ class TestPipeline:
         screen = ShowScreen(data, xl_db)
         t_render, _ = _timed(screen._render_content, 120)
         total = t_list + t_fetch + t_render
-        assert total < 2.0, f"pipeline {total:.3f}s (list={t_list:.3f} fetch={t_fetch:.3f} render={t_render:.3f})"
+        assert total < 2.0 * tol, f"pipeline {total:.3f}s (list={t_list:.3f} fetch={t_fetch:.3f} render={t_render:.3f})"
 
-    def test_open_multiple_threads(self, mixed_db):
+    def test_open_multiple_threads(self, mixed_db, tol):
         threads = db.list_threads(mixed_db)
         total = 0.0
         for t in threads[:10]:
             e_fetch, _ = _timed(db.get_thread, mixed_db, t["thread_id"])
             total += e_fetch
-        assert total < 1.0, f"10 threads {total:.3f}s"
+        assert total < 1.0 * tol, f"10 threads {total:.3f}s"
