@@ -55,13 +55,21 @@ def _newest(paths: list[str]) -> str | None:
     return max(paths, key=lambda p: os.lstat(p).st_mtime, default=None)
 
 
-def find_firefox_profile_dir(browser_dir: str | None = None, profile: str | None = None) -> Path:
-    search_roots = [os.path.expanduser(browser_dir)] if browser_dir else firefox_browser_dirs()
+def _firefox_search_roots(browser_dir: str | None, profile: str | None) -> list[str]:
+    if browser_dir:
+        roots = [os.path.expanduser(browser_dir)]
+    else:
+        roots = firefox_browser_dirs()
     if profile:
         if os.path.sep in profile or (os.path.altsep and os.path.altsep in profile):
-            search_roots = [profile]
-        else:
-            search_roots = [os.path.join(root, profile) for root in search_roots]
+            roots = [profile]
+        elif not browser_dir:
+            roots = [os.path.join(root, profile) for root in roots]
+    return roots
+
+
+def find_firefox_profile_dir(browser_dir: str | None = None, profile: str | None = None) -> Path:
+    search_roots = _firefox_search_roots(browser_dir, profile)
 
     db_path = _newest(_firefox_cookie_dbs(search_roots))
     if not db_path:
@@ -77,12 +85,7 @@ def extract_firefox_cookies(
     browser_dir: str | None = None,
     domains: tuple[str, ...] | None = None,
 ) -> list[dict[str, Any]]:
-    search_roots = [os.path.expanduser(browser_dir)] if browser_dir else firefox_browser_dirs()
-    if profile:
-        if os.path.sep in profile or (os.path.altsep and os.path.altsep in profile):
-            search_roots = [profile]
-        else:
-            search_roots = [os.path.join(root, profile) for root in search_roots]
+    search_roots = _firefox_search_roots(browser_dir, profile)
 
     cookie_dbs = _firefox_cookie_dbs(search_roots)
     db_path = _newest(cookie_dbs)
@@ -148,9 +151,8 @@ def extract_browser_cookies(
     domains: tuple[str, ...] | None = None,
 ) -> list[dict[str, Any]]:
     browser = (browser or "firefox").lower()
-    profile = browser_dir or profile
     if browser in {"firefox", "waterfox", "librewolf"}:
-        return extract_firefox_cookies(profile=profile, domains=domains)
+        return extract_firefox_cookies(profile=profile, browser_dir=browser_dir, domains=domains)
     try:
         from yt_dlp.cookies import extract_cookies_from_browser
     except Exception as exc:

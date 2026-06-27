@@ -110,3 +110,22 @@ def test_extract_browser_local_storage_value_reads_chromium_leveldb(tmp_path):
     )
 
     assert value == '{"value": "tok"}'
+
+
+def test_firefox_browser_dir_with_profile_does_not_double(tmp_path):
+    """browser_dir pointing at a profile dir should not get profile name appended again."""
+    from llm_archive.auth.browser_cookies import _firefox_search_roots
+
+    profile_dir = tmp_path / "c4ltxd61.default-release"
+    profile_dir.mkdir()
+    roots = _firefox_search_roots(str(profile_dir), "c4ltxd61.default-release")
+    assert roots == [str(profile_dir)]
+    assert "c4ltxd61.default-release/c4ltxd61.default-release" not in roots[0]
+
+
+def test_firefox_search_roots_profile_only():
+    """Without browser_dir, profile should be appended to default roots."""
+    from llm_archive.auth.browser_cookies import _firefox_search_roots
+
+    roots = _firefox_search_roots(None, "abc.default")
+    assert all("abc.default" in r for r in roots)
