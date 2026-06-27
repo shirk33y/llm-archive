@@ -36,7 +36,23 @@ console = Console()
 progress_console = Console()
 
 
-@click.group()
+_COMMAND_ORDER = [
+    "search", "show", "tui", "status",
+    "sync", "embed", "sum",
+    "enable", "disable", "config", "resume",
+    "start", "stop", "restart", "logs",
+    "service", "mcp", "backup",
+]
+
+
+class OrderedGroup(click.Group):
+    def list_commands(self, ctx):
+        ordered = [c for c in _COMMAND_ORDER if c in self.commands]
+        remaining = sorted(c for c in self.commands if c not in _COMMAND_ORDER)
+        return ordered + remaining
+
+
+@click.group(cls=OrderedGroup)
 @click.option("-v", "--verbose", is_flag=True, help="Enable verbose logging")
 def main(verbose: bool):
     """llm-archive — dump and sync AI conversations into a local SQLite database."""
