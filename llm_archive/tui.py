@@ -124,8 +124,10 @@ class ShowScreen(Screen):
     """Full-screen thread view."""
     
     BINDINGS = [
-        ("h,left,escape", "app.pop_screen", "Back"),
-        ("q", "app.quit", "Quit"),
+        Binding("h", "app.pop_screen", "Back", priority=True),
+        Binding("left", "app.pop_screen", "Back", priority=True),
+        Binding("escape", "app.pop_screen", "Back", priority=True),
+        Binding("q", "app.quit", "Quit", priority=True),
     ]
     
     def __init__(self, thread_data: dict):
@@ -168,19 +170,14 @@ class ListScreen(Screen):
     """Main list screen with search/filter."""
     
     BINDINGS = [
-        ("q", "quit", "Quit"),
-        ("slash", "focus_search", "Search"),
-        ("tab", "toggle_mode", "Toggle mode"),
+        Binding("q", "app.quit", "Quit", priority=True),
+        Binding("slash", "focus_search", "Search", priority=True),
+        Binding("tab", "toggle_mode", "Toggle mode", priority=True),
         Binding("j", "cursor_down", "Down", priority=True),
-        Binding("down", "cursor_down", "Down", priority=True),
         Binding("k", "cursor_up", "Up", priority=True),
-        Binding("up", "cursor_up", "Up", priority=True),
-        Binding("l", "select", "Select/Expand", priority=True),
-        Binding("right", "select", "Select/Expand", priority=True),
-        Binding("enter", "select", "Select/Expand", priority=True),
+        Binding("l", "select", "Open", priority=True),
         Binding("h", "collapse", "Collapse", priority=True),
-        Binding("left", "collapse", "Collapse", priority=True),
-        ("escape", "clear_search", "Clear"),
+        Binding("escape", "clear_search", "Clear", priority=True),
     ]
     
     show_deep = reactive(False)
@@ -191,7 +188,6 @@ class ListScreen(Screen):
         self.con = con
         self.all_threads: list[ThreadRow] = []
         self.displayed_rows: list = []  # ThreadRow or MessageRow
-        self.cursor_idx = 0
     
     def _load_threads(self):
         rows = db.list_threads(self.con, limit=500)
@@ -243,15 +239,14 @@ class ListScreen(Screen):
     def _refresh_list(self):
         listview = self.query_one(ListView)
         listview.clear()
-        width = self.size.width - 2 if self.size else 80
+        width = max(self.size.width - 2, 20) if self.size else 80
         
-        for i, row in enumerate(self.displayed_rows):
-            selected = i == self.cursor_idx
-            if isinstance(row, ThreadRow):
-                text = row.render(width, selected)
-            else:
-                text = row.render(width, selected)
+        for row in self.displayed_rows:
+            text = row.render(width, selected=False)
             listview.append(ListItem(Label(text)))
+        
+        if listview.index is None and self.displayed_rows:
+            listview.index = 0
     
     def compose(self) -> ComposeResult:
         with Vertical():
@@ -271,71 +266,76 @@ class ListScreen(Screen):
     def action_focus_search(self):
         self.search_input.styles.display = "block"
         self.search_input.focus()
-    
+
     def action_clear_search(self):
         self.search_input.value = ""
         self.search_input.styles.display = "none"
         self.search_query = ""
-        self.cursor_idx = 0
         self._update_display()
         self.set_focus(self.query_one(ListView))
-    
+
     def action_toggle_mode(self):
         self.show_deep = not self.show_deep
         status = "deep search mode" if self.show_deep else "title filter mode"
         self.query_one("#status", Static).update(status)
         self._update_display()
-    
+
     def action_cursor_down(self):
-        if self.cursor_idx < len(self.displayed_rows) - 1:
-            self.cursor_idx += 1
-            self._refresh_list()
-            self.query_one(ListView).index = self.cursor_idx
-    
+        lv = self.query_one(ListView)
+        if lv.index is None:
+            lv.index = 0
+        elif lv.index < len(self.displayed_rows) - 1:
+            lv.index += 1
+
     def action_cursor_up(self):
-        if self.cursor_idx > 0:
-            self.cursor_idx -= 1
-            self._refresh_list()
-            self.query_one(ListView).index = self.cursor_idx
-    
-    def action_select(self):
-        if not self.displayed_rows:
+        lv = self.query_one(ListView)
+        if lv.index is None:
             return
-        row = self.displayed_rows[self.cursor_idx]
+        if lv.index > 0:
+            lv.index -= 1
+
+    def _current_row(self):
+        lv = self.query_one(ListView)
+        idx = lv.index or 0
+        if idx >= len(self.displayed_rows):
+            return None
+        return self.displayed_rows[idx]
+
+    def action_select(self):
+        row = self._current_row()
+        if row is None:
+            return
         if isinstance(row, ThreadRow):
             if not self.show_deep:
-                # Toggle expand/collapse in filter mode
                 row.expanded = not row.expanded
                 self._refresh_list()
             else:
-                # In deep mode, Enter shows the thread
                 self._show_thread(row.short_id)
         else:
-            # Message row - show parent thread
             thread_id = f"t{to_base53(row.thread_rowid)}"
             self._show_thread(thread_id)
-    
+
+    def on_list_view_selected(self, event: ListView.Selected):
+        self.action_select()
+
     def action_collapse(self):
-        if not self.displayed_rows:
-            return
-        row = self.displayed_rows[self.cursor_idx]
-        if isinstance(row, ThreadRow):
+        row = self._current_row()
+        if row is not None and isinstance(row, ThreadRow):
             row.expanded = False
             self._refresh_list()
-    
+
     def _show_thread(self, short_id: str):
         data = db.resolve_short_id(self.con, short_id)
         if not data:
             data = db.get_thread(self.con, short_id)
         if data:
             self.app.push_screen(ShowScreen(data))
-    
+
     def on_input_changed(self, event: Input.Changed):
         if event.input.id == "search":
             self.search_query = event.value
-            self.cursor_idx = 0
             self._update_display()
-    
+
     def on_input_submitted(self, event: Input.Submitted):
         if event.input.id == "search":
             self.search_input.styles.display = "none"

@@ -116,50 +116,54 @@ class TestAppStartup:
 
 
 class TestNavigation:
-    """j/k + arrow navigation, cursor movement."""
+    """j/k + arrow navigation via ListView.index."""
 
     async def test_cursor_down_j(self, app):
         async with app.run_test() as pilot:
             await pilot.pause()
-            assert app.screen.cursor_idx == 0
+            lv = app.screen.query_one("ListView")
+            assert lv.index == 0
             await pilot.press("j")
             await pilot.pause()
-            assert app.screen.cursor_idx == 1
+            assert lv.index == 1
 
     async def test_cursor_down_arrow(self, app):
-        """Arrow keys fire Screen binding via priority=True, not ListView."""
+        """Arrow keys handled natively by ListView."""
         async with app.run_test() as pilot:
             await pilot.pause()
-            assert app.screen.cursor_idx == 0
+            lv = app.screen.query_one("ListView")
+            assert lv.index == 0
             await pilot.press("down")
             await pilot.pause()
-            assert app.screen.cursor_idx == 1
+            assert lv.index == 1
 
     async def test_cursor_up_k(self, app):
         async with app.run_test() as pilot:
             await pilot.pause()
-            assert app.screen.cursor_idx == 0
+            lv = app.screen.query_one("ListView")
             await pilot.press("k")
             await pilot.pause()
-            assert app.screen.cursor_idx == 0
+            assert lv.index == 0
 
     async def test_cursor_up_arrow(self, app):
         async with app.run_test() as pilot:
             await pilot.pause()
+            lv = app.screen.query_one("ListView")
             await pilot.press("down")
             await pilot.pause()
-            assert app.screen.cursor_idx == 1
+            assert lv.index == 1
             await pilot.press("up")
             await pilot.pause()
-            assert app.screen.cursor_idx == 0
+            assert lv.index == 0
 
     async def test_cursor_down_clamped_at_end(self, app):
         async with app.run_test() as pilot:
             await pilot.pause()
+            lv = app.screen.query_one("ListView")
             for _ in range(10):
                 await pilot.press("j")
                 await pilot.pause()
-            assert app.screen.cursor_idx == 2
+            assert lv.index == 2
 
 
 class TestSearch:
@@ -200,22 +204,23 @@ class TestSearch:
 class TestThreadView:
     """Opening a thread shows ShowScreen."""
 
+    async def test_open_thread_with_l(self, app):
+        """l key opens thread in deep mode."""
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("tab")
+            await pilot.pause()
+            await pilot.press("l")
+            await pilot.pause()
+            assert isinstance(app.screen, ShowScreen)
+
     async def test_open_thread_with_enter(self, app):
-        """Enter key triggers select via priority binding (not consumed by ListView)."""
+        """Enter handled natively by ListView, fires on_list_view_selected."""
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("tab")
             await pilot.pause()
             await pilot.press("enter")
-            await pilot.pause()
-            assert isinstance(app.screen, ShowScreen)
-
-    async def test_open_thread_with_right(self, app):
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            await pilot.press("tab")
-            await pilot.pause()
-            await pilot.press("right")
             await pilot.pause()
             assert isinstance(app.screen, ShowScreen)
 
