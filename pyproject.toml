@@ -68,5 +68,6 @@ markers = [
     "e2e: end-to-end tests (service/brew infrastructure required)",
     "brew: brew-specific e2e tests (requires Homebrew)",
     "slow: slow tests (PTY recording, etc.)",
+    "perf: performance tests (synthetic data, timing assertions)",
 ]
-addopts = "-m 'not e2e and not slow'"
+addopts = "-m 'not e2e and not slow and not perf'"
