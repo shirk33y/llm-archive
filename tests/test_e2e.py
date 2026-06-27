@@ -16,8 +16,7 @@ def sh(*cmd: str, env: dict | None = None) -> str:
     return r.stdout.strip()
 
 
-def write_config(home: Path, enabled: bool) -> None:
-    cfg = home / ".config" / "llm-archive" / "config.toml"
+def write_config(cfg: Path, enabled: bool) -> None:
     cfg.parent.mkdir(parents=True, exist_ok=True)
     cfg.write_text(
         "[ingestors.dummy]\n"
@@ -79,14 +78,13 @@ def e2e_env(tmp_path) -> dict:
     env = os.environ.copy()
     env["HOME"] = str(tmp_path)
     env["LLM_ARCHIVE_ENABLE_TEST_SOURCES"] = "1"
-    env.pop("LLM_ARCHIVE_CONFIG", None)
-    env.pop("LLM_ARCHIVE_DB", None)
     return env
 
 
 @pytest.fixture
 def service_proc(la_venv: str, e2e_env: dict, tmp_path: Path):
-    write_config(tmp_path, enabled=True)
+    cfg = Path(os.environ.get("LLM_ARCHIVE_CONFIG", str(tmp_path / ".config" / "llm-archive" / "config.toml")))
+    write_config(cfg, enabled=True)
     log_path = tmp_path / "svc.log"
     log_file = open(log_path, "w")
     proc = subprocess.Popen(
@@ -156,7 +154,7 @@ class TestBrewE2E:
         assert "dummy" not in ids
 
         # Write config + start via brew services
-        write_config(Path.home(), enabled=True)
+        write_config(Path.home() / ".config" / "llm-archive" / "config.toml", enabled=True)
 
         try:
             sh("brew", "services", "start", "llm-archive", env=env)
