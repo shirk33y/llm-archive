@@ -1,5 +1,6 @@
 # TODO
 
+- [ ] Add griffinmartin/opencode-claude-auth plugin for subscription OAuth (Linux, Windows optional)
 - [ ] Extract sync logic from `llm_archive/ingestors/chatgpt.py` to `sync.py` and apply to other ingestors
 - [ ] Add VS Code Copilot ingestor
 - [x] ~~Ask user before auto-launching CDP browser~~ (obsolete — CDP removed)
@@ -14,6 +15,7 @@
 - [ ] Design TUI
 - [ ] Investigate openchronicle
 - [ ] Store/download images and other artifacts uploaded or produced by AI
+- [ ] Auto route requests through multiple APIs: https://github.com/workweave/router
 
 ## Ideas from `unbalancedparentheses/llm-archive`
 

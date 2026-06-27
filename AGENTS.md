@@ -43,3 +43,7 @@ pipx: `pipx install git+https://github.com/shirk33y/llm-archive.git` (Python ≥
 - Dimension mismatch: warns user, requires `--force` to rebuild
 - Thread-level embeddings with role prefixes (`title:`, `user:`, `assistant:`)
 - Batch embedding (256 per batch) via fastembed
+
+## Language
+
+Always respond in English unless the user explicitly asks for Polish. Never write in Chinese or other languages.

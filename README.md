@@ -49,7 +49,7 @@ llm-archive status
 | `opencode` | file | local SQLite |
 | `windsurf` | file/API | local app API |
 
-Web providers default to one-minute sync. File providers default to file watching plus a one-second minimum sync interval.
+Web providers default to one-minute sync. File providers default to file watching plus a 30-second sync interval.
 
 ## Setup
 
@@ -59,7 +59,7 @@ llm-archive enable claudecode codex
 llm-archive disable deepseek cursor
 ```
 
-`enable` detects supported browser profiles and asks which one to use when more than one works. File providers use their default data path automatically — pass `--path` to override. Supported browser families include Firefox/Waterfox/LibreWolf and Chromium-family browsers such as Chrome, Chromium, Brave, Edge, and Opera.
+`enable` detects supported browser profiles and asks which one to use when more than one works. File providers auto-pick the first existing default data path — pass `--path` to override. Supported browser families include Firefox/Waterfox/LibreWolf and Chromium-family browsers such as Chrome, Chromium, Brave, Edge, and Opera.
 
 Config lives in the standard user config directory and is created automatically on first run with safe disabled defaults. The `[embed]` section controls auto-embedding after sync (on by default).
 
@@ -78,8 +78,8 @@ min_sync_interval = "1m"
 [ingestors.claudecode]
 enabled = true
 watch = true
-sync_interval = "1s"
-min_sync_interval = "1s"
+sync_interval = "30s"
+min_sync_interval = "30s"
 ```
 
 Durations use `ms`, `s`, `m`, `h`, or `d`.
@@ -118,7 +118,7 @@ llm-archive restart
 llm-archive logs -n 200 -f       # tail scheduler process logs
 ```
 
-From the Homebrew package these delegate to `brew services`. Other installs create a native user service: systemd on Linux, launchd on macOS. `status` shows the service heartbeat alongside provider/freshness state.
+From the Homebrew package these delegate to `brew services`. Other installs create a native user service: systemd on Linux, launchd on macOS. `status` shows the service heartbeat alongside per-provider state, thread/message counts, storage size, and a TOTAL summary row.
 
 ### Dev mode
 
@@ -133,7 +133,7 @@ gate_command = "ruff check . && pyright"   # optional custom gate (shell)
 watch_paths = ["../sibling-repo"] # optional extra paths
 ```
 
-When `watch = true`, the foreground scheduler watches the installed package source and config file. After changes settle for `debounce_ms`, it runs the gate; the process only reloads (`os.execv`) when the gate passes, so broken code never replaces a running service. Works best with an editable install (`pipx install -e`, `uv sync`) so the watched path is your checkout.
+When `watch = true`, the foreground scheduler watches the installed package source and config file for changes. When a change is detected, it waits for active sync jobs to finish, then reloads the process via `os.execv`. `debounce_ms` and `gate`/`gate_command` are accepted in config for future use. Works best with an editable install (`pipx install -e`, `uv sync`) so the watched path is your checkout.
 
 ## Semantic search
 
@@ -148,7 +148,7 @@ To disable auto-embedding, set `auto = false` in the `[embed]` config section. I
 
 ## Freshness
 
-Sync has job locking and throttling. A CLI, MCP, or service-triggered sync joins an already-running sync for the same provider. Search can trigger a stale provider early, but still respects the provider minimum sync interval.
+Sync has job locking and throttling. A CLI, MCP, or service-triggered sync joins an already-running sync for the same provider. Search can trigger a stale provider early, but still respects the provider minimum sync interval. Watched file providers also respect the minimum sync interval on stale-triggered syncs, preventing throttle-spam when the file watcher fires rapidly.
 
 `status --verbose` shows service heartbeat, provider freshness, auth/path health, backup state, recent jobs, and setup hints.
 
