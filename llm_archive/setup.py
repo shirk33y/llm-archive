@@ -73,18 +73,8 @@ def _enable_file(source_id: str, path: str | None) -> dict:
     if len(defaults) == 1:
         return {"path": str(defaults[0])}
     existing = [p for p in defaults if p.exists()]
-    if not existing:
-        return {"path": str(defaults[0])}
-    if len(existing) == 1:
-        return {"path": str(existing[0])}
-    labels = [str(item) for item in existing]
-    choice = click.prompt(
-        "Choose data path",
-        type=click.Choice([str(i + 1) for i in range(len(labels))]),
-        show_choices=False,
-        default="1",
-    )
-    return {"path": labels[int(choice) - 1]}
+    chosen = existing[0] if existing else defaults[0]
+    return {"path": str(chosen)}
 
 
 def _choose_profile(matches: list[BrowserProfile]) -> BrowserProfile | None:

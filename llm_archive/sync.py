@@ -151,7 +151,7 @@ async def _sync_one(
         if path and hasattr(ingestor, "path"):
             setattr(ingestor, "path", Path(path))
         db.upsert_source(con, source, {"path": path} if path else {})
-        logger.info(f"Syncing: {source}")
+        logger.debug(f"Syncing: {source}")
         if since is None:
             await ingestor.init(path=path)
         if not await ingestor.prepare():
@@ -312,7 +312,8 @@ async def _do_ingest(con, ingestor, since: int | None, force: bool = False):
     status = f"[green]{written}[/green] new, [grey37]{updated}[/grey37] updated, {total_shown} total"
     if errors:
         status += f", [red]{errors}[/red] errors"
-    console.print(f"  {ingestor.source_id}: {status}")
+    if written > 0 or updated > 0 or errors > 0:
+        console.print(f"  {ingestor.source_id}: {status}")
     return errors == 0
 
 

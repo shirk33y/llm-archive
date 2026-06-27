@@ -130,8 +130,8 @@ def default_ingestor_config(source_id: str) -> IngestorConfig:
             watch=False,
         )
     return IngestorConfig(
-        sync_interval_ms=_duration_str_to_ms("10s"),
-        min_sync_interval_ms=_duration_str_to_ms("10s"),
+        sync_interval_ms=_duration_str_to_ms("30s"),
+        min_sync_interval_ms=_duration_str_to_ms("30s"),
         watch=True,
     )
 
