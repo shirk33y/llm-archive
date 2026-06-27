@@ -17,6 +17,7 @@ from rich.markdown import Markdown
 from rich.text import Text
 
 from llm_archive import db
+from llm_archive import stats as archive_stats
 from llm_archive.sync import _run, _sync_command, _sync_one
 from llm_archive.backup import run_backup
 from llm_archive.config import config_path, format_duration_ms, load_config, read_config_text
@@ -37,7 +38,7 @@ progress_console = Console()
 
 
 _COMMAND_ORDER = [
-    "search", "show", "tui", "status",
+    "search", "show", "tui", "status", "stats",
     "sync", "embed", "sum",
     "enable", "disable", "config", "resume",
     "start", "stop", "restart", "logs",
@@ -308,6 +309,179 @@ def status(db_path: str | None, verbose: bool, json_output: bool):
 
     if verbose:
         _print_verbose_status(states, jobs)
+
+
+@main.command()
+@click.option("--db-path", default=None, help="Override database path")
+@click.option("--source", "source_id", default=None, help="Limit to one source")
+@click.option("--days", default=30, show_default=True, type=click.IntRange(min=1))
+@click.option("--title-step", default=20, show_default=True, type=click.IntRange(min=1))
+@click.option("--json", "json_output", is_flag=True, help="Print JSON")
+def stats(
+    db_path: str | None,
+    source_id: str | None,
+    days: int,
+    title_step: int,
+    json_output: bool,
+) -> None:
+    """Show archive usage and title-health statistics."""
+    path = Path(db_path) if db_path else db.DB_PATH
+    try:
+        con = archive_stats.connect_readonly(path)
+    except FileNotFoundError as exc:
+        raise click.ClickException(f"database not found: {path}") from exc
+    try:
+        data = archive_stats.collect_stats(con, days, title_step, source_id)
+    finally:
+        con.close()
+
+    if json_output:
+        console.print_json(data=archive_stats.to_json(data))
+        return
+    _print_stats(data)
+
+
+def _print_stats(data: archive_stats.ArchiveStats) -> None:
+    total = archive_stats.totals(data)
+    console.print(
+        "archive  "
+        f"threads [bold]{_human_count(total.threads)}[/bold]  "
+        f"messages [bold]{_human_count(total.messages)}[/bold]  "
+        f"user [bold]{_human_count(total.user_messages)}[/bold]  "
+        f"weak titles {_problem_number(total.weak_titles)}"
+    )
+    console.print(
+        f"last {data.days}d  "
+        f"active [bold]{total.active_days}d[/bold]  "
+        f"user [bold]{_human_count(total.recent_user_messages)}[/bold]  "
+        f"title@{data.title_step} [bold]{_human_count(total.title_calls)}[/bold]  "
+        f"~[bold]{_human_count(total.title_tokens)}[/bold] tokens"
+    )
+    console.print("")
+
+    rows = data.sources
+    if not rows:
+        console.print("[dim]no sources[/dim]")
+        return
+    widths = _stats_widths(rows, data.title_step)
+    console.print(_stats_header(widths, data.title_step))
+    for row in rows:
+        console.print(_stats_row(row, widths))
+
+
+def _problem_number(value: int) -> str:
+    if value == 0:
+        return "[green]0[/green]"
+    if value < 10:
+        return f"[yellow]{value}[/yellow]"
+    return f"[red]{value}[/red]"
+
+
+class _StatsWidths(NamedTuple):
+    source: int
+    threads: int
+    messages: int
+    user_messages: int
+    average: int
+    recent: int
+    days: int
+    weak: int
+    calls: int
+    tokens: int
+
+
+def _stats_widths(
+    rows: tuple[archive_stats.SourceStats, ...],
+    title_step: int,
+) -> _StatsWidths:
+    return _StatsWidths(
+        source=max(max((len(row.source_id) for row in rows), default=0), len("SOURCE")),
+        threads=max(max((len(_human_count(row.threads)) for row in rows), default=0), len("THR")),
+        messages=max(max((len(_human_count(row.messages)) for row in rows), default=0), len("MSG")),
+        user_messages=max(
+            max((len(_human_count(row.user_messages)) for row in rows), default=0),
+            len("USER"),
+        ),
+        average=max(max((len(_avg_user(row)) for row in rows), default=0), len("AVG")),
+        recent=max(
+            max((len(_human_count(row.recent_user_messages)) for row in rows), default=0),
+            len("RECENT"),
+        ),
+        days=max(max((len(str(row.active_days)) for row in rows), default=0), len("DAYS")),
+        weak=max(max((len(str(row.weak_titles)) for row in rows), default=0), len("WEAK")),
+        calls=max(
+            max((len(_human_count(row.title_calls)) for row in rows), default=0),
+            len(f"T@{title_step}"),
+        ),
+        tokens=max(max((len(_human_count(row.title_tokens)) for row in rows), default=0), len("TOK")),
+    )
+
+
+def _stats_header(widths: _StatsWidths, title_step: int) -> str:
+    return (
+        f"{'SOURCE':<{widths.source}}  "
+        f"{'THR':>{widths.threads}}  "
+        f"{'MSG':>{widths.messages}}  "
+        f"{'USER':>{widths.user_messages}}  "
+        f"{'AVG':>{widths.average}}  "
+        f"{'RECENT':>{widths.recent}}  "
+        f"{'DAYS':>{widths.days}}  "
+        f"{'WEAK':>{widths.weak}}  "
+        f"{f'T@{title_step}':>{widths.calls}}  "
+        f"{'TOK':>{widths.tokens}}"
+    )
+
+
+def _stats_row(row: archive_stats.SourceStats, widths: _StatsWidths) -> str:
+    return (
+        f"{row.source_id:<{widths.source}}  "
+        f"{_human_count(row.threads):>{widths.threads}}  "
+        f"{_human_count(row.messages):>{widths.messages}}  "
+        f"{_human_count(row.user_messages):>{widths.user_messages}}  "
+        f"{_avg_user(row):>{widths.average}}  "
+        f"{_human_count(row.recent_user_messages):>{widths.recent}}  "
+        f"{row.active_days:>{widths.days}}  "
+        f"{_problem_number_cell(row.weak_titles, widths.weak)}  "
+        f"{_human_count(row.title_calls):>{widths.calls}}  "
+        f"{_token_number_cell(row.title_tokens, widths.tokens)}"
+    )
+
+
+def _avg_user(row: archive_stats.SourceStats) -> str:
+    if row.threads == 0:
+        return "-"
+    return f"{row.user_messages / row.threads:.1f}"
+
+
+def _human_count(value: int) -> str:
+    if value >= 1_000_000:
+        return f"{value / 1_000_000:.1f}m".replace(".0", "")
+    if value >= 1_000:
+        return f"{value / 1_000:.1f}k".replace(".0", "")
+    return str(value)
+
+
+def _token_number(value: int) -> str:
+    text = _human_count(value)
+    if value >= 100_000:
+        return f"[orange3]{text}[/orange3]"
+    return text
+
+
+def _problem_number_cell(value: int, width: int) -> str:
+    text = f"{value:>{width}}"
+    if value == 0:
+        return f"[green]{text}[/green]"
+    if value < 10:
+        return f"[yellow]{text}[/yellow]"
+    return f"[red]{text}[/red]"
+
+
+def _token_number_cell(value: int, width: int) -> str:
+    text = f"{_human_count(value):>{width}}"
+    if value >= 100_000:
+        return f"[orange3]{text}[/orange3]"
+    return text
 
 
 @main.command()

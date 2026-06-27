@@ -910,6 +910,103 @@ def test_status_shows_running_sync_state(tmp_path, monkeypatch):
             assert line.split()[1] == "sync"
 
 
+def test_stats_command_reports_title_health(tmp_path):
+    db_path = tmp_path / "archive.db"
+    con = cli.db.connect(db_path)
+    now = cli.db.now_ms()
+    messages = [
+        IngestedMessage(
+            id=f"opencode:u{i}",
+            thread_id="opencode:default",
+            role="user",
+            content=f"message {i}",
+            created_at=now + i,
+        )
+        for i in range(21)
+    ]
+    cli.db.save_thread(
+        con,
+        IngestedThread(
+            id="opencode:default",
+            source_id="opencode",
+            title="New session - 2026-06-17T21:13:29.659Z",
+            created_at=now,
+            updated_at=now + 1_000,
+            messages=messages,
+        ),
+    )
+    cli.db.save_thread(
+        con,
+        IngestedThread(
+            id="opencode:named",
+            source_id="opencode",
+            title="Useful title",
+            created_at=now + 2_000,
+            updated_at=now + 3_000,
+            messages=[
+                IngestedMessage(
+                    id="opencode:named:u1",
+                    thread_id="opencode:named",
+                    role="user",
+                    content="short",
+                    created_at=now + 2_000,
+                )
+            ],
+        ),
+    )
+    con.close()
+
+    result = CliRunner().invoke(
+        cli.main,
+        ["stats", "--source", "opencode", "--db-path", str(db_path), "--days", "30"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "opencode" in result.output
+    assert "weak" in result.output
+    assert "title@20" in result.output
+    assert "2" in result.output
+
+
+def test_stats_command_json_reports_title_estimates(tmp_path):
+    db_path = tmp_path / "archive.db"
+    con = cli.db.connect(db_path)
+    now = cli.db.now_ms()
+    cli.db.save_thread(
+        con,
+        IngestedThread(
+            id="opencode:default",
+            source_id="opencode",
+            title="New session - 2026-06-17T21:13:29.659Z",
+            created_at=now,
+            updated_at=now + 1_000,
+            messages=[
+                IngestedMessage(
+                    id=f"opencode:u{i}",
+                    thread_id="opencode:default",
+                    role="user",
+                    content="hello",
+                    created_at=now + i,
+                )
+                for i in range(21)
+            ],
+        ),
+    )
+    con.close()
+
+    result = CliRunner().invoke(
+        cli.main,
+        ["stats", "--json", "--source", "opencode", "--db-path", str(db_path)],
+    )
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["sources"][0]["source_id"] == "opencode"
+    assert data["sources"][0]["weak_titles"] == 1
+    assert data["sources"][0]["title_calls"] == 2
+    assert data["totals"]["title_calls"] == 2
+
+
 def test_search_no_sync_by_default(tmp_path, monkeypatch):
     db_path = tmp_path / "archive.db"
     con = cli.db.connect(db_path)
