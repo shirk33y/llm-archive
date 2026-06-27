@@ -383,6 +383,52 @@ class TestThreadView:
             assert isinstance(app.screen, ListScreen)
 
 
+class TestShowScreenContent:
+    """ShowScreen must render message content with special chars safely."""
+
+    async def test_brackets_in_content(self, con):
+        """Rich markup chars like [array] must not crash the renderer."""
+        _seed_db(con, n_threads=1)
+        con.execute(
+            "UPDATE message_parts SET text=? WHERE message_id='test:m1a' AND ord=0",
+            ("--remote-allow-origins='*' > /tmp/windsurf-cdp.log 2>&1 &\"'],\n",),
+        )
+        con.commit()
+        app = ArchiveApp(db_path=Path(con.execute("PRAGMA database_list").fetchone()[2]))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("l")
+            await pilot.pause()
+            assert isinstance(app.screen, ShowScreen)
+            assert not app._exception
+
+    async def test_title_with_markup_chars(self, con):
+        """Title containing [brackets] must not crash."""
+        _seed_db(con, n_threads=1)
+        con.execute(
+            "UPDATE threads SET title=? WHERE id='test:t1'",
+            ("[bold]evil[/bold] title with [1, 2, 3]",),
+        )
+        con.commit()
+        app = ArchiveApp(db_path=Path(con.execute("PRAGMA database_list").fetchone()[2]))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("l")
+            await pilot.pause()
+            assert isinstance(app.screen, ShowScreen)
+            assert not app._exception
+
+    async def test_show_screen_displays_content(self, app):
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("l")
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, ShowScreen)
+            content = screen._render_content()
+            assert "hello world" in content
+
+
 class TestEmptyDB:
     """App must handle empty DB without crashing."""
 

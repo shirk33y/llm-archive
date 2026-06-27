@@ -174,10 +174,10 @@ class ShowScreen(Screen):
     def compose(self) -> ComposeResult:
         with Vertical():
             header = self._render_header()
-            yield Static(header, classes="header")
+            yield Static(header, classes="header", markup=False)
             with VerticalScroll():
                 content = self._render_content()
-                yield Static(content, classes="content")
+                yield Static(content, classes="content", markup=False)
     
     def _render_header(self) -> str:
         t = self.thread_data["thread"]
