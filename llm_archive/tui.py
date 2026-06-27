@@ -42,9 +42,32 @@ def _local_id(thread_id: str) -> str:
 
 
 def _truncate(text: str, limit: int = 80) -> str:
+    if limit <= 0:
+        return ""
     if len(text) <= limit:
         return text
     return text[:limit - 1] + "…"
+
+
+_SOURCE_PALETTE = [
+    "cyan",
+    "green",
+    "yellow",
+    "magenta",
+    "blue",
+    "red",
+    "dark_orange",
+    "deep_sky_blue",
+    "spring_green2",
+    "gold1",
+    "medium_purple",
+    "hot_pink",
+]
+
+
+def _source_color(source: str) -> str:
+    idx = sum(source.encode()) % len(_SOURCE_PALETTE)
+    return _SOURCE_PALETTE[idx]
 
 
 class ThreadRow:
@@ -77,18 +100,14 @@ class ThreadRow:
     def render(self, width: int, selected: bool = False) -> Text:
         time = _relative_time(self.updated_at)
         prefix = "▶ " if not self.expanded else "▼ "
-        source = self.source[:3]
-        text = _truncate(self.title, width - 15)
-        
+        src_len = len(self.source)
+        text = _truncate(self.title, width - src_len - 9)
+
         line = Text()
-        if selected:
-            line.append("▸ ", style="bold yellow")
-        else:
-            line.append("  ")
         line.append(prefix, style="dim")
         line.append(f"{time:>3} ", style="dim yellow")
-        line.append(f"{source:<3} ", style="orange1")
-        line.append(text, style="bold white" if selected else "white")
+        line.append(f"{self.source} ", style=_source_color(self.source))
+        line.append(text, style="white")
         return line
 
 

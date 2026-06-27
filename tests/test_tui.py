@@ -21,7 +21,16 @@ from pathlib import Path
 import pytest
 
 from llm_archive import db
-from llm_archive.tui import ArchiveApp, ListScreen, ShowScreen
+from llm_archive.tui import (
+    ArchiveApp,
+    ListScreen,
+    ShowScreen,
+    ThreadRow,
+    MessageRow,
+    _source_color,
+    _SOURCE_PALETTE,
+    _truncate,
+)
 
 
 # ─── DB fixtures ────────────────────────────────────────────────────
@@ -34,36 +43,39 @@ def con(tmp_path):
     c.close()
 
 
-def _seed_db(con, n_threads: int = 3):
+def _seed_db(con, n_threads: int = 3, sources: list[str] | None = None):
     """Insert n threads with messages + parts into a fresh DB."""
-    con.execute("INSERT INTO sources(id) VALUES ('test')")
+    sources = sources or ["test"]
     now = int(time.time() * 1000)
+    for src in sources:
+        con.execute("INSERT INTO sources(id) VALUES (?)", (src,))
     for i in range(1, n_threads + 1):
-        tid = f"test:t{i}"
+        src = sources[(i - 1) % len(sources)]
+        tid = f"{src}:t{i}"
         con.execute(
             "INSERT INTO threads(id, source_id, title, created_at, updated_at) "
             "VALUES (?,?,?,?,?)",
-            (tid, "test", f"Thread {i}", now - i * 1000, now - i * 1000),
+            (tid, src, f"Thread {i}", now - i * 1000, now - i * 1000),
         )
         con.execute(
             "INSERT INTO messages(id, thread_id, role, content, content_clean, created_at) "
             "VALUES (?,?,?,?,?,?)",
-            (f"test:m{i}a", tid, "user", f"hello world {i}", f"hello world {i}", now - i * 1000),
+            (f"{src}:m{i}a", tid, "user", f"hello world {i}", f"hello world {i}", now - i * 1000),
         )
         con.execute(
             "INSERT INTO message_parts(message_id, ord, kind, text, visible, searchable) "
             "VALUES (?,?,?, ?,?,?)",
-            (f"test:m{i}a", 0, "text", f"hello world {i}", 1, 1),
+            (f"{src}:m{i}a", 0, "text", f"hello world {i}", 1, 1),
         )
         con.execute(
             "INSERT INTO messages(id, thread_id, role, content, content_clean, created_at) "
             "VALUES (?,?,?,?,?,?)",
-            (f"test:m{i}b", tid, "assistant", f"reply {i}", f"reply {i}", now - i * 1000 + 500),
+            (f"{src}:m{i}b", tid, "assistant", f"reply {i}", f"reply {i}", now - i * 1000 + 500),
         )
         con.execute(
             "INSERT INTO message_parts(message_id, ord, kind, text, visible, searchable) "
             "VALUES (?,?,?, ?,?,?)",
-            (f"test:m{i}b", 0, "text", f"reply {i}", 1, 1),
+            (f"{src}:m{i}b", 0, "text", f"reply {i}", 1, 1),
         )
     con.execute(
         "INSERT INTO messages_fts(id, thread_id, content_clean) "
@@ -85,6 +97,79 @@ async def app(con):
         app.exit()
     except Exception:
         pass
+
+
+@pytest.fixture
+async def multi_app(con):
+    """ArchiveApp with multiple sources for color testing."""
+    _seed_db(con, n_threads=6, sources=["claude", "chatgpt", "opencode"])
+    app = ArchiveApp(db_path=Path(con.execute("PRAGMA database_list").fetchone()[2]))
+    yield app
+    try:
+        app.exit()
+    except Exception:
+        pass
+
+
+class TestSourceColor:
+    """Per-source color hashing and render output."""
+
+    def test_returns_palette_color(self):
+        assert _source_color("claude") in _SOURCE_PALETTE
+
+    def test_deterministic(self):
+        assert _source_color("claude") == _source_color("claude")
+
+    def test_different_sources_different_colors(self):
+        colors = {_source_color(s) for s in [
+            "claude", "chatgpt", "opencode", "codex", "windsurf", "deepseek",
+        ]}
+        assert len(colors) >= 3
+
+    def test_empty_source_does_not_crash(self):
+        assert _source_color("") in _SOURCE_PALETTE
+
+    def test_threadrow_render_shows_full_source(self):
+        row = ThreadRow(rowid=1, source="chatgpt", title="Hello", updated_at=0)
+        text = row.render(width=80)
+        rendered = str(text)
+        assert "chatgpt" in rendered
+
+    def test_threadrow_render_source_not_truncated(self):
+        row = ThreadRow(rowid=1, source="opencode", title="Hello", updated_at=0)
+        text = row.render(width=80)
+        rendered = str(text)
+        assert "ope" not in rendered.replace("opencode", "")
+        assert "opencode" in rendered
+
+    def test_threadrow_render_applies_source_color(self):
+        row = ThreadRow(rowid=1, source="claude", title="Hello", updated_at=0)
+        text = row.render(width=80)
+        color = _source_color("claude")
+        spans = [s.style for s in text.spans if s.style]
+        assert color in str(spans)
+
+    def test_messagerow_render(self):
+        row = MessageRow(rowid=1, role="user", snippet="test", created_at=0, thread_rowid=1)
+        text = row.render(width=80)
+        assert "user" in str(text)
+
+    def test_truncate_zero_limit(self):
+        assert _truncate("hello", 0) == ""
+
+    def test_truncate_negative(self):
+        assert _truncate("hello", -1) == ""
+
+    def test_truncate_short(self):
+        assert _truncate("hi", 80) == "hi"
+
+    def test_truncate_exact(self):
+        assert _truncate("hello", 5) == "hello"
+
+    def test_truncate_long(self):
+        result = _truncate("hello world", 5)
+        assert len(result) == 5
+        assert result.endswith("…")
 
 
 class TestAppStartup:
@@ -113,6 +198,22 @@ class TestAppStartup:
             screen = app.screen
             assert len(screen.all_threads) == 3
             assert len(screen.displayed_rows) == 3
+
+    async def test_multi_source_loaded(self, multi_app):
+        async with multi_app.run_test() as pilot:
+            await pilot.pause()
+            screen = multi_app.screen
+            sources = {t.source for t in screen.all_threads}
+            assert sources == {"claude", "chatgpt", "opencode"}
+
+    async def test_multi_source_navigation_and_open(self, multi_app):
+        async with multi_app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("j")
+            await pilot.pause()
+            await pilot.press("l")
+            await pilot.pause()
+            assert isinstance(multi_app.screen, ShowScreen)
 
 
 class TestNavigation:
