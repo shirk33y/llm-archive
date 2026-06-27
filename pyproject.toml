@@ -56,7 +56,6 @@ target-version = "py311"
 [tool.pyright]
 include = ["llm_archive"]
 exclude = [
-    "llm_archive/tui.py",
     "llm_archive/ingestors/windsurf.py",
     "llm_archive/summarize.py",
 ]
@@ -68,5 +67,6 @@ asyncio_mode = "auto"
 markers = [
     "e2e: end-to-end tests (service/brew infrastructure required)",
     "brew: brew-specific e2e tests (requires Homebrew)",
+    "slow: slow tests (PTY recording, etc.)",
 ]
-addopts = "-m 'not e2e'"
+addopts = "-m 'not e2e and not slow'"
