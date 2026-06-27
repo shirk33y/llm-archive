@@ -1,4 +1,5 @@
 from __future__ import annotations
+import zlib
 from pathlib import Path
 
 from textual.app import App, ComposeResult
@@ -49,6 +50,21 @@ def _truncate(text: str, limit: int = 80) -> str:
     return text[:limit - 1] + "…"
 
 
+
+
+
+_SOURCE_COLORS: dict[str, str] = {
+    "claude": "#D97757",
+    "claudecode": "#D97757",
+    "chatgpt": "#10A37F",
+    "codex": "#40C9A2",
+    "deepseek": "#4D6BFE",
+    "gemini": "#4992EA",
+    "cursor": "#E5C07B",
+    "windsurf": "#67EADA",
+    "opencode": "#22D3EE",
+}
+
 _SOURCE_PALETTE = [
     "cyan",
     "green",
@@ -66,8 +82,10 @@ _SOURCE_PALETTE = [
 
 
 def _source_color(source: str) -> str:
-    idx = sum(source.encode()) % len(_SOURCE_PALETTE)
-    return _SOURCE_PALETTE[idx]
+    color = _SOURCE_COLORS.get(source)
+    if color:
+        return color
+    return _SOURCE_PALETTE[zlib.crc32(source.encode()) % len(_SOURCE_PALETTE)]
 
 
 class ThreadRow:
@@ -209,7 +227,9 @@ class ListScreen(Screen):
     
     def _load_threads(self):
         rows = db.list_threads(self.con, limit=500)
-        self.all_threads = [ThreadRow.from_db_row(r) for r in rows]
+        self.all_threads = [
+            ThreadRow.from_db_row(r) for r in rows if r["source_id"] != "dummy"
+        ]
         self._update_display()
     
     def _update_display(self):

@@ -28,6 +28,7 @@ from llm_archive.tui import (
     ThreadRow,
     MessageRow,
     _source_color,
+    _SOURCE_COLORS,
     _SOURCE_PALETTE,
     _truncate,
 )
@@ -112,28 +113,56 @@ async def multi_app(con):
 
 
 class TestSourceColor:
-    """Per-source color hashing and render output."""
+    """Per-source brand colors and render output."""
 
-    def test_returns_palette_color(self):
-        assert _source_color("claude") in _SOURCE_PALETTE
+    def test_brand_color_claude(self):
+        assert _source_color("claude") == "#D97757"
+
+    def test_brand_color_chatgpt(self):
+        assert _source_color("chatgpt") == "#10A37F"
+
+    def test_brand_color_deepseek(self):
+        assert _source_color("deepseek") == "#4D6BFE"
+
+    def test_brand_color_gemini(self):
+        assert _source_color("gemini") == "#4992EA"
+
+    def test_brand_color_cursor(self):
+        assert _source_color("cursor") == "#E5C07B"
+
+    def test_brand_color_windsurf(self):
+        assert _source_color("windsurf") == "#67EADA"
+
+    def test_brand_color_opencode(self):
+        assert _source_color("opencode") == "#22D3EE"
+
+    def test_all_known_sources_distinct_colors(self):
+        colors = list(_SOURCE_COLORS.values())
+        unique = set(colors)
+        # claude and claudecode intentionally share the same brand color
+        assert len(unique) >= len(colors) - 1
+
+    def test_unknown_source_returns_palette_color(self):
+        assert _source_color("unknownsrc") in _SOURCE_PALETTE
 
     def test_deterministic(self):
         assert _source_color("claude") == _source_color("claude")
 
     def test_different_sources_different_colors(self):
-        colors = {_source_color(s) for s in [
-            "claude", "chatgpt", "opencode", "codex", "windsurf", "deepseek",
-        ]}
-        assert len(colors) >= 3
+        sources = [s for s in _SOURCE_COLORS if s != "claudecode"]
+        colors = {_source_color(s) for s in sources}
+        assert len(colors) == len(sources)
 
     def test_empty_source_does_not_crash(self):
         assert _source_color("") in _SOURCE_PALETTE
 
+    def test_dummy_not_in_source_colors(self):
+        assert "dummy" not in _SOURCE_COLORS
+
     def test_threadrow_render_shows_full_source(self):
         row = ThreadRow(rowid=1, source="chatgpt", title="Hello", updated_at=0)
         text = row.render(width=80)
-        rendered = str(text)
-        assert "chatgpt" in rendered
+        assert "chatgpt" in str(text)
 
     def test_threadrow_render_source_not_truncated(self):
         row = ThreadRow(rowid=1, source="opencode", title="Hello", updated_at=0)
@@ -198,6 +227,16 @@ class TestAppStartup:
             screen = app.screen
             assert len(screen.all_threads) == 3
             assert len(screen.displayed_rows) == 3
+
+    async def test_dummy_source_filtered(self, con):
+        _seed_db(con, n_threads=4, sources=["claude", "dummy"])
+        app = ArchiveApp(db_path=Path(con.execute("PRAGMA database_list").fetchone()[2]))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = app.screen
+            sources = {t.source for t in screen.all_threads}
+            assert "dummy" not in sources
+            assert "claude" in sources
 
     async def test_multi_source_loaded(self, multi_app):
         async with multi_app.run_test() as pilot:
