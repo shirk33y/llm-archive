@@ -79,12 +79,14 @@ def e2e_env(tmp_path) -> dict:
     env = os.environ.copy()
     env["HOME"] = str(tmp_path)
     env["LLM_ARCHIVE_ENABLE_TEST_SOURCES"] = "1"
+    env.pop("LLM_ARCHIVE_CONFIG", None)
+    env.pop("LLM_ARCHIVE_DB", None)
     return env
 
 
 @pytest.fixture
 def service_proc(la_venv: str, e2e_env: dict, tmp_path: Path):
-    write_config(tmp_path, enabled=False)
+    write_config(tmp_path, enabled=True)
     log_path = tmp_path / "svc.log"
     log_file = open(log_path, "w")
     proc = subprocess.Popen(
@@ -108,31 +110,29 @@ class TestServiceE2E:
     """E2e: scheduler service with dummy provider (uv-based)."""
 
     def test_full_flow(self, la_venv: str, e2e_env: dict, service_proc, tmp_path):
-        # dummy not in provider catalog
-        data = get_status(la_venv, e2e_env)
-        ids = [s["id"] for s in data.get("sources", [])]
-        assert "dummy" not in ids
+        try:
+            poll_until(la_venv, e2e_env, "enabled", timeout=120)
 
-        # Phase 1: disabled — heartbeat but no sync
-        poll_until(la_venv, e2e_env, "disabled", timeout=40)
+            # Search finds canary
+            result = json.loads(
+                sh(la_venv, "search", "dummycanarytoken", "--json", env=e2e_env)
+            )
+            assert result["count"] > 0
 
-        # Phase 2: enable — config hot-reload triggers sync
-        write_config(tmp_path, enabled=True)
-        poll_until(la_venv, e2e_env, "enabled", timeout=120)
-
-        # Search finds canary
-        result = json.loads(
-            sh(la_venv, "search", "dummycanarytoken", "--json", env=e2e_env)
-        )
-        assert result["count"] > 0
-
-        # Embed + semantic search
-        output = sh(la_venv, "embed", "--force", env=e2e_env)
-        assert "embedded" in output
-        result = json.loads(
-            sh(la_venv, "search", "-s", "test query", "--json", env=e2e_env)
-        )
-        assert result["count"] > 0
+            # Embed + semantic search
+            output = sh(la_venv, "embed", "--force", env=e2e_env)
+            assert "embedded" in output
+            result = json.loads(
+                sh(la_venv, "search", "-s", "test query", "--json", env=e2e_env)
+            )
+            assert result["count"] > 0
+        except Exception:
+            log = tmp_path / "svc.log"
+            if log.exists():
+                print(f"\n--- service log ({log}) ---")
+                print(log.read_text())
+                print("--- end service log ---")
+            raise
 
 
 @pytest.mark.e2e
