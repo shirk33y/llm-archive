@@ -2,6 +2,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from textual.app import App, ComposeResult
+from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Input, Static, ListView, ListItem, Label
@@ -170,10 +171,15 @@ class ListScreen(Screen):
         ("q", "quit", "Quit"),
         ("slash", "focus_search", "Search"),
         ("tab", "toggle_mode", "Toggle mode"),
-        ("j,down", "cursor_down", "Down"),
-        ("k,up", "cursor_up", "Up"),
-        ("l,right,enter", "select", "Select/Expand"),
-        ("h,left", "collapse", "Collapse"),
+        Binding("j", "cursor_down", "Down", priority=True),
+        Binding("down", "cursor_down", "Down", priority=True),
+        Binding("k", "cursor_up", "Up", priority=True),
+        Binding("up", "cursor_up", "Up", priority=True),
+        Binding("l", "select", "Select/Expand", priority=True),
+        Binding("right", "select", "Select/Expand", priority=True),
+        Binding("enter", "select", "Select/Expand", priority=True),
+        Binding("h", "collapse", "Collapse", priority=True),
+        Binding("left", "collapse", "Collapse", priority=True),
         ("escape", "clear_search", "Clear"),
     ]
     

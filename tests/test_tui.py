@@ -116,9 +116,9 @@ class TestAppStartup:
 
 
 class TestNavigation:
-    """j/k navigation, cursor movement."""
+    """j/k + arrow navigation, cursor movement."""
 
-    async def test_cursor_down(self, app):
+    async def test_cursor_down_j(self, app):
         async with app.run_test() as pilot:
             await pilot.pause()
             assert app.screen.cursor_idx == 0
@@ -127,19 +127,29 @@ class TestNavigation:
             assert app.screen.cursor_idx == 1
 
     async def test_cursor_down_arrow(self, app):
-        """Arrow keys are consumed by ListView; verify ListView.index changes."""
+        """Arrow keys fire Screen binding via priority=True, not ListView."""
         async with app.run_test() as pilot:
             await pilot.pause()
-            lv = app.screen.query_one("ListView")
+            assert app.screen.cursor_idx == 0
             await pilot.press("down")
             await pilot.pause()
-            assert lv.index is not None
+            assert app.screen.cursor_idx == 1
 
-    async def test_cursor_up_clamped(self, app):
+    async def test_cursor_up_k(self, app):
         async with app.run_test() as pilot:
             await pilot.pause()
             assert app.screen.cursor_idx == 0
             await pilot.press("k")
+            await pilot.pause()
+            assert app.screen.cursor_idx == 0
+
+    async def test_cursor_up_arrow(self, app):
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("down")
+            await pilot.pause()
+            assert app.screen.cursor_idx == 1
+            await pilot.press("up")
             await pilot.pause()
             assert app.screen.cursor_idx == 0
 
@@ -190,23 +200,31 @@ class TestSearch:
 class TestThreadView:
     """Opening a thread shows ShowScreen."""
 
-    async def test_open_thread_pushes_show_screen(self, app):
+    async def test_open_thread_with_enter(self, app):
+        """Enter key triggers select via priority binding (not consumed by ListView)."""
         async with app.run_test() as pilot:
             await pilot.pause()
-            screen = app.screen
-            screen.action_toggle_mode()
+            await pilot.press("tab")
             await pilot.pause()
-            screen.action_select()
+            await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(app.screen, ShowScreen)
+
+    async def test_open_thread_with_right(self, app):
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("tab")
+            await pilot.pause()
+            await pilot.press("right")
             await pilot.pause()
             assert isinstance(app.screen, ShowScreen)
 
     async def test_back_from_thread_returns_to_list(self, app):
         async with app.run_test() as pilot:
             await pilot.pause()
-            screen = app.screen
-            screen.action_toggle_mode()
+            await pilot.press("tab")
             await pilot.pause()
-            screen.action_select()
+            await pilot.press("enter")
             await pilot.pause()
             assert isinstance(app.screen, ShowScreen)
             await pilot.press("escape")
