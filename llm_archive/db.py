@@ -1121,7 +1121,8 @@ def _fetch_thread_data(con: sqlite3.Connection, thread: dict) -> dict:
     ]
     parts = {}
     rows = con.execute(
-        "SELECT message_parts.message_id, ord, kind, text, data, visible, searchable FROM message_parts "
+        "SELECT message_parts.message_id, ord, kind, text, data, visible, searchable, "
+        "tool_name, tool_input, tool_result, tool_is_error FROM message_parts "
         "JOIN messages ON messages.id = message_parts.message_id "
         "WHERE messages.thread_id=? ORDER BY messages.created_at, messages.id, ord",
         (thread["id"],),

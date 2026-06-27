@@ -185,6 +185,7 @@ class ShowScreen(Screen):
     BINDINGS = [
         Binding("l", "open_pager", "View", priority=True),
         Binding("s", "cycle_summary", "Summary", priority=True),
+        Binding("v", "toggle_verbose", "Verbose", priority=True),
         Binding("enter", "resume_session", "Resume", priority=True),
         Binding("q", "app.pop_screen", "Back", priority=True),
         Binding("escape", "app.pop_screen", "Back", priority=True),
@@ -196,6 +197,7 @@ class ShowScreen(Screen):
         self.thread_data = thread_data
         self.con = con
         self._summary_idx = 0
+        self._verbose = False
 
     def compose(self) -> ComposeResult:
         with Vertical():
@@ -224,7 +226,7 @@ class ShowScreen(Screen):
 
     def _build_hint(self) -> Text:
         return Text(
-            "\n\n  l:view  s:summary  enter:resume  q:back",
+            "\n\n  l:view  v:verbose  s:summary  enter:resume  q:back",
             style="dim",
         )
 
@@ -249,6 +251,8 @@ class ShowScreen(Screen):
         hdr.append(source, style=f"bold {_source_color(source)}")
         hdr.append(f"  {title}  ", style="bold white")
         hdr.append(_relative_time(ts), style="dim yellow")
+        if self._verbose:
+            hdr.append("  +verbose", style="dim cyan")
         console.print(hdr)
         console.print()
 
@@ -264,25 +268,42 @@ class ShowScreen(Screen):
                 return buf.getvalue()
 
         messages = self.thread_data["messages"]
+        last_role: str | None = None
         for msg in messages:
             role = msg.get("role", "unknown")
-            style = _ROLE_STYLES.get(role, "grey50")
-            console.print(Text(f"── {role} ──", style=style))
 
             for part in msg.get("parts", []):
                 if not part.get("visible"):
                     continue
-                content = part.get("text", "")
-                if not content:
+                kind = part.get("kind", "text")
+                text = part.get("text", "")
+                if not text:
                     continue
-                if role in ("user", "assistant"):
-                    console.print(Markdown(content))
-                else:
-                    console.print(content, style="dim")
-            console.print()
+
+                if kind == "text":
+                    if role != last_role:
+                        console.print(Text(f"── {role} ──", style=_ROLE_STYLES.get(role, "grey50")))
+                        last_role = role
+                    console.print(Markdown(text))
+
+                elif self._verbose:
+                    if role != last_role:
+                        console.print(Text(f"── {role} ──", style=_ROLE_STYLES.get(role, "grey50")))
+                        last_role = role
+                    if kind == "tool_call":
+                        tool = part.get("tool_name", "?")
+                        console.print(Text(f"  ▸ {tool}: {text[:200]}", style="dim cyan"))
+                    elif kind == "tool_result":
+                        is_err = part.get("tool_is_error", 0)
+                        preview = text[:200] + ("…" if len(text) > 200 else "")
+                        console.print(Text(f"  ◀ {preview}", style="dim red" if is_err else "dim"))
+                    elif kind == "reasoning":
+                        console.print(Text(f"  ℹ {text[:300]}", style="dim italic"))
+                    else:
+                        console.print(Text(f"  [{kind}] {text[:150]}", style="dim grey37"))
 
         console.print(
-            Text(f"{len(messages)} messages · s:summary · enter:resume · q:back", style="dim")
+            Text(f"\n{len(messages)} messages · v:verbose · s:summary · enter:resume · q:back", style="dim")
         )
         return buf.getvalue()
 
@@ -331,6 +352,11 @@ class ShowScreen(Screen):
                 pass
 
     def action_open_pager(self):
+        self._open_pager()
+
+    def action_toggle_verbose(self):
+        self._verbose = not self._verbose
+        self.query_one("#ss-header", Static).update(self._build_header())
         self._open_pager()
 
     def action_cycle_summary(self):

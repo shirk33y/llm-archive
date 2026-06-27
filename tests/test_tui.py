@@ -470,6 +470,82 @@ class TestShowScreenContent:
             assert "message body 601" in output
             assert not app._exception
 
+    async def test_filters_non_text_parts(self, con):
+        """Tool calls, reasoning, etc. are hidden by default."""
+        _seed_db(con, n_threads=1)
+        import time
+        now = int(time.time() * 1000)
+        for kind, text in [
+            ("reasoning", "I should check the file"),
+            ("tool_call", "cat /etc/passwd"),
+            ("tool_result", "root:x:0:0:root:/root:/bin/bash"),
+            ("status", "thinking..."),
+        ]:
+            mid = f"test:{kind}1"
+            con.execute(
+                "INSERT INTO messages(id, thread_id, role, content, content_clean, created_at) "
+                "VALUES (?,?,?,?,?,?)",
+                (mid, "test:t1", "assistant", text, text, now),
+            )
+            con.execute(
+                "INSERT INTO message_parts(message_id, ord, kind, text, visible, searchable, tool_name) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (mid, 0, kind, text, 1, 1, "bash" if "tool" in kind else ""),
+            )
+        con.commit()
+        app = ArchiveApp(db_path=Path(con.execute("PRAGMA database_list").fetchone()[2]))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("l")
+            await pilot.pause()
+            output = app.screen._render_content(width=80)
+            assert "hello world" in output
+            assert "cat /etc/passwd" not in output
+            assert "root:x:0:0" not in output
+            assert "I should check" not in output
+
+    async def test_verbose_shows_tool_parts(self, con):
+        """Verbose mode shows tool calls and results."""
+        _seed_db(con, n_threads=1)
+        import time
+        now = int(time.time() * 1000)
+        mid = "test:tc1"
+        con.execute(
+            "INSERT INTO messages(id, thread_id, role, content, content_clean, created_at) "
+            "VALUES (?,?,?,?,?,?)",
+            (mid, "test:t1", "assistant", "ls", "ls", now),
+        )
+        con.execute(
+            "INSERT INTO message_parts(message_id, ord, kind, text, visible, searchable, tool_name) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (mid, 0, "tool_call", "ls -la", 1, 1, "bash"),
+        )
+        con.commit()
+        app = ArchiveApp(db_path=Path(con.execute("PRAGMA database_list").fetchone()[2]))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("l")
+            await pilot.pause()
+            screen = app.screen
+            clean = screen._render_content(width=80)
+            assert "ls -la" not in clean
+            screen._verbose = True
+            verbose = screen._render_content(width=80)
+            assert "ls -la" in verbose
+            assert "bash" in verbose
+
+    async def test_role_header_grouped(self, con):
+        """Consecutive same-role messages share one header."""
+        _seed_db(con, n_threads=1)
+        app = ArchiveApp(db_path=Path(con.execute("PRAGMA database_list").fetchone()[2]))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("l")
+            await pilot.pause()
+            output = app.screen._render_content(width=80)
+            assert output.count("── assistant ──") == 1
+            assert output.count("── user ──") == 1
+
 
 class TestShowScreenBack:
     """q closes thread view, returns to list — does NOT quit app."""
