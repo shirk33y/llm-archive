@@ -64,7 +64,7 @@ main.add_command(service_command, "service")
 
 
 @main.command()
-@click.argument("sources", nargs=-1, type=click.Choice(list(INGESTORS)))
+@click.argument("sources", nargs=-1, type=click.Choice(list(INGESTORS)), metavar="SOURCE")
 @click.option("--path", default=None, help="Override local path (for windsurf, etc.)")
 @click.option("--db-path", default=None, help="Override database path")
 @click.option("-f", "--force", is_flag=True, help="Force full resync (ignore last sync timestamp)")
@@ -95,7 +95,7 @@ def sync(
 
 
 @main.command()
-@click.argument("sources", nargs=-1, type=click.Choice(list(INGESTORS)))
+@click.argument("sources", nargs=-1, type=click.Choice(list(INGESTORS)), metavar="SOURCE")
 @click.option("--browser", default=None, help="Detected browser name")
 @click.option("--profile", default=None, help="Browser profile name")
 @click.option("--browser-path", default=None, help="Custom browser/profile path")
@@ -139,7 +139,7 @@ def _enable_one(
 
 
 @main.command()
-@click.argument("sources", nargs=-1, type=click.Choice(list(INGESTORS)))
+@click.argument("sources", nargs=-1, type=click.Choice(list(INGESTORS)), metavar="SOURCE")
 @click.option("--no-confirm", is_flag=True, help="Disable without prompt")
 def disable(sources: tuple[str, ...], no_confirm: bool):
     """Disable source scheduling/watchers, keep archived data."""
@@ -161,8 +161,21 @@ class _StatusRow(NamedTuple):
     last: str
     threads: str
     messages: str
+    size: str
     next_sync: str
     stale: bool
+
+
+def _human_size(n: int) -> str:
+    if n == 0:
+        return "-"
+    for unit, threshold in [("G", 1 << 30), ("M", 1 << 20), ("K", 1 << 10)]:
+        if n >= threshold:
+            val = n / threshold
+            if val < 10:
+                return f"{val:.1f}{unit}".replace(".0", "")
+            return f"{val:.0f}{unit}"
+    return str(n)
 
 
 @main.command()
@@ -175,6 +188,7 @@ def status(db_path: str | None, verbose: bool, json_output: bool):
     try:
         stats = db.source_stats(con)
         states = db.provider_states(con)
+        sizes = db.source_sizes(con)
         service_state = db.get_service_state(con)
         backup_state = db.get_backup_state(con)
         jobs = db.recent_jobs(con, 10)
@@ -254,9 +268,8 @@ def status(db_path: str | None, verbose: bool, json_output: bool):
             next_str = _until(next_sync) if next_sync else "-"
         thr = str(row.get("thread_count", 0))
         msg = str(row.get("message_count", 0))
-        if source_id not in config.ingestors:
-            st = "unconf"
-        elif not state.get("enabled"):
+        size = _human_size(sizes.get(source_id, 0))
+        if source_id not in config.ingestors or not state.get("enabled"):
             st = "off"
         elif state.get("last_error"):
             st = "error"
@@ -264,22 +277,31 @@ def status(db_path: str | None, verbose: bool, json_output: bool):
             st = "sync"
         else:
             st = "ok"
-        rows.append(_StatusRow(source_id, st, last_str, thr, msg, next_str, last_old))
+        rows.append(_StatusRow(source_id, st, last_str, thr, msg, size, next_str, last_old))
 
     w_src = max(max((len(r.source_id) for r in rows), default=0), len("SOURCE"), 6)
     w_st = max(max((len(r.state) for r in rows), default=0), len("STATE"), 5)
     w_lst = max(max((len(r.last) for r in rows), default=0), len("LAST"), 5)
     w_thr = max(max((len(r.threads) for r in rows), default=0), len("THR"), 3)
     w_msg = max(max((len(r.messages) for r in rows), default=0), len("MSG"), 3)
-    hdr = f"{'SOURCE':<{w_src}}  {('STATE'):<{w_st}}  {('LAST'):<{w_lst}}  {('THR'):>{w_thr}}  {('MSG'):>{w_msg}}  NEXT"
+    w_sz = max(max((len(r.size) for r in rows), default=0), len("SIZE"), 4)
+    hdr = f"{'SOURCE':<{w_src}}  {('STATE'):<{w_st}}  {('LAST'):<{w_lst}}  {('THR'):>{w_thr}}  {('MSG'):>{w_msg}}  {'SIZE':>{w_sz}}  NEXT"
     lines.append(hdr)
     for r in rows:
         lst_cell = f"{r.last:<{w_lst}}"
         if r.stale:
             lst_cell = f"[orange3]{lst_cell}[/orange3]"
         lines.append(
-            f"{r.source_id:<{w_src}}  {r.state:<{w_st}}  {lst_cell}  {r.threads:>{w_thr}}  {r.messages:>{w_msg}}  {r.next_sync}"
+            f"{r.source_id:<{w_src}}  {r.state:<{w_st}}  {lst_cell}  {r.threads:>{w_thr}}  {r.messages:>{w_msg}}  {r.size:>{w_sz}}  {r.next_sync}"
         )
+
+    total_thr = sum(int(r.threads) for r in rows)
+    total_msg = sum(int(r.messages) for r in rows)
+    total_size = _human_size(sum(sizes.get(r.source_id, 0) for r in rows))
+    lines.append("")
+    lines.append(
+        f"{'TOTAL':<{w_src}}  {'':<{w_st}}  {'':<{w_lst}}  {total_thr:>{w_thr}}  {total_msg:>{w_msg}}  {total_size:>{w_sz}}"
+    )
 
     for line in lines:
         console.print(line)
@@ -1051,7 +1073,8 @@ def start(do_install: bool):
             f"[bold]{SERVICE_HINT_INSTALL}[/bold]"
         )
         raise SystemExit(1)
-    console.print(start_service(install=do_install))
+    start_service(install=do_install)
+    console.print("service started")
 
 
 @main.command()
@@ -1060,7 +1083,8 @@ def stop(do_uninstall: bool):
     """Stop the scheduler service (unregister with --uninstall)."""
     from llm_archive.service_control import stop_service
 
-    console.print(stop_service(uninstall=do_uninstall))
+    stop_service(uninstall=do_uninstall)
+    console.print("service stopped")
 
 
 @main.command()
@@ -1068,7 +1092,9 @@ def restart():
     """Restart the scheduler service."""
     from llm_archive.service_control import restart_service
 
-    console.print(restart_service())
+    restart_service()
+    console.print("service stopped")
+    console.print("service started")
 
 
 @main.command()

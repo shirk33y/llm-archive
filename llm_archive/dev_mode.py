@@ -36,6 +36,9 @@ class DevMode:
     def stop(self) -> None:
         pass
 
+    def reload(self) -> None:
+        self._reload()
+
     def poll(self) -> bool:
         for path in self._paths:
             mtime = self._mtime(path)

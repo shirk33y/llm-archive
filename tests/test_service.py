@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import time
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -12,6 +12,7 @@ from llm_archive.config import AppConfig, EmbedConfig, IngestorConfig
 from llm_archive.ingestors import get_ingestor
 from llm_archive.service import (
     _FileChangeHandler,
+    _check_dev_reload,
     _config_hash,
     _path_mtime,
     _run_due_backup,
@@ -447,3 +448,194 @@ def test_auto_embed_config_default_is_enabled():
 def test_auto_embed_config_disabled():
     cfg = EmbedConfig(auto=False)
     assert cfg.auto is False
+
+
+# ── Throttle pre-check tests ──────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_throttle_precheck_skips_within_min_interval(tmp_path, con):
+    """Watched + stale + has_synced + within min_sync_interval → skipped."""
+    db.ensure_provider_state(con, "claudecode")
+    recent = db.now_ms()
+    con.execute(
+        "UPDATE provider_state SET last_success_at=?, next_sync_at=1, stale_since=? WHERE source_id='claudecode'",
+        (recent, recent),
+    ).connection.commit()
+
+    config = AppConfig(
+        ingestors={
+            "claudecode": IngestorConfig(
+                enabled=True,
+                sync_interval_ms=10_000,
+                min_sync_interval_ms=30_000,
+                watch=True,
+            )
+        }
+    )
+
+    with patch("llm_archive.service.run_sync_job", new_callable=AsyncMock) as mock_job:
+        await _run_due_syncs(con, config, AsyncMock(), None, {"claudecode"})
+        mock_job.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_throttle_precheck_syncs_after_min_interval(tmp_path, con):
+    """Watched + stale + has_synced + after min_sync_interval → sync runs."""
+    db.ensure_provider_state(con, "claudecode")
+    old = db.now_ms() - 60_000  # 60s ago, well past 30s min interval
+    con.execute(
+        "UPDATE provider_state SET last_success_at=?, next_sync_at=1, stale_since=? WHERE source_id='claudecode'",
+        (old, old),
+    ).connection.commit()
+
+    config = AppConfig(
+        ingestors={
+            "claudecode": IngestorConfig(
+                enabled=True,
+                sync_interval_ms=10_000,
+                min_sync_interval_ms=30_000,
+                watch=True,
+            )
+        }
+    )
+
+    with patch("llm_archive.service.run_sync_job", new_callable=AsyncMock) as mock_job:
+        await _run_due_syncs(con, config, AsyncMock(), None, {"claudecode"})
+        mock_job.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_throttle_precheck_no_last_success_syncs(tmp_path, con):
+    """Watched + stale + no last_success → sync runs (no pre-check)."""
+    db.ensure_provider_state(con, "claudecode")
+    con.execute(
+        "UPDATE provider_state SET next_sync_at=1, stale_since=? WHERE source_id='claudecode'",
+        (db.now_ms(),),
+    ).connection.commit()
+
+    config = AppConfig(
+        ingestors={
+            "claudecode": IngestorConfig(
+                enabled=True,
+                sync_interval_ms=10_000,
+                min_sync_interval_ms=30_000,
+                watch=True,
+            )
+        }
+    )
+
+    with patch("llm_archive.service.run_sync_job", new_callable=AsyncMock) as mock_job:
+        await _run_due_syncs(con, config, AsyncMock(), None, {"claudecode"})
+        mock_job.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_throttle_precheck_zero_min_interval_syncs(tmp_path, con):
+    """Watched + stale + has_synced + min_sync_interval=0 → sync runs (no throttle)."""
+    db.ensure_provider_state(con, "claudecode")
+    recent = db.now_ms()
+    con.execute(
+        "UPDATE provider_state SET last_success_at=?, next_sync_at=1, stale_since=? WHERE source_id='claudecode'",
+        (recent, recent),
+    ).connection.commit()
+
+    config = AppConfig(
+        ingestors={
+            "claudecode": IngestorConfig(
+                enabled=True,
+                sync_interval_ms=10_000,
+                min_sync_interval_ms=0,
+                watch=True,
+            )
+        }
+    )
+
+    with patch("llm_archive.service.run_sync_job", new_callable=AsyncMock) as mock_job:
+        await _run_due_syncs(con, config, AsyncMock(), None, {"claudecode"})
+        mock_job.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_throttle_precheck_not_watched_syncs(tmp_path, con):
+    """Non-watched provider doesn't get throttle pre-check."""
+    db.ensure_provider_state(con, "chatgpt")
+    recent = db.now_ms()
+    con.execute(
+        "UPDATE provider_state SET last_success_at=?, next_sync_at=1, stale_since=? WHERE source_id='chatgpt'",
+        (recent, recent),
+    ).connection.commit()
+
+    config = AppConfig(
+        ingestors={
+            "chatgpt": IngestorConfig(
+                mode="cookies",
+                enabled=True,
+                sync_interval_ms=10_000,
+                min_sync_interval_ms=30_000,
+                watch=False,
+            )
+        }
+    )
+
+    with patch("llm_archive.service.run_sync_job", new_callable=AsyncMock) as mock_job:
+        await _run_due_syncs(con, config, AsyncMock(), None)
+        mock_job.assert_awaited_once()
+
+
+# ── _check_dev_reload tests ───────────────────────────────────────────────────
+
+
+def test_dev_reload_none_returns_false(con):
+    """dev_mode=None → no reload."""
+    observer = MagicMock()
+    assert _check_dev_reload(None, con, observer) is False
+
+
+def test_dev_reload_poll_false_returns_false(con):
+    """dev_mode.poll() returns False → no reload."""
+    dev_mode = MagicMock()
+    dev_mode.poll.return_value = False
+    observer = MagicMock()
+    assert _check_dev_reload(dev_mode, con, observer) is False
+
+
+def test_dev_reload_poll_true_idle_reloads(con):
+    """dev_mode.poll()=True + no running jobs → clears, stops, reload → True."""
+    db.create_job(con, "sync", "claudecode", status="done")
+    dev_mode = MagicMock()
+    dev_mode.poll.return_value = True
+    observer = MagicMock()
+    observer.is_alive.return_value = True
+
+    result = _check_dev_reload(dev_mode, con, observer)
+
+    assert result is True
+    dev_mode.reload.assert_called_once()
+    observer.stop.assert_called_once()
+
+
+def test_dev_reload_poll_true_busy_waits(con):
+    """dev_mode.poll()=True + running jobs → wait (False)."""
+    db.create_job(con, "sync", "claudecode", status="running")
+    dev_mode = MagicMock()
+    dev_mode.poll.return_value = True
+    observer = MagicMock()
+
+    result = _check_dev_reload(dev_mode, con, observer)
+
+    assert result is False
+    dev_mode.reload.assert_not_called()
+
+
+def test_dev_reload_observer_dead_still_reloads(con):
+    """Observer not alive → doesn't crash, still reloads."""
+    dev_mode = MagicMock()
+    dev_mode.poll.return_value = True
+    observer = MagicMock()
+    observer.is_alive.return_value = False
+
+    result = _check_dev_reload(dev_mode, con, observer)
+
+    assert result is True
+    dev_mode.reload.assert_called_once()

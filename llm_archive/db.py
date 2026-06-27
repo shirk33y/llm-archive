@@ -444,6 +444,35 @@ def source_stats(con: sqlite3.Connection) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def source_sizes(con: sqlite3.Connection) -> dict[str, int]:
+    """Approximate DB storage (chars) per source from message text columns."""
+    rows = con.execute(
+        """
+        SELECT source_id, SUM(sz) AS size FROM (
+            SELECT t.source_id,
+                   SUM(COALESCE(LENGTH(m.content),0) + COALESCE(LENGTH(m.content_clean),0)) AS sz
+            FROM threads t JOIN messages m ON m.thread_id = t.id
+            GROUP BY t.source_id
+            UNION ALL
+            SELECT t.source_id, SUM(
+                COALESCE(LENGTH(mp.text),0) + COALESCE(LENGTH(mp.search_text),0) +
+                COALESCE(LENGTH(mp.data),0) + COALESCE(LENGTH(mp.tool_input),0) +
+                COALESCE(LENGTH(mp.tool_result),0)
+            ) AS sz
+            FROM threads t JOIN messages m ON m.thread_id = t.id
+            JOIN message_parts mp ON mp.message_id = m.id
+            GROUP BY t.source_id
+            UNION ALL
+            SELECT t.source_id, SUM(COALESCE(LENGTH(mr.raw),0)) AS sz
+            FROM threads t JOIN messages m ON m.thread_id = t.id
+            JOIN message_raw mr ON mr.message_id = m.id
+            GROUP BY t.source_id
+        ) GROUP BY source_id
+        """
+    ).fetchall()
+    return {row["source_id"]: row["size"] or 0 for row in rows}
+
+
 def now_ms() -> int:
     return int(time.time() * 1000)
 
@@ -580,6 +609,16 @@ def reap_stale_jobs(con: sqlite3.Connection) -> int:
         WHERE status='running' AND heartbeat_at < ?
         """,
         (now_ms(), threshold),
+    )
+    con.commit()
+    return cur.rowcount
+
+
+def clear_running_jobs(con: sqlite3.Connection) -> int:
+    """Cancel all running jobs. Used before dev-mode reexec to avoid orphans."""
+    cur = con.execute(
+        "UPDATE jobs SET status='cancelled', finished_at=? WHERE status='running'",
+        (now_ms(),),
     )
     con.commit()
     return cur.rowcount

@@ -6,7 +6,7 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Awaitable, Callable
+from typing import Awaitable, Callable
 
 from watchdog.events import FileSystemEventHandler, FileSystemEvent
 from watchdog.observers import Observer
@@ -14,20 +14,18 @@ from watchdog.observers import Observer
 from llm_archive import db
 from llm_archive.backup import run_backup
 from llm_archive.config import AppConfig, config_path, load_config, read_config_text
+from llm_archive.dev_mode import DevMode
 from llm_archive.embed import auto_embed
 from llm_archive.ingestors import service_source_ids
 from llm_archive.jobs import run_sync_job
 from llm_archive.providers import provider_kind, provider_paths
 
-if TYPE_CHECKING:
-    from llm_archive.dev_mode import DevMode
-
 logger = logging.getLogger("llm_archive.service")
 
 SyncRunner = Callable[[str, bool], Awaitable[bool]]
 
-FILE_SYNC_INTERVAL_MS = 10_000
-FILE_MIN_SYNC_MS = 10_000
+FILE_SYNC_INTERVAL_MS = 30_000
+FILE_MIN_SYNC_MS = 30_000
 WEB_SYNC_INTERVAL_MS = 1_800_000
 WEB_MIN_SYNC_MS = 10_000
 
@@ -60,6 +58,25 @@ class _FileChangeHandler(FileSystemEventHandler):
         if event.is_directory:
             return
         self._mark()
+
+
+def _check_dev_reload(dev_mode: DevMode | None, con, observer) -> bool:
+    """Poll dev mode; reexec when idle. Returns True if process is being replaced."""
+    if dev_mode is None or not dev_mode.poll():
+        return False
+    running = con.execute(
+        "SELECT COUNT(*) as c FROM jobs WHERE status='running'"
+    ).fetchone()
+    if running["c"] > 0:
+        logger.debug("dev mode: code changed, waiting for %d active job(s)", running["c"])
+        return False
+    logger.info("dev mode: code changed, restarting service")
+    db.clear_running_jobs(con)
+    if observer.is_alive():
+        observer.stop()
+        observer.join(timeout=2)
+    dev_mode.reload()
+    return True
 
 
 async def run_service(
@@ -146,6 +163,8 @@ async def run_service(
                 if config.embed.auto:
                     auto_embed(con)
                 await _run_due_backup(con, db_path)
+                if _check_dev_reload(dev_mode, con, observer):
+                    return
             except Exception:
                 logger.exception("service loop error")
             await asyncio.sleep(poll_interval)
@@ -188,6 +207,10 @@ async def _run_due_syncs(
         if watched and has_synced:
             if not is_stale:
                 continue
+            if last_success and (provider_config.min_sync_interval_ms or 0):
+                remaining = (int(last_success) + provider_config.min_sync_interval_ms) - db.now_ms()
+                if remaining > 0:
+                    continue
         elif not is_due and not is_stale:
             continue
 

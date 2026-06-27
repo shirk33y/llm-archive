@@ -263,17 +263,18 @@ def test_cli_start_when_installed_starts(monkeypatch):
 
 def test_cli_stop_uninstall_and_restart(monkeypatch):
     monkeypatch.setattr(
-        service_control, "stop_service", lambda executable=None, *, uninstall=False: "uninstalled x"
+        service_control, "stop_service", lambda executable=None, *, uninstall=False: None
     )
-    monkeypatch.setattr(service_control, "restart_service", lambda executable=None: "restarted x")
+    monkeypatch.setattr(service_control, "restart_service", lambda executable=None: None)
 
     stop_res = CliRunner().invoke(cli.main, ["stop", "--uninstall"])
     restart_res = CliRunner().invoke(cli.main, ["restart"])
 
     assert stop_res.exit_code == 0
-    assert "uninstalled x" in stop_res.output
+    assert "service stopped" in stop_res.output
     assert restart_res.exit_code == 0
-    assert "restarted" in restart_res.output
+    assert "service stopped" in restart_res.output
+    assert "service started" in restart_res.output
 
 
 def test_cli_logs_invokes_service_logs(monkeypatch):
