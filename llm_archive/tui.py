@@ -186,7 +186,6 @@ class ListScreen(Screen):
         self.all_threads: list[ThreadRow] = []
         self.displayed_rows: list = []  # ThreadRow or MessageRow
         self.cursor_idx = 0
-        self._load_threads()
     
     def _load_threads(self):
         rows = db.list_threads(self.con, limit=500)
@@ -261,7 +260,7 @@ class ListScreen(Screen):
             yield status
     
     def on_mount(self):
-        self._refresh_list()
+        self._load_threads()
     
     def action_focus_search(self):
         self.search_input.styles.display = "block"
