@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 import pytest
+import platform
 
 
 def sh(*cmd: str, env: dict | None = None) -> str:
@@ -20,7 +21,7 @@ def write_config(cfg: Path, enabled: bool) -> None:
     cfg.parent.mkdir(parents=True, exist_ok=True)
     cfg.write_text(
         "[ingestors.dummy]\n"
-        f'enabled = {"true" if enabled else "false"}\n'
+        f"enabled = {'true' if enabled else 'false'}\n"
         'sync_interval = "1s"\n'
         'min_sync_interval = "1s"\n'
         "watch = false\n"
@@ -39,9 +40,7 @@ def check_status(data: dict, mode: str) -> bool:
         return False
 
     jobs = data.get("jobs") or []
-    success = any(
-        j.get("source_id") == "dummy" and j.get("status") == "success" for j in jobs
-    )
+    success = any(j.get("source_id") == "dummy" and j.get("status") == "success" for j in jobs)
 
     if mode == "disabled":
         return not success
@@ -50,9 +49,7 @@ def check_status(data: dict, mode: str) -> bool:
     return False
 
 
-def poll_until(
-    la: str, env: dict, mode: str, timeout: int = 120, interval: float = 2
-) -> dict:
+def poll_until(la: str, env: dict, mode: str, timeout: int = 120, interval: float = 2) -> dict:
     deadline = time.time() + timeout
     last: dict = {}
     while time.time() < deadline:
@@ -63,9 +60,7 @@ def poll_until(
         except Exception:
             pass
         time.sleep(interval)
-    pytest.fail(
-        f"Timed out waiting for mode={mode}.\nLast status:\n{json.dumps(last, indent=2)}"
-    )
+    pytest.fail(f"Timed out waiting for mode={mode}.\nLast status:\n{json.dumps(last, indent=2)}")
 
 
 @pytest.fixture
@@ -83,7 +78,11 @@ def e2e_env(tmp_path) -> dict:
 
 @pytest.fixture
 def service_proc(la_venv: str, e2e_env: dict, tmp_path: Path):
-    cfg = Path(os.environ.get("LLM_ARCHIVE_CONFIG", str(tmp_path / ".config" / "llm-archive" / "config.toml")))
+    cfg = Path(
+        os.environ.get(
+            "LLM_ARCHIVE_CONFIG", str(tmp_path / ".config" / "llm-archive" / "config.toml")
+        )
+    )
     write_config(cfg, enabled=True)
     log_path = tmp_path / "svc.log"
     log_file = open(log_path, "w")
@@ -112,17 +111,13 @@ class TestServiceE2E:
             poll_until(la_venv, e2e_env, "enabled", timeout=120)
 
             # Search finds canary
-            result = json.loads(
-                sh(la_venv, "search", "dummycanarytoken", "--json", env=e2e_env)
-            )
+            result = json.loads(sh(la_venv, "search", "dummycanarytoken", "--json", env=e2e_env))
             assert result["count"] > 0
 
             # Embed + semantic search
             output = sh(la_venv, "embed", "--force", env=e2e_env)
             assert "embedded" in output
-            result = json.loads(
-                sh(la_venv, "search", "-s", "test query", "--json", env=e2e_env)
-            )
+            result = json.loads(sh(la_venv, "search", "-s", "test query", "--json", env=e2e_env))
             assert result["count"] > 0
         except Exception:
             log = tmp_path / "svc.log"
@@ -153,24 +148,24 @@ class TestBrewE2E:
         ids = [s["id"] for s in data.get("sources", [])]
         assert "dummy" not in ids
 
-        # Write config + start via brew services
+        # Write config + propagate env to service manager + start via brew services
         write_config(Path.home() / ".config" / "llm-archive" / "config.toml", enabled=True)
 
         try:
-            sh("brew", "services", "start", "llm-archive", env=env)
-            time.sleep(3)
-            poll_until(la, env, "enabled", timeout=180)
+            if platform.system() == "Linux":
+                sh("systemctl", "--user", "import-environment", "LLM_ARCHIVE_ENABLE_TEST_SOURCES")
+            elif platform.system() == "Darwin":
+                sh("launchctl", "setenv", "LLM_ARCHIVE_ENABLE_TEST_SOURCES", "1")
+            sh("brew", "services", "start", "llm-archive")
+            time.sleep(2)
+            poll_until(la, env, "enabled", timeout=30)
 
-            result = json.loads(
-                sh(la, "search", "dummycanarytoken", "--json", env=env)
-            )
+            result = json.loads(sh(la, "search", "dummycanarytoken", "--json", env=env))
             assert result["count"] > 0
 
             output = sh(la, "embed", "--force", env=env)
             assert "embedded" in output
-            result = json.loads(
-                sh(la, "search", "-s", "test query", "--json", env=env)
-            )
+            result = json.loads(sh(la, "search", "-s", "test query", "--json", env=env))
             assert result["count"] > 0
         finally:
             subprocess.run(
