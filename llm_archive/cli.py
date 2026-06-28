@@ -3,6 +3,7 @@ from collections.abc import Sequence
 import json
 import re
 import shutil
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -181,6 +182,38 @@ def _human_size(n: int) -> str:
     return str(n)
 
 
+def _connect_readonly(path: Path) -> sqlite3.Connection:
+    try:
+        return db.connect_readonly(path)
+    except FileNotFoundError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+def _connect_existing(path: Path) -> sqlite3.Connection:
+    try:
+        return db.connect_existing(path)
+    except FileNotFoundError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+def _wait_for_writer_jobs(
+    con: sqlite3.Connection,
+    *,
+    timeout_s: float = 300.0,
+    poll_s: float = 0.5,
+) -> None:
+    deadline = time.monotonic() + timeout_s
+    while True:
+        jobs = db.active_writer_jobs(con)
+        if not jobs:
+            return
+        if time.monotonic() >= deadline:
+            raise click.ClickException(
+                f"timed out waiting for {len(jobs)} writer job(s) to finish before backup"
+            )
+        time.sleep(poll_s)
+
+
 @main.command()
 @click.option("--db-path", default=None, help="Override database path")
 @click.option("--verbose", is_flag=True, help="Include setup checks and fix hints")
@@ -195,7 +228,7 @@ def _human_size(n: int) -> str:
 @click.option("--json", "json_output", is_flag=True, help="Print JSON")
 def status(db_path: str | None, verbose: bool, sort_mode: str, json_output: bool):
     """Show service, provider, auth, backup, and freshness state."""
-    con = db.connect(Path(db_path) if db_path else db.DB_PATH)
+    con = _connect_readonly(Path(db_path) if db_path else db.DB_PATH)
     try:
         stats = db.source_stats(con)
         states = db.provider_states(con)
@@ -215,6 +248,9 @@ def status(db_path: str | None, verbose: bool, sort_mode: str, json_output: bool
                 "providers": [item for key, item in states.items() if key != "dummy"],
                 "sources": [item for item in stats if item["id"] != "dummy"],
                 "jobs": jobs,
+                "alerts": [
+                    item for item in db.database_write_alerts(states) if item["source_id"] != "dummy"
+                ],
             }
         )
         return
@@ -242,6 +278,14 @@ def status(db_path: str | None, verbose: bool, sort_mode: str, json_output: bool
         next_backup_at = backup_state.get("next_backup_at")
         nxt = _until(next_backup_at) if isinstance(next_backup_at, int) else "-"
         lines.append(f"BACKUP ok  last {last}, next {nxt}")
+
+    for alert in db.database_write_alerts(states):
+        if alert["source_id"] == "dummy":
+            continue
+        if alert["kind"] == "storage_full":
+            lines.append(f"STORAGE full  {alert['source_id']}: {alert['message']}")
+        else:
+            lines.append(f"DB write failed  {alert['source_id']}: {alert['message']}")
 
     lines.append("")
 
@@ -539,15 +583,21 @@ def search(
                 db_path=Path(db_path) if db_path else None,
             )
         )
-    con = db.connect(Path(db_path) if db_path else db.DB_PATH)
+    con = _connect_readonly(Path(db_path) if db_path else db.DB_PATH)
     try:
         if semantic:
             from llm_archive import embed as embed_mod
 
             model = embed_mod.DEFAULT_MODEL
-            has_vec, _ = db.init_embeddings(con, embed_mod.get_dims(model))
-            if not has_vec:
+            if not db.sqlite_vec_available(con):
                 console.print("[red]sqlite-vec not installed.[/red] Run: [bold]pip install sqlite-vec[/bold]")
+                raise SystemExit(1)
+            has_vec, dim_mismatch = db.embeddings_ready(con, embed_mod.get_dims(model))
+            if not has_vec:
+                console.print("[red]Embeddings not initialized.[/red] Run: [bold]llm-archive embed[/bold]")
+                raise SystemExit(1)
+            if dim_mismatch:
+                console.print("[red]Embedding dimensions changed.[/red] Run: [bold]llm-archive embed --force[/bold]")
                 raise SystemExit(1)
             try:
                 vector = embed_mod.embed_text(phrase, model)
@@ -721,7 +771,7 @@ def search(
 @click.option("--db-path", default=None, help="Override database path")
 def show(thread: str, db_path: str | None):
     """Show a full conversation by ID (short ID like 't5' or full UUID)."""
-    con = db.connect(Path(db_path) if db_path else db.DB_PATH)
+    con = _connect_readonly(Path(db_path) if db_path else db.DB_PATH)
     try:
         row = db.resolve_short_id(con, thread) or db.get_thread(con, thread)
     finally:
@@ -773,7 +823,7 @@ def resume(thread_id: str, db_path: str | None):
     """Resume a conversation by opening it in the provider (browser or CLI)."""
     import webbrowser
 
-    con = db.connect(Path(db_path) if db_path else db.DB_PATH)
+    con = _connect_readonly(Path(db_path) if db_path else db.DB_PATH)
     try:
         row = db.resolve_short_id(con, thread_id) or db.get_thread(con, thread_id)
     finally:
@@ -1194,8 +1244,9 @@ def embed(
 @click.option("--json", "json_output", is_flag=True, help="Print JSON")
 def backup(verify: bool, json_output: bool):
     """Run backup now."""
-    con = db.connect(db.DB_PATH)
+    con = _connect_existing(db.DB_PATH)
     try:
+        _wait_for_writer_jobs(con)
         db.set_backup_started(con)
         target = run_backup(verify=verify)
         db.set_backup_success(con, db.now_ms() + 86_400_000)

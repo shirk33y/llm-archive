@@ -22,6 +22,77 @@ DB_PATH = Path(
 )
 
 
+class ArchiveDatabaseWriteError(RuntimeError):
+    pass
+
+
+class ArchiveStorageFullError(ArchiveDatabaseWriteError):
+    pass
+
+
+def is_storage_full_error(exc: BaseException) -> bool:
+    code = getattr(exc, "sqlite_errorcode", None)
+    if code == sqlite3.SQLITE_FULL:
+        return True
+    return "database or disk is full" in str(exc).lower()
+
+
+def storage_full_message() -> str:
+    return (
+        "database or disk is full; sync stopped before marking success. "
+        "Free disk space or move LLM_ARCHIVE_DB, then rerun sync. "
+        "Existing committed data was preserved."
+    )
+
+
+def database_write_failed_message(exc: BaseException) -> str:
+    return (
+        "database write failed; transaction was rolled back before marking success. "
+        f"Original error: {exc}"
+    )
+
+
+def _write_failure(con: sqlite3.Connection, exc: sqlite3.Error) -> ArchiveDatabaseWriteError:
+    try:
+        con.rollback()
+    except sqlite3.Error:
+        logger.warning("rollback failed after database write error", exc_info=True)
+    if is_storage_full_error(exc):
+        return ArchiveStorageFullError(storage_full_message())
+    return ArchiveDatabaseWriteError(database_write_failed_message(exc))
+
+
+def database_write_alerts(states: dict[str, dict]) -> list[dict[str, str]]:
+    alerts = []
+    for source_id, state in sorted(states.items()):
+        last_error = state.get("last_error") or ""
+        if is_storage_full_error(RuntimeError(str(last_error))):
+            alerts.append(
+                {
+                    "kind": "storage_full",
+                    "source_id": source_id,
+                    "message": str(last_error),
+                }
+            )
+        elif "database write failed" in str(last_error).lower():
+            alerts.append(
+                {
+                    "kind": "database_write_failed",
+                    "source_id": source_id,
+                    "message": str(last_error),
+                }
+            )
+    return alerts
+
+
+def storage_full_alerts(states: dict[str, dict]) -> list[dict[str, str]]:
+    return [
+        alert
+        for alert in database_write_alerts(states)
+        if alert["kind"] == "storage_full"
+    ]
+
+
 def _migrate_windsurf_prefix(con: sqlite3.Connection) -> None:
     """Migrate windsurf:ls: thread IDs to windsurf: (one-time migration)."""
     # Check if any threads still have the old prefix
@@ -206,10 +277,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS message_parts_fts USING fts5(
 """
 
 
-def connect(path: Path | None = None) -> sqlite3.Connection:
-    db_path = path or DB_PATH
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(db_path)
+def _prepare_connection(con: sqlite3.Connection) -> sqlite3.Connection:
     con.row_factory = sqlite3.Row
     for stmt in DDL.split(";"):
         stmt = stmt.strip()
@@ -233,6 +301,29 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
         )
     _migrate_windsurf_prefix(con)
     con.commit()
+    return con
+
+
+def connect(path: Path | None = None) -> sqlite3.Connection:
+    db_path = path or DB_PATH
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    return _prepare_connection(sqlite3.connect(db_path))
+
+
+def connect_existing(path: Path | None = None) -> sqlite3.Connection:
+    db_path = path or DB_PATH
+    if not db_path.exists():
+        raise FileNotFoundError(f"database not found: {db_path}")
+    return _prepare_connection(sqlite3.connect(f"file:{db_path}?mode=rw", uri=True))
+
+
+def connect_readonly(path: Path | None = None) -> sqlite3.Connection:
+    db_path = path or DB_PATH
+    if not db_path.exists():
+        raise FileNotFoundError(f"database not found: {db_path}")
+    con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    con.row_factory = sqlite3.Row
+    con.execute("PRAGMA foreign_keys=ON")
     return con
 
 
@@ -283,11 +374,14 @@ def bulk_update_timestamps(con: sqlite3.Connection, updates: dict[str, int]) -> 
     """Update updated_at for threads where the new value is newer than stored."""
     if not updates:
         return
-    con.executemany(
-        "UPDATE threads SET updated_at=? WHERE id=? AND (updated_at IS NULL OR updated_at < ?)",
-        [(ts, tid, ts) for tid, ts in updates.items()],
-    )
-    con.commit()
+    try:
+        con.executemany(
+            "UPDATE threads SET updated_at=? WHERE id=? AND (updated_at IS NULL OR updated_at < ?)",
+            [(ts, tid, ts) for tid, ts in updates.items()],
+        )
+        con.commit()
+    except sqlite3.Error as exc:
+        raise _write_failure(con, exc) from exc
 
 
 def get_last_sync(con: sqlite3.Connection, source_id: str) -> int | None:
@@ -305,119 +399,117 @@ def save_thread(con: sqlite3.Connection, thread: IngestedThread, force: bool = F
         else:
             logger.debug(f"sha1 changed {thread.id} — old={existing['sha1']} new={sha1}")
     now_ms = int(time.time() * 1000)
-    if not force and existing and existing["sha1"] == sha1:
-        # Content unchanged — bump updated_at if API has a newer timestamp,
-        # and always update content_checked_at so skip logic knows we verified recently.
-        updates = ["content_checked_at=?"]
-        params: list = [now_ms]
-        if thread.updated_at is not None:
-            updates.append("updated_at=CASE WHEN updated_at IS NULL OR updated_at < ? THEN ? ELSE updated_at END")
-            params.extend([thread.updated_at, thread.updated_at])
-        params.append(thread.id)
-        con.execute(f"UPDATE threads SET {', '.join(updates)} WHERE id=?", params)
-        con.commit()
-        return False
+    try:
+        if not force and existing and existing["sha1"] == sha1:
+            updates = ["content_checked_at=?"]
+            params: list = [now_ms]
+            if thread.updated_at is not None:
+                updates.append("updated_at=CASE WHEN updated_at IS NULL OR updated_at < ? THEN ? ELSE updated_at END")
+                params.extend([thread.updated_at, thread.updated_at])
+            params.append(thread.id)
+            con.execute(f"UPDATE threads SET {', '.join(updates)} WHERE id=?", params)
+            con.commit()
+            return False
 
-    # Ensure source row exists (FK constraint)
-    con.execute("INSERT OR IGNORE INTO sources(id) VALUES(?)", (thread.source_id,))
+        con.execute("INSERT OR IGNORE INTO sources(id) VALUES(?)", (thread.source_id,))
 
-    con.execute(
-        "INSERT OR REPLACE INTO threads(id, source_id, title, created_at, updated_at, sha1, content_checked_at) "
-        "VALUES(?,?,?,?,?,?,?)",
-        (
-            thread.id,
-            thread.source_id,
-            sanitize_text(thread.title) if thread.title else thread.title,
-            thread.created_at,
-            thread.updated_at,
-            sha1,
-            now_ms,
-        ),
-    )
-    ids = [
-        row[0]
-        for row in con.execute("SELECT id FROM messages WHERE thread_id=?", (thread.id,)).fetchall()
-    ]
-    if ids:
-        marks = ",".join("?" for _ in ids)
-        con.execute(f"DELETE FROM message_parts_fts WHERE message_id IN ({marks})", ids)
-        con.execute(f"DELETE FROM message_parts WHERE message_id IN ({marks})", ids)
-        con.execute(f"DELETE FROM message_raw WHERE message_id IN ({marks})", ids)
-    con.execute("DELETE FROM messages WHERE thread_id=?", (thread.id,))
-    con.execute("DELETE FROM messages_fts WHERE thread_id=?", (thread.id,))
-    for msg in thread.messages:
-        content = sanitize_text(msg.content)
-        clean = clean_content(content)
         con.execute(
-            "INSERT OR REPLACE INTO messages(id, thread_id, role, content, content_clean, created_at, metadata) "
+            "INSERT OR REPLACE INTO threads(id, source_id, title, created_at, updated_at, sha1, content_checked_at) "
             "VALUES(?,?,?,?,?,?,?)",
             (
-                msg.id,
-                msg.thread_id,
-                msg.role,
-                content,
-                clean,
-                msg.created_at,
-                json.dumps(msg.metadata) if msg.metadata else None,
+                thread.id,
+                thread.source_id,
+                sanitize_text(thread.title) if thread.title else thread.title,
+                thread.created_at,
+                thread.updated_at,
+                sha1,
+                now_ms,
             ),
         )
-        con.execute(
-            "INSERT INTO messages_fts(id, thread_id, content_clean) VALUES(?,?,?)",
-            (msg.id, msg.thread_id, clean),
-        )
-        for i, part in enumerate(_message_parts(msg)):
-            text = sanitize_text(_strip_content(part.text).strip())
-            search_text = clean_content(text) if part.searchable else ""
-            # Also add data field content to search_text for better searchability
-            if part.data and part.searchable:
-                data_str = json.dumps(part.data, ensure_ascii=False)
-                search_text += " " + clean_content(data_str)
-            # Add tool call data to search_text
-            if part.tool_call and part.searchable:
-                tc = part.tool_call
-                search_text += f" {sanitize_text(tc.name)}"
-                if tc.input:
-                    search_text += f" {sanitize_text(json.dumps(tc.input, ensure_ascii=False))}"
-                if tc.result:
-                    search_text += f" {sanitize_text(tc.result)}"
-            tool_use_id = part.tool_call.tool_use_id if part.tool_call else None
-            tool_name = sanitize_text(part.tool_call.name) if part.tool_call else None
-            tool_input = json.dumps(part.tool_call.input) if part.tool_call and part.tool_call.input else None
-            tool_result = sanitize_text(part.tool_call.result) if part.tool_call and part.tool_call.result else None
-            tool_result_ts = part.tool_call.resultTimestamp if part.tool_call else None
-            tool_is_error = 1 if part.tool_call and part.tool_call.is_error else 0
+        ids = [
+            row[0]
+            for row in con.execute("SELECT id FROM messages WHERE thread_id=?", (thread.id,)).fetchall()
+        ]
+        if ids:
+            marks = ",".join("?" for _ in ids)
+            con.execute(f"DELETE FROM message_parts_fts WHERE message_id IN ({marks})", ids)
+            con.execute(f"DELETE FROM message_parts WHERE message_id IN ({marks})", ids)
+            con.execute(f"DELETE FROM message_raw WHERE message_id IN ({marks})", ids)
+        con.execute("DELETE FROM messages WHERE thread_id=?", (thread.id,))
+        con.execute("DELETE FROM messages_fts WHERE thread_id=?", (thread.id,))
+        for msg in thread.messages:
+            content = sanitize_text(msg.content)
+            clean = clean_content(content)
             con.execute(
-                "INSERT OR REPLACE INTO message_parts(message_id, ord, kind, text, search_text, data, visible, searchable, tool_use_id, tool_name, tool_input, tool_result, tool_result_timestamp, tool_is_error) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT OR REPLACE INTO messages(id, thread_id, role, content, content_clean, created_at, metadata) "
+                "VALUES(?,?,?,?,?,?,?)",
                 (
                     msg.id,
-                    i,
-                    part.kind,
-                    text,
-                    search_text,
-                    json.dumps(part.data) if part.data else None,
-                    1 if part.visible else 0,
-                    1 if part.searchable else 0,
-                    tool_use_id,
-                    tool_name,
-                    tool_input,
-                    tool_result,
-                    tool_result_ts,
-                    tool_is_error,
+                    msg.thread_id,
+                    msg.role,
+                    content,
+                    clean,
+                    msg.created_at,
+                    json.dumps(msg.metadata) if msg.metadata else None,
                 ),
             )
-            if part.searchable and search_text:
-                con.execute(
-                    "INSERT INTO message_parts_fts(message_id, ord, search_text) VALUES(?,?,?)",
-                    (msg.id, i, search_text),
-                )
-        if msg.raw is not None:
             con.execute(
-                "INSERT OR REPLACE INTO message_raw(message_id, raw) VALUES(?,?)",
-                (msg.id, json.dumps(msg.raw)),
+                "INSERT INTO messages_fts(id, thread_id, content_clean) VALUES(?,?,?)",
+                (msg.id, msg.thread_id, clean),
             )
-    con.commit()
-    return True
+            for i, part in enumerate(_message_parts(msg)):
+                text = sanitize_text(_strip_content(part.text).strip())
+                search_text = clean_content(text) if part.searchable else ""
+                if part.data and part.searchable:
+                    data_str = json.dumps(part.data, ensure_ascii=False)
+                    search_text += " " + clean_content(data_str)
+                if part.tool_call and part.searchable:
+                    tc = part.tool_call
+                    search_text += f" {sanitize_text(tc.name)}"
+                    if tc.input:
+                        search_text += f" {sanitize_text(json.dumps(tc.input, ensure_ascii=False))}"
+                    if tc.result:
+                        search_text += f" {sanitize_text(tc.result)}"
+                tool_use_id = part.tool_call.tool_use_id if part.tool_call else None
+                tool_name = sanitize_text(part.tool_call.name) if part.tool_call else None
+                tool_input = json.dumps(part.tool_call.input) if part.tool_call and part.tool_call.input else None
+                tool_result = sanitize_text(part.tool_call.result) if part.tool_call and part.tool_call.result else None
+                tool_result_ts = part.tool_call.resultTimestamp if part.tool_call else None
+                tool_is_error = 1 if part.tool_call and part.tool_call.is_error else 0
+                con.execute(
+                    "INSERT OR REPLACE INTO message_parts(message_id, ord, kind, text, search_text, data, visible, searchable, tool_use_id, tool_name, tool_input, tool_result, tool_result_timestamp, tool_is_error) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        msg.id,
+                        i,
+                        part.kind,
+                        text,
+                        search_text,
+                        json.dumps(part.data) if part.data else None,
+                        1 if part.visible else 0,
+                        1 if part.searchable else 0,
+                        tool_use_id,
+                        tool_name,
+                        tool_input,
+                        tool_result,
+                        tool_result_ts,
+                        tool_is_error,
+                    ),
+                )
+                if part.searchable and search_text:
+                    con.execute(
+                        "INSERT INTO message_parts_fts(message_id, ord, search_text) VALUES(?,?,?)",
+                        (msg.id, i, search_text),
+                    )
+            if msg.raw is not None:
+                con.execute(
+                    "INSERT OR REPLACE INTO message_raw(message_id, raw) VALUES(?,?)",
+                    (msg.id, json.dumps(msg.raw)),
+                )
+        con.commit()
+        return True
+    except sqlite3.Error as exc:
+        raise _write_failure(con, exc) from exc
 
 
 def _message_parts(msg: IngestedMessage) -> list[IngestedPart]:
@@ -596,6 +688,18 @@ def active_job(con: sqlite3.Connection, kind: str, source_id: str | None) -> dic
         (kind, source_id, source_id),
     ).fetchone()
     return dict(row) if row else None
+
+
+def active_writer_jobs(con: sqlite3.Connection) -> list[dict]:
+    reap_stale_jobs(con)
+    rows = con.execute(
+        """
+        SELECT * FROM jobs
+        WHERE status='running' AND kind IN ('sync', 'summarize')
+        ORDER BY started_at ASC
+        """
+    ).fetchall()
+    return [dict(row) for row in rows]
 
 
 STALE_JOB_MS = 5 * 60 * 1000
@@ -804,7 +908,29 @@ def init_embeddings(con: sqlite3.Connection, dims: int = 384) -> tuple[bool, boo
     return has_vec, dim_mismatch
 
 
+def embeddings_ready(con: sqlite3.Connection, dims: int = 384) -> tuple[bool, bool]:
+    has_vec = _load_vec(con)
+    if not has_vec:
+        return False, False
+    embeddings = con.execute(
+        "SELECT 1 FROM sqlite_master WHERE name='thread_embeddings'"
+    ).fetchone()
+    vec = con.execute("SELECT sql FROM sqlite_master WHERE name='vec_threads'").fetchone()
+    if not embeddings or not vec:
+        return False, False
+    return True, f"FLOAT[{dims}]" not in vec[0]
+
+
+def sqlite_vec_available(con: sqlite3.Connection) -> bool:
+    return _load_vec(con)
+
+
 def has_embeddings(con: sqlite3.Connection) -> bool:
+    exists = con.execute(
+        "SELECT 1 FROM sqlite_master WHERE name='thread_embeddings'"
+    ).fetchone()
+    if not exists:
+        return False
     row = con.execute("SELECT COUNT(*) FROM thread_embeddings").fetchone()
     return row[0] > 0
 
@@ -908,7 +1034,11 @@ def threads_needing_summary(
 
 
 def get_thread_summary(con: sqlite3.Connection, thread_id: str) -> dict | None:
-    init_summaries(con)
+    exists = con.execute(
+        "SELECT 1 FROM sqlite_master WHERE name='thread_summaries'"
+    ).fetchone()
+    if not exists:
+        return None
     row = con.execute(
         "SELECT * FROM thread_summaries WHERE thread_id=?", (thread_id,)
     ).fetchone()

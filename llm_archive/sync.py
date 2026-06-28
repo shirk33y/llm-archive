@@ -323,6 +323,9 @@ async def _do_ingest(
         except NotImplementedError as e:
             console.print(f"  [yellow]Not implemented:[/yellow] {e}")
             return False
+        except db.ArchiveDatabaseWriteError as e:
+            console.print(f"  [red]Database write failed:[/red] {e}")
+            raise
         except RuntimeError as e:
             console.print(f"  [yellow]Warning:[/yellow] {e}")
             return False

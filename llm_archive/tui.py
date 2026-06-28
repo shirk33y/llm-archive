@@ -492,6 +492,26 @@ class ListScreen(Screen):
         self.con = con
         self.all_threads: list[ThreadRow] = []
         self.displayed_rows: list = []  # ThreadRow or MessageRow
+        self.status_warning = ""
+
+    def _mode_status(self) -> str:
+        return "deep search mode" if self.show_deep else "title filter mode"
+
+    def _status_text(self) -> str:
+        if self.status_warning:
+            return f"{self._mode_status()} | {self.status_warning}"
+        return self._mode_status()
+
+    def _load_status_warning(self) -> None:
+        alerts = db.database_write_alerts(db.provider_states(self.con))
+        if not alerts:
+            self.status_warning = ""
+            return
+        sources = ", ".join(alert["source_id"] for alert in alerts)
+        if any(alert["kind"] == "storage_full" for alert in alerts):
+            self.status_warning = f"storage full: {sources}"
+        else:
+            self.status_warning = f"database write failed: {sources}"
     
     def _load_threads(self):
         rows = db.list_threads(self.con, limit=500)
@@ -563,11 +583,13 @@ class ListScreen(Screen):
             self.search_input = Input(placeholder="filter...", id="search")
             self.search_input.styles.display = "none"
             yield self.search_input
-            status = Static("title filter mode", id="status")
+            status = Static(self._status_text(), id="status")
             yield status
     
     def on_mount(self):
+        self._load_status_warning()
         self._load_threads()
+        self.query_one("#status", Static).update(self._status_text())
     
     def action_focus_search(self):
         self.search_input.styles.display = "block"
@@ -582,8 +604,7 @@ class ListScreen(Screen):
 
     def action_toggle_mode(self):
         self.show_deep = not self.show_deep
-        status = "deep search mode" if self.show_deep else "title filter mode"
-        self.query_one("#status", Static).update(status)
+        self.query_one("#status", Static).update(self._status_text())
         self._update_display()
 
     def action_cursor_down(self):
@@ -697,7 +718,7 @@ class ArchiveApp(App):
         self.con = None
     
     def on_mount(self):
-        self.con = db.connect(self.db_path)
+        self.con = db.connect_readonly(self.db_path)
         self.push_screen(ListScreen(self.con))
 
 

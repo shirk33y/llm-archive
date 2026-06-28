@@ -569,6 +569,8 @@ def test_show_command_prints_full_conversation(tmp_path):
 
 
 def test_show_command_returns_error_when_missing(tmp_path):
+    cli.db.connect(tmp_path / "archive.db").close()
+
     result = CliRunner().invoke(
         cli.main, ["show", "claude:nope", "--db-path", str(tmp_path / "archive.db")]
     )
@@ -914,6 +916,50 @@ def test_status_hides_dummy_and_keeps_stale_out_of_state(tmp_path, monkeypatch):
     data = json.loads(json_result.output)
     assert all(item["id"] != "dummy" for item in data["sources"])
     assert all(item["source_id"] != "dummy" for item in data["providers"])
+
+
+def test_status_warns_when_storage_is_full(tmp_path, monkeypatch):
+    db_path = tmp_path / "archive.db"
+    con = cli.db.connect(db_path)
+    cli.db.ensure_provider_state(con, "chatgpt", enabled=True)
+    cli.db.set_provider_sync_failure(con, "chatgpt", cli.db.storage_full_message())
+    con.close()
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('[ingestors.chatgpt]\nmode = "cookies"\nenabled = true\n')
+    monkeypatch.setenv("LLM_ARCHIVE_CONFIG", str(config_path))
+
+    result = CliRunner().invoke(cli.main, ["status", "--db-path", str(db_path)])
+
+    assert result.exit_code == 0
+    assert "STORAGE full" in result.output
+    assert "chatgpt" in result.output
+    assert "database or disk is full" in result.output
+
+    json_result = CliRunner().invoke(
+        cli.main,
+        ["status", "--json", "--db-path", str(db_path)],
+    )
+
+    assert json_result.exit_code == 0
+    data = json.loads(json_result.output)
+    assert data["alerts"] == [
+        {
+            "kind": "storage_full",
+            "source_id": "chatgpt",
+            "message": cli.db.storage_full_message(),
+        }
+    ]
+
+
+def test_status_does_not_create_missing_database(tmp_path):
+    db_path = tmp_path / "missing.db"
+
+    result = CliRunner().invoke(cli.main, ["status", "--db-path", str(db_path)])
+
+    assert result.exit_code != 0
+    assert "database not found" in result.output
+    assert not db_path.exists()
 
 
 def test_status_sorts_by_name_by_default(tmp_path, monkeypatch):
@@ -1313,6 +1359,8 @@ def test_resume_unsupported_windsurf(tmp_path):
 
 
 def test_resume_not_found(tmp_path):
+    cli.db.connect(tmp_path / "archive.db").close()
+
     result = CliRunner().invoke(
         cli.main, ["resume", "claude:nope", "--db-path", str(tmp_path / "archive.db")]
     )
@@ -1576,6 +1624,7 @@ class TestSearchSemantic:
         cli.db.upsert_thread_embedding(con, thread_id, model, blob, 5000)
 
     def test_semantic_no_sqlite_vec(self, tmp_path, monkeypatch):
+        self._setup_db(tmp_path).close()
         monkeypatch.setattr(cli.db, "_load_vec", lambda con: False)
         result = CliRunner().invoke(
             cli.main, ["search", "-s", "processor", "--db-path", str(tmp_path / "archive.db")]
@@ -1584,7 +1633,10 @@ class TestSearchSemantic:
         assert "sqlite-vec not installed" in result.output
 
     def test_semantic_embedding_failure(self, tmp_path, monkeypatch):
-        self._setup_db(tmp_path)
+        con = self._setup_db(tmp_path)
+        has_vec, _ = cli.db.init_embeddings(con, 384)
+        assert has_vec, "sqlite-vec not available in test env"
+        con.close()
 
         def boom(*a, **kw):
             raise RuntimeError("fastembed not available")
@@ -1597,7 +1649,10 @@ class TestSearchSemantic:
         assert "Embedding failed" in result.output
 
     def test_semantic_no_embeddings_returns_no_matches(self, tmp_path, monkeypatch):
-        self._setup_db(tmp_path)
+        con = self._setup_db(tmp_path)
+        has_vec, _ = cli.db.init_embeddings(con, 384)
+        assert has_vec, "sqlite-vec not available in test env"
+        con.close()
         vector = [0.1] * 384
         monkeypatch.setattr("llm_archive.embed.embed_text", lambda *a, **kw: vector)
         monkeypatch.setattr("llm_archive.embed.get_dims", lambda *a, **kw: 384)

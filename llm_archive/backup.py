@@ -19,7 +19,7 @@ def run_backup(db_path: Path | None = None, *, verify: bool = False) -> Path:
     target_dir.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
     target = target_dir / f"archive-{stamp}.db"
-    src = sqlite3.connect(str(source))
+    src = sqlite3.connect(f"file:{source}?mode=ro", uri=True)
     dst = sqlite3.connect(str(target))
     try:
         src.backup(dst)

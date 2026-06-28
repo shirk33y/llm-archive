@@ -64,6 +64,11 @@ async def run_sync_job(
     db.set_provider_sync_started(con, source_id)
     try:
         ok = await runner(source_id, force)
+    except db.ArchiveDatabaseWriteError as exc:
+        reason = "storage_full" if isinstance(exc, db.ArchiveStorageFullError) else "database_write_failed"
+        db.set_provider_sync_failure(con, source_id, str(exc))
+        db.update_job(con, job_id, status="failed", reason=reason, error=str(exc), finish=True)
+        return JobResult(source_id, "failed", str(exc), job_id)
     except PermissionError as exc:
         db.set_provider_sync_failure(con, source_id, str(exc), auth_status="failed")
         db.update_job(con, job_id, status="failed", reason="auth_failed", error=str(exc), finish=True)

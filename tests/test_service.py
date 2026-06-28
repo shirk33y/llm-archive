@@ -14,6 +14,7 @@ from llm_archive.service import (
     _FileChangeHandler,
     _check_dev_reload,
     _config_hash,
+    _drain_writer_jobs,
     _path_mtime,
     _run_due_backup,
     _run_due_syncs,
@@ -301,6 +302,31 @@ async def test_run_due_backup_records_failure(tmp_path, con):
     state = db.get_backup_state(con)
     assert state["last_error"] is not None
     assert "backup failed" in state["last_error"]
+
+
+@pytest.mark.asyncio
+async def test_run_due_backup_waits_for_writer_jobs(tmp_path, con):
+    db.create_job(con, "sync", "chatgpt")
+
+    with (
+        patch("llm_archive.service._drain_writer_jobs", new_callable=AsyncMock) as mock_drain,
+        patch("llm_archive.service.run_backup") as mock_backup,
+    ):
+        mock_drain.return_value = False
+        await _run_due_backup(con, None)
+
+    mock_backup.assert_not_called()
+    state = db.get_backup_state(con)
+    assert "timed out waiting for writer jobs" in state["last_error"]
+
+
+@pytest.mark.asyncio
+async def test_drain_writer_jobs_returns_false_when_writer_stays_active(tmp_path, con):
+    db.create_job(con, "sync", "chatgpt")
+
+    drained = await _drain_writer_jobs(con, timeout_s=0, poll_s=0)
+
+    assert drained is False
 
 
 @pytest.mark.asyncio

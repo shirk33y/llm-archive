@@ -8,6 +8,63 @@ After cloning: `uv sync --extra dev && uv run pre-commit install`
 
 Use temporary databases for all tests and verification. Do not run test operations against the user's configured archive database unless explicitly asked.
 
+## User DB
+
+Live archive DB defaults to `~/.llm-archive/archive.db`; override with `LLM_ARCHIVE_DB`. Backups live in `~/.llm-archive/backups/`; exported thread markdown lives in `~/.llm-archive/exports/`.
+
+Use read-only SQLite for diagnosis:
+
+```sh
+sqlite3 'file:'"$HOME"'/.llm-archive/archive.db?mode=ro' 'PRAGMA quick_check;'
+```
+
+Schema/count glimpse:
+
+```sql
+SELECT
+  s.id,
+  s.hostname,
+  s.last_sync,
+  ps.enabled,
+  ps.stale_since,
+  ps.pending_events,
+  ps.last_sync_started_at,
+  ps.last_sync_finished_at,
+  ps.last_success_at,
+  ps.next_sync_at,
+  ps.last_error,
+  ps.failure_count,
+  ps.auth_status,
+  ps.path_status,
+  ps.watch_active,
+  ps.watch_seen_at,
+  ps.watch_error,
+  COUNT(DISTINCT t.id) AS threads,
+  COUNT(m.id) AS messages,
+  MAX(t.updated_at) AS newest_thread
+FROM sources s
+LEFT JOIN provider_state ps ON ps.source_id = s.id
+LEFT JOIN threads t ON t.source_id = s.id
+LEFT JOIN messages m ON m.thread_id = t.id
+GROUP BY s.id
+ORDER BY threads DESC, s.id;
+
+SELECT
+  j.id,
+  j.kind,
+  j.source_id,
+  j.status,
+  j.reason,
+  j.started_at,
+  j.heartbeat_at,
+  j.finished_at,
+  j.force,
+  j.error
+FROM jobs j
+ORDER BY j.started_at DESC
+LIMIT 20;
+```
+
 ## Commits
 
 `type(scope): description` — lowercase, imperative, no trailing period. Scope optional.

@@ -229,12 +229,29 @@ async def _run_due_backup(con, db_path: Path | None) -> None:
     day_ms = 86_400_000
     if next_backup_at is not None and int(next_backup_at) > db.now_ms():
         return
+    if not await _drain_writer_jobs(con):
+        db.set_backup_failure(con, "timed out waiting for writer jobs to finish before backup")
+        return
     try:
         db.set_backup_started(con)
         run_backup(db_path, verify=False)
         db.set_backup_success(con, db.now_ms() + day_ms)
     except Exception as exc:
         db.set_backup_failure(con, str(exc))
+
+
+async def _drain_writer_jobs(
+    con,
+    *,
+    timeout_s: float = 300.0,
+    poll_s: float = 1.0,
+) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while db.active_writer_jobs(con):
+        if time.monotonic() >= deadline:
+            return False
+        await asyncio.sleep(poll_s)
+    return True
 
 
 def _path_mtime(path: Path) -> float | None:

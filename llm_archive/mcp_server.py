@@ -1,15 +1,10 @@
 """MCP server for llm-archive — search and retrieve conversations."""
 from __future__ import annotations
 
-import asyncio
 from typing import Optional
 
 from mcp.server import FastMCP
 from llm_archive import db
-from llm_archive.config import load_config
-from llm_archive.embed import auto_embed
-from llm_archive.ingestors import INGESTORS
-from llm_archive.jobs import ensure_fresh
 
 mcp = FastMCP("llm-archive", json_response=True)
 
@@ -25,8 +20,7 @@ def search_conversations(phrase: str, limit: Optional[int] = None) -> dict:
     Returns:
         Results dict with 'results' array and count.
     """
-    _ensure_fresh()
-    con = db.connect()
+    con = db.connect_readonly()
     try:
         results = db.search_messages(con, phrase, limit)
         return {
@@ -49,8 +43,7 @@ def search_threads(phrase: str, limit: Optional[int] = None) -> dict:
     Returns:
         Results dict with thread matches grouped by ID.
     """
-    _ensure_fresh()
-    con = db.connect()
+    con = db.connect_readonly()
     try:
         results = db.search_threads(con, phrase, limit)
         return {
@@ -72,8 +65,7 @@ def list_conversations(limit: Optional[int] = None) -> dict:
     Returns:
         Results dict with all threads, sorted newest first.
     """
-    _ensure_fresh()
-    con = db.connect()
+    con = db.connect_readonly()
     try:
         results = db.list_threads(con, limit)
         return {
@@ -104,14 +96,25 @@ def semantic_search(
     """
     from llm_archive import embed as embed_mod
 
-    _ensure_fresh([source_id] if source_id else None)
-    con = db.connect()
+    con = db.connect_readonly()
     try:
         model = embed_mod.DEFAULT_MODEL
-        has_vec, _ = db.init_embeddings(con, embed_mod.get_dims(model))
-        if not has_vec:
+        if not db.sqlite_vec_available(con):
             return {
                 "error": "sqlite-vec not installed. Run: pip install sqlite-vec",
+                "results": [],
+                "count": 0,
+            }
+        has_vec, dim_mismatch = db.embeddings_ready(con, embed_mod.get_dims(model))
+        if not has_vec:
+            return {
+                "error": "Embeddings not initialized. Run: llm-archive embed",
+                "results": [],
+                "count": 0,
+            }
+        if dim_mismatch:
+            return {
+                "error": "Embedding dimensions changed. Run: llm-archive embed --force",
                 "results": [],
                 "count": 0,
             }
@@ -140,7 +143,7 @@ def get_conversation(thread_id: str) -> dict:
     Returns:
         Thread dict with metadata and messages array.
     """
-    con = db.connect()
+    con = db.connect_readonly()
     try:
         thread = db.get_thread(con, thread_id)
         return thread if thread else {"error": f"Thread '{thread_id}' not found"}
@@ -158,7 +161,7 @@ def get_message(message_id: str) -> dict:
     Returns:
         Message dict with content and parent thread info.
     """
-    con = db.connect()
+    con = db.connect_readonly()
     try:
         msg = db.get_message(con, message_id)
         return msg if msg else {"error": f"Message '{message_id}' not found"}
@@ -173,7 +176,7 @@ def list_sources() -> dict:
     Returns:
         Sources dict with all configured sources.
     """
-    con = db.connect()
+    con = db.connect_readonly()
     try:
         sources = con.execute(
             "SELECT id, last_sync, hostname, config FROM sources ORDER BY id"
@@ -189,29 +192,6 @@ def list_sources() -> dict:
 def run_sync():
     """Entry point for CLI."""
     mcp.run(transport="stdio")
-
-
-def _ensure_fresh(source_ids: list[str] | None = None) -> None:
-    from llm_archive.sync import _sync_one
-
-    async def runner(src: str, force: bool) -> bool:
-        return await _sync_one(src, None, None, force, None)
-
-    asyncio.run(
-        ensure_fresh(
-            source_ids or list(INGESTORS),
-            config=load_config(),
-            runner=runner,
-        )
-    )
-
-    config = load_config()
-    if config.embed.auto:
-        con = db.connect()
-        try:
-            auto_embed(con)
-        finally:
-            con.close()
 
 
 if __name__ == "__main__":

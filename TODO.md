@@ -13,6 +13,8 @@
 - [ ] Display resume URL or command
 - [ ] Explore sqlite-vec for semantic search
 - [ ] Design TUI
+- [ ] Add `ARCHITECTURE.md` covering DB schema, sync/job flow, backup/export paths, and failure handling
+- [ ] Evaluate HTML/web UI path: generated styled `.html` beside `.md`, SPA loading `.md` plus generated search index, or Python/HTMX/Tailwind web component backed by live service search
 - [ ] Investigate openchronicle
 - [ ] Store/download images and other artifacts uploaded or produced by AI
 - [ ] Auto route requests through multiple APIs: https://github.com/workweave/router

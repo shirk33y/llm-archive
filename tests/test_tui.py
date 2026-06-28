@@ -246,6 +246,17 @@ class TestAppStartup:
             sources = {t.source for t in screen.all_threads}
             assert sources == {"claude", "chatgpt", "opencode"}
 
+    async def test_storage_full_status_warning(self, con):
+        _seed_db(con, n_threads=1, sources=["chatgpt"])
+        db.ensure_provider_state(con, "chatgpt", enabled=True)
+        db.set_provider_sync_failure(con, "chatgpt", db.storage_full_message())
+        app = ArchiveApp(db_path=Path(con.execute("PRAGMA database_list").fetchone()[2]))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            status = app.screen.query_one("#status")
+            assert "storage full" in str(status.render())
+            assert "chatgpt" in str(status.render())
+
     async def test_multi_source_navigation_and_open(self, multi_app):
         async with multi_app.run_test() as pilot:
             await pilot.pause()
