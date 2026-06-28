@@ -4,16 +4,16 @@ class LlmArchive < Formula
   desc "Local archive for AI chats — sync web and file providers into SQLite"
   homepage "https://github.com/shirk33y/llm-archive"
   url "https://github.com/shirk33y/llm-archive/archive/refs/tags/v0.5.0.tar.gz"
-  sha256 "005afe519d168ed98c944749ab6204f67bd1af39e080467fbe951db475d39178"
   version "0.5.0"
-  head "https://github.com/shirk33y/llm-archive.git", branch: "main"
+  sha256 "005afe519d168ed98c944749ab6204f67bd1af39e080467fbe951db475d39178"
   license "All rights reserved"
+  head "https://github.com/shirk33y/llm-archive.git", branch: "main"
 
   depends_on "glow"
   depends_on "python@3.13"
 
   def install
-    venv = virtualenv_create(libexec, "python3")
+    virtualenv_create(libexec, "python3")
     system libexec/"bin/python", "-m", "ensurepip", "--upgrade"
     system libexec/"bin/python", "-m", "pip", "install", "--no-cache-dir", buildpath
     bin.install_symlink libexec/"bin/llm-archive"

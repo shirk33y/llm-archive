@@ -6,6 +6,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: homebrew/actions/setup-homebrew@master
-      - run: brew install shirk33y/tap/llm-archive
+      - run: brew install --HEAD ./Formula/llm-archive.rb
       - run: llm-archive --help
       - run: llm-archive status --json | jq -e '.sources | map(.id) | index("dummy") | not'

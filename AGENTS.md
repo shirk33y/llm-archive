@@ -27,9 +27,7 @@ Tag push triggers `.github/workflows/release.yml` (auto GitHub Release).
 ## Install
 
 ```
-brew tap shirk33y/llm-archive https://github.com/shirk33y/llm-archive
-brew trust --formula shirk33y/llm-archive/llm-archive
-brew install llm-archive
+brew install --HEAD ./Formula/llm-archive.rb
 ```
 
 pipx: `pipx install git+https://github.com/shirk33y/llm-archive.git` (Python ≥ 3.11)

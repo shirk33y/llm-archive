@@ -41,8 +41,7 @@ jobs:
 
       - name: Install via brew
         run: |
-          brew tap shirk33y/llm-archive
-          brew install llm-archive --HEAD
+          brew install --HEAD ./Formula/llm-archive.rb
           llm-archive --help
 
       - uses: astral-sh/setup-uv@v6
