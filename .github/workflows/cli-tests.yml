@@ -41,7 +41,9 @@ jobs:
 
       - name: Install via brew
         run: |
-          brew install --HEAD ./Formula/llm-archive.rb
+          brew tap-new shirk33y/local
+          ln -sf $PWD/Formula/llm-archive.rb "$(brew --repository shirk33y/local)/Formula/"
+          brew install --HEAD shirk33y/local/llm-archive
           llm-archive --help
 
       - uses: astral-sh/setup-uv@v6
