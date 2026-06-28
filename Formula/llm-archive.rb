@@ -10,6 +10,7 @@ class LlmArchive < Formula
   head "https://github.com/shirk33y/llm-archive.git", branch: "main"
 
   depends_on "glow"
+  depends_on "rust" => :build
   depends_on "python@3.13"
 
   def install

@@ -11,8 +11,14 @@ from pathlib import Path
 
 import pytest
 
+BREW_SERVICE_ENV_KEYS = (
+    "LLM_ARCHIVE_ENABLE_TEST_SOURCES",
+    "LLM_ARCHIVE_CONFIG",
+    "LLM_ARCHIVE_DB",
+)
 
-def sh(*cmd: str, env: dict | None = None) -> str:
+
+def sh(*cmd: str, env: dict[str, str] | None = None) -> str:
     r = subprocess.run(cmd, capture_output=True, text=True, env=env)
     assert r.returncode == 0, f"{' '.join(cmd)} failed:\n{r.stderr}"
     return r.stdout.strip()
@@ -29,7 +35,7 @@ def write_config(cfg: Path, enabled: bool) -> None:
     )
 
 
-def get_status(la: str, env: dict) -> dict:
+def get_status(la: str, env: dict[str, str]) -> dict:
     return json.loads(sh(la, "status", "--json", env=env))
 
 
@@ -50,7 +56,7 @@ def check_status(data: dict, mode: str) -> bool:
     return False
 
 
-def poll_until(la: str, env: dict, mode: str, timeout: int = 120, interval: float = 2) -> dict:
+def poll_until(la: str, env: dict[str, str], mode: str, timeout: int = 120, interval: float = 2) -> dict:
     deadline = time.time() + timeout
     last: dict = {}
     while time.time() < deadline:
@@ -64,13 +70,62 @@ def poll_until(la: str, env: dict, mode: str, timeout: int = 120, interval: floa
     pytest.fail(f"Timed out waiting for mode={mode}.\nLast status:\n{json.dumps(last, indent=2)}")
 
 
+def _systemd_env_value(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _brew_systemd_dropin() -> Path:
+    return Path.home() / ".config" / "systemd" / "user" / "homebrew.llm-archive.service.d" / "override.conf"
+
+
+def install_brew_service_env(env: dict[str, str]) -> None:
+    system = platform.system()
+    if system == "Linux":
+        dropin = _brew_systemd_dropin()
+        dropin.parent.mkdir(parents=True, exist_ok=True)
+        dropin.write_text(
+            "[Service]\n"
+            + "".join(
+                f'Environment="{key}={_systemd_env_value(env[key])}"\n'
+                for key in BREW_SERVICE_ENV_KEYS
+            )
+        )
+        sh("systemctl", "--user", "daemon-reload", env=env)
+        sh(
+            "systemctl",
+            "--user",
+            "set-environment",
+            *(f"{key}={env[key]}" for key in BREW_SERVICE_ENV_KEYS),
+            env=env,
+        )
+    elif system == "Darwin":
+        for key in BREW_SERVICE_ENV_KEYS:
+            sh("launchctl", "setenv", key, env[key], env=env)
+
+
+def clear_brew_service_env(env: dict[str, str]) -> None:
+    system = platform.system()
+    if system == "Linux":
+        dropin = _brew_systemd_dropin()
+        with suppress(FileNotFoundError):
+            dropin.unlink()
+        with suppress(AssertionError):
+            sh("systemctl", "--user", "daemon-reload", env=env)
+        with suppress(AssertionError):
+            sh("systemctl", "--user", "unset-environment", *BREW_SERVICE_ENV_KEYS, env=env)
+    elif system == "Darwin":
+        for key in BREW_SERVICE_ENV_KEYS:
+            with suppress(AssertionError):
+                sh("launchctl", "unsetenv", key, env=env)
+
+
 @pytest.fixture
 def la_venv() -> str:
     return str(Path(__file__).parent.parent / ".venv" / "bin" / "llm-archive")
 
 
 @pytest.fixture
-def e2e_env(tmp_path) -> dict:
+def e2e_env(tmp_path: Path) -> dict[str, str]:
     env = os.environ.copy()
     env["HOME"] = str(tmp_path)
     env["LLM_ARCHIVE_ENABLE_TEST_SOURCES"] = "1"
@@ -107,15 +162,13 @@ def service_proc(la_venv: str, e2e_env: dict, tmp_path: Path):
 class TestServiceE2E:
     """E2e: scheduler service with dummy provider (uv-based)."""
 
-    def test_full_flow(self, la_venv: str, e2e_env: dict, service_proc, tmp_path):
+    def test_full_flow(self, la_venv: str, e2e_env: dict[str, str], service_proc, tmp_path):
         try:
             poll_until(la_venv, e2e_env, "enabled", timeout=120)
 
-            # Search finds canary
             result = json.loads(sh(la_venv, "search", "dummycanarytoken", "--json", env=e2e_env))
             assert result["count"] > 0
 
-            # Embed + semantic search
             output = sh(la_venv, "embed", "--force", env=e2e_env)
             assert "embedded" in output
             result = json.loads(sh(la_venv, "search", "-s", "test query", "--json", env=e2e_env))
@@ -148,19 +201,17 @@ class TestBrewE2E:
         env["LLM_ARCHIVE_CONFIG"] = str(config_path)
         env["LLM_ARCHIVE_DB"] = str(db_path)
 
-        # dummy not in catalog
         data = get_status(la, env)
         ids = [s["id"] for s in data.get("sources", [])]
         assert "dummy" not in ids
 
-        # Write config + propagate env to service manager + start via brew services
         write_config(config_path, enabled=True)
+        install_brew_service_env(env)
 
         try:
             sh("brew", "services", "start", "llm-archive", env=env)
             time.sleep(2)
 
-            # debug: check service state
             if platform.system() == "Linux":
                 print(sh("systemctl", "--user", "status", "homebrew.llm-archive"))
                 print(sh("systemctl", "--user", "show", "--property=Environment", "homebrew.llm-archive"))
@@ -177,3 +228,4 @@ class TestBrewE2E:
         finally:
             with suppress(AssertionError):
                 sh("brew", "services", "stop", "llm-archive")
+            clear_brew_service_env(env)
