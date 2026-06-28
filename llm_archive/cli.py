@@ -165,6 +165,7 @@ class _StatusRow(NamedTuple):
     messages: str
     size: str
     next_sync: str
+    last_ms: int | None
     stale: bool
 
 
@@ -183,8 +184,16 @@ def _human_size(n: int) -> str:
 @main.command()
 @click.option("--db-path", default=None, help="Override database path")
 @click.option("--verbose", is_flag=True, help="Include setup checks and fix hints")
+@click.option(
+    "--sort",
+    "sort_mode",
+    default="name",
+    show_default=True,
+    type=click.Choice(["name", "updated"]),
+    help="Sort providers by name or last update",
+)
 @click.option("--json", "json_output", is_flag=True, help="Print JSON")
-def status(db_path: str | None, verbose: bool, json_output: bool):
+def status(db_path: str | None, verbose: bool, sort_mode: str, json_output: bool):
     """Show service, provider, auth, backup, and freshness state."""
     con = db.connect(Path(db_path) if db_path else db.DB_PATH)
     try:
@@ -247,10 +256,11 @@ def status(db_path: str | None, verbose: bool, json_output: bool):
         row = by_source.get(source_id, {})
         state = states.get(source_id, {})
         last = row.get("last_sync")
-        last_str = _relative_time(last) if last else "-"
+        last_ms = int(last) if isinstance(last, int) else None
+        last_str = _relative_time(last_ms) if last_ms is not None else "-"
         one_day_ms = 86_400 * 1000
-        last_old = last is not None and (int(time.time() * 1000) - last) >= one_day_ms
-        has_synced = bool(state.get("last_success_at")) or bool(last)
+        last_old = last_ms is not None and (int(time.time() * 1000) - last_ms) >= one_day_ms
+        has_synced = bool(state.get("last_success_at")) or last_ms is not None
         watch_seen_at = state.get("watch_seen_at")
         watch_age = (
             int(time.time() * 1000) - int(watch_seen_at)
@@ -279,7 +289,14 @@ def status(db_path: str | None, verbose: bool, json_output: bool):
             st = "sync"
         else:
             st = "ok"
-        rows.append(_StatusRow(source_id, st, last_str, thr, msg, size, next_str, last_old))
+        rows.append(
+            _StatusRow(source_id, st, last_str, thr, msg, size, next_str, last_ms, last_old)
+        )
+
+    if sort_mode == "updated":
+        rows.sort(key=lambda row: (row.last_ms is None, -(row.last_ms or 0), row.source_id))
+    else:
+        rows.sort(key=lambda row: row.source_id)
 
     w_src = max(max((len(r.source_id) for r in rows), default=0), len("SOURCE"), 6)
     w_st = max(max((len(r.state) for r in rows), default=0), len("STATE"), 5)

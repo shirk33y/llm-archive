@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from llm_archive import config as config_mod
 from llm_archive.config import (
     ensure_config,
     format_duration_ms,
@@ -81,6 +82,23 @@ def test_ensure_config_creates_default_disabled_providers(monkeypatch, tmp_path)
     assert config.ingestor("chatgpt").enabled is False
     assert config.ingestor("chatgpt").sync_interval_ms == 1_800_000
     assert config.ingestor("claudecode").watch is True
+
+
+def test_ensure_config_uses_provider_names_alphabetically(monkeypatch, tmp_path):
+    path = tmp_path / "config.toml"
+    monkeypatch.setattr(config_mod, "_detect_browser_dir", lambda: None)
+    monkeypatch.setattr(
+        config_mod, "PROVIDERS", {"zeta": object(), "alpha": object()}, raising=False
+    )
+
+    ensure_config(path)
+
+    sections = [
+        line.removeprefix("[ingestors.").removesuffix("]")
+        for line in path.read_text().splitlines()
+        if line.startswith("[ingestors.")
+    ]
+    assert sections == ["alpha", "zeta"]
 
 
 def test_load_config_embed_defaults(tmp_path):

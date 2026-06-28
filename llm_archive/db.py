@@ -440,6 +440,7 @@ def source_stats(con: sqlite3.Connection) -> list[dict]:
         LEFT JOIN threads t ON t.source_id = s.id
         LEFT JOIN messages m ON m.thread_id = t.id
         GROUP BY s.id
+        ORDER BY s.id
     """).fetchall()
     return [dict(r) for r in rows]
 

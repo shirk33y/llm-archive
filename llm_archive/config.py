@@ -9,12 +9,10 @@ from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
+from llm_archive.providers import PROVIDERS
+
 VALID_AUTH_MODES = {"cookies"}
 WEB_INGESTORS = {"chatgpt", "claude", "deepseek"}
-INGESTOR_ORDER = (
-    "chatgpt", "claude", "deepseek", "claudecode", "codex",
-    "cursor", "gemini", "opencode", "windsurf",
-)
 _DURATION_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)(ms|s|m|h|d)\s*$")
 
 
@@ -222,7 +220,7 @@ def _default_raw_config() -> dict[str, Any]:
         "export": {"auto": True},
         "ingestors": {
             source_id: _default_ingestor_table(source_id)
-            for source_id in INGESTOR_ORDER
+            for source_id in sorted(PROVIDERS)
         },
     }
 

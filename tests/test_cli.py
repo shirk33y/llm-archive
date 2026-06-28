@@ -72,6 +72,31 @@ class CountIngestor(FakeIngestor):
         )
 
 
+def _status_source_order(output: str, source_ids: set[str]) -> list[str]:
+    order = []
+    for line in output.splitlines():
+        fields = line.split()
+        if fields and fields[0] in source_ids:
+            order.append(fields[0])
+    return order
+
+
+def _write_status_sort_config(path: Path) -> None:
+    path.write_text(
+        "\n".join(
+            [
+                "[ingestors.opencode]",
+                "enabled = true",
+                "[ingestors.chatgpt]",
+                'mode = "cookies"',
+                "enabled = true",
+                "[ingestors.codex]",
+                "enabled = true",
+            ]
+        )
+    )
+
+
 @pytest.mark.asyncio
 async def test_sync_runs_init_on_first_sync(monkeypatch, tmp_path):
     ingestor = FakeIngestor()
@@ -889,6 +914,59 @@ def test_status_hides_dummy_and_keeps_stale_out_of_state(tmp_path, monkeypatch):
     data = json.loads(json_result.output)
     assert all(item["id"] != "dummy" for item in data["sources"])
     assert all(item["source_id"] != "dummy" for item in data["providers"])
+
+
+def test_status_sorts_by_name_by_default(tmp_path, monkeypatch):
+    db_path = tmp_path / "archive.db"
+    con = cli.db.connect(db_path)
+    now = cli.db.now_ms()
+    cli.db.set_last_sync(con, "opencode", now - 1_000)
+    cli.db.set_last_sync(con, "chatgpt", now - 100_000)
+    cli.db.set_last_sync(con, "codex", now - 10_000)
+    for source_id in ("opencode", "chatgpt", "codex"):
+        cli.db.ensure_provider_state(con, source_id, enabled=True)
+    con.close()
+
+    config_path = tmp_path / "config.toml"
+    _write_status_sort_config(config_path)
+    monkeypatch.setenv("LLM_ARCHIVE_CONFIG", str(config_path))
+
+    result = CliRunner().invoke(cli.main, ["status", "--db-path", str(db_path)])
+
+    assert result.exit_code == 0
+    assert _status_source_order(result.output, {"chatgpt", "codex", "opencode"}) == [
+        "chatgpt",
+        "codex",
+        "opencode",
+    ]
+
+
+def test_status_sorts_by_last_update_when_requested(tmp_path, monkeypatch):
+    db_path = tmp_path / "archive.db"
+    con = cli.db.connect(db_path)
+    now = cli.db.now_ms()
+    cli.db.set_last_sync(con, "opencode", now - 1_000)
+    cli.db.set_last_sync(con, "chatgpt", now - 100_000)
+    cli.db.set_last_sync(con, "codex", now - 10_000)
+    for source_id in ("opencode", "chatgpt", "codex"):
+        cli.db.ensure_provider_state(con, source_id, enabled=True)
+    con.close()
+
+    config_path = tmp_path / "config.toml"
+    _write_status_sort_config(config_path)
+    monkeypatch.setenv("LLM_ARCHIVE_CONFIG", str(config_path))
+
+    result = CliRunner().invoke(
+        cli.main,
+        ["status", "--sort", "updated", "--db-path", str(db_path)],
+    )
+
+    assert result.exit_code == 0
+    assert _status_source_order(result.output, {"chatgpt", "codex", "opencode"}) == [
+        "opencode",
+        "codex",
+        "chatgpt",
+    ]
 
 
 def test_status_shows_running_sync_state(tmp_path, monkeypatch):
