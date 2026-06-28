@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+from contextlib import suppress
 import json
 import os
+import platform
 import shutil
 import subprocess
 import time
 from pathlib import Path
 
 import pytest
-import platform
 
 
 def sh(*cmd: str, env: dict | None = None) -> str:
@@ -137,11 +138,15 @@ class TestServiceE2E:
 class TestBrewE2E:
     """E2e: brew-installed llm-archive with brew services (CI only)."""
 
-    def test_full_flow(self):
+    def test_full_flow(self, tmp_path: Path):
         la = shutil.which("llm-archive")
         assert la, "llm-archive not in PATH"
+        config_path = tmp_path / "config.toml"
+        db_path = tmp_path / "archive.db"
         env = os.environ.copy()
         env["LLM_ARCHIVE_ENABLE_TEST_SOURCES"] = "1"
+        env["LLM_ARCHIVE_CONFIG"] = str(config_path)
+        env["LLM_ARCHIVE_DB"] = str(db_path)
 
         # dummy not in catalog
         data = get_status(la, env)
@@ -149,27 +154,16 @@ class TestBrewE2E:
         assert "dummy" not in ids
 
         # Write config + propagate env to service manager + start via brew services
-        write_config(Path.home() / ".config" / "llm-archive" / "config.toml", enabled=True)
+        write_config(config_path, enabled=True)
 
         try:
-            if platform.system() == "Linux":
-                sh("systemctl", "--user", "set-environment", "LLM_ARCHIVE_ENABLE_TEST_SOURCES=1")
-            elif platform.system() == "Darwin":
-                sh("launchctl", "setenv", "LLM_ARCHIVE_ENABLE_TEST_SOURCES", "1")
-            sh("brew", "services", "start", "llm-archive")
+            sh("brew", "services", "start", "llm-archive", env=env)
             time.sleep(2)
 
             # debug: check service state
             if platform.system() == "Linux":
-                subprocess.run(
-                    ["systemctl", "--user", "status", "homebrew.llm-archive"],
-                    capture_output=False,
-                )
-                subprocess.run(
-                    ["systemctl", "--user", "show", "--property=Environment",
-                     "homebrew.llm-archive"],
-                    capture_output=False,
-                )
+                print(sh("systemctl", "--user", "status", "homebrew.llm-archive"))
+                print(sh("systemctl", "--user", "show", "--property=Environment", "homebrew.llm-archive"))
 
             poll_until(la, env, "enabled", timeout=30)
 
@@ -181,7 +175,5 @@ class TestBrewE2E:
             result = json.loads(sh(la, "search", "-s", "test query", "--json", env=env))
             assert result["count"] > 0
         finally:
-            subprocess.run(
-                ["brew", "services", "stop", "llm-archive"],
-                capture_output=True,
-            )
+            with suppress(AssertionError):
+                sh("brew", "services", "stop", "llm-archive")

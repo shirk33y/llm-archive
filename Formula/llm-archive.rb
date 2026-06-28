@@ -20,7 +20,13 @@ class LlmArchive < Formula
   end
 
   service do
+    service_env = {}
+    %w[LLM_ARCHIVE_CONFIG LLM_ARCHIVE_DB LLM_ARCHIVE_ENABLE_TEST_SOURCES].each do |key|
+      service_env[key.to_sym] = ENV[key] if ENV[key]
+    end
+
     run [opt_bin/"llm-archive", "service"]
+    environment_variables service_env if service_env.any?
     keep_alive true
     log_path var/"log/llm-archive.log"
     error_log_path var/"log/llm-archive.log"
