@@ -158,6 +158,19 @@ class TestBrewE2E:
                 sh("launchctl", "setenv", "LLM_ARCHIVE_ENABLE_TEST_SOURCES", "1")
             sh("brew", "services", "start", "llm-archive")
             time.sleep(2)
+
+            # debug: check service state
+            if platform.system() == "Linux":
+                subprocess.run(
+                    ["systemctl", "--user", "status", "homebrew.llm-archive"],
+                    capture_output=False,
+                )
+                subprocess.run(
+                    ["systemctl", "--user", "show", "--property=Environment",
+                     "homebrew.llm-archive"],
+                    capture_output=False,
+                )
+
             poll_until(la, env, "enabled", timeout=30)
 
             result = json.loads(sh(la, "search", "dummycanarytoken", "--json", env=env))
