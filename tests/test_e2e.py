@@ -153,7 +153,7 @@ class TestBrewE2E:
 
         try:
             if platform.system() == "Linux":
-                sh("systemctl", "--user", "import-environment", "LLM_ARCHIVE_ENABLE_TEST_SOURCES")
+                sh("systemctl", "--user", "set-environment", "LLM_ARCHIVE_ENABLE_TEST_SOURCES=1")
             elif platform.system() == "Darwin":
                 sh("launchctl", "setenv", "LLM_ARCHIVE_ENABLE_TEST_SOURCES", "1")
             sh("brew", "services", "start", "llm-archive")
