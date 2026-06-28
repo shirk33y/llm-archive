@@ -8,7 +8,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 
-from llm_archive import db
+from llm_archive import db, export
 from llm_archive.config import load_config
 from llm_archive.ingestors import INGESTORS, get_ingestor
 from llm_archive.jobs import run_sync_job
@@ -166,12 +166,28 @@ def _source_thread_count(con, source: str) -> int:
     return row[0] if row else 0
 
 
-async def _do_ingest(con, ingestor, since: int | None, force: bool = False):
+async def _do_ingest(
+    con, ingestor, since: int | None, force: bool = False, config=None,
+):
+    def _try_export(thread_id: str, source_id: str) -> None:
+        try:
+            export.write_thread(con, thread_id, source_id, config=config, force=True)
+        except Exception:
+            logger.debug("export write failed for %s", thread_id, exc_info=True)
+
     written = 0
     updated = 0
     errors = 0
     total = None
     _total_processed = 0
+
+    do_export = True
+    if config is None:
+        try:
+            config = load_config()
+        except Exception:
+            do_export = False
+    do_export = do_export and config is not None and config.export.auto
 
     existing_threads = {}
     if not force:
@@ -240,6 +256,8 @@ async def _do_ingest(con, ingestor, since: int | None, force: bool = False):
                             updated += 1
                         else:
                             written += 1
+                        if do_export:
+                            _try_export(thread.id, ingestor.source_id)
                     progress.update(task, advance=1, description=_desc())
                     return saved
                 kwargs["store_thread"] = _store_thread
@@ -281,6 +299,8 @@ async def _do_ingest(con, ingestor, since: int | None, force: bool = False):
                                 updated += 1
                             else:
                                 written += 1
+                            if do_export:
+                                _try_export(thread.id, ingestor.source_id)
                         progress.update(
                             task,
                             advance=1,
@@ -292,6 +312,8 @@ async def _do_ingest(con, ingestor, since: int | None, force: bool = False):
                     saved = db.save_thread(con, thread, force=force)
                     if saved:
                         written += 1
+                        if do_export:
+                            _try_export(thread.id, ingestor.source_id)
                     progress.update(
                         task,
                         advance=1,

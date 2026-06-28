@@ -140,6 +140,39 @@ def test_load_config_summarize_custom(tmp_path):
     assert config.summarize.min_new_messages == 5
 
 
+def test_export_config_defaults_when_absent(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text("[ingestors.chatgpt]\nmode = \"cookies\"\n")
+
+    config = load_config(path)
+    assert config.export.auto is True
+    assert config.export.dir is None
+
+
+def test_export_config_auto_disabled(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text("[export]\nauto = false\n")
+
+    config = load_config(path)
+    assert config.export.auto is False
+
+
+def test_export_config_custom_dir(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text("[export]\ndir = \"/custom/path\"\n")
+
+    config = load_config(path)
+    assert config.export.dir == "/custom/path"
+
+
+def test_ensure_config_includes_export_section(tmp_path, monkeypatch):
+    path = tmp_path / "config.toml"
+    ensure_config(path)
+    text = path.read_text()
+    assert "[export]" in text
+    assert "auto = true" in text
+
+
 def test_load_config_dev_defaults(tmp_path):
     path = tmp_path / "config.toml"
     path.write_text('[ingestors.chatgpt]\nmode = "cookies"\n')

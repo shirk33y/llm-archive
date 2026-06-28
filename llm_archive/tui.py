@@ -389,6 +389,29 @@ class ShowScreen(Screen):
         except Exception:
             width = 80
 
+        from llm_archive import glow
+
+        if glow.is_available():
+            from llm_archive import export
+            from llm_archive.config import load_config
+
+            t = self.thread_data["thread"]
+            thread_id = t.get("id", "")
+            source_id = t.get("source_id", "unknown")
+            config = load_config()
+
+            try:
+                md_path = export.thread_md_path(source_id, thread_id, config)
+                if not md_path.exists() or md_path.stat().st_mtime * 1000 < t.get("updated_at", 0):
+                    export.write_thread(self.con, thread_id, source_id, config, force=True)
+                if md_path.exists():
+                    with self.app.suspend():
+                        rc = glow.view(md_path, width=width)
+                    if rc == 0:
+                        return
+            except Exception:
+                pass
+
         content = self._render_content(width)
         fd, path = tempfile.mkstemp(suffix=".md", prefix="llm-archive-")
         try:

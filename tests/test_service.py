@@ -639,3 +639,83 @@ def test_dev_reload_observer_dead_still_reloads(con):
 
     assert result is True
     dev_mode.reload.assert_called_once()
+
+
+# ── Export integration tests ─────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_run_sync_job_triggers_export(tmp_path, monkeypatch):
+    from llm_archive.jobs import run_sync_job
+    from llm_archive.sync import _do_ingest
+    from llm_archive.ingestors.dummy import DummyIngestor
+    from llm_archive.export import thread_md_path
+
+    monkeypatch.setenv("LLM_ARCHIVE_DUMMY_MARKER", "export-test")
+    monkeypatch.setenv("LLM_ARCHIVE_ENABLE_TEST_SOURCES", "1")
+    db_path = tmp_path / "archive.db"
+    con = db.connect(db_path)
+
+    config = AppConfig(
+        ingestors={
+            "dummy": IngestorConfig(
+                mode="cookies",
+                enabled=True,
+                sync_interval_ms=60_000,
+                min_sync_interval_ms=30_000,
+            )
+        }
+    )
+    config.export.dir = str(tmp_path / "exports")
+    config.export.auto = True
+
+    ingestor = DummyIngestor()
+
+    async def runner(src: str, force: bool) -> bool:
+        return await _do_ingest(con, ingestor, since=None, force=force, config=config)
+
+    result = await run_sync_job("dummy", config=config, runner=runner, db_path=db_path)
+    assert result.status == "success"
+
+    md_path = thread_md_path("dummy", "dummy:e2e-canary", config)
+    assert md_path.exists()
+    content = md_path.read_text()
+    assert "<!-- thread:dummy:e2e-canary source:dummy -->" in content
+    assert "export-test" in content
+
+
+@pytest.mark.asyncio
+async def test_run_sync_job_skips_export_when_disabled(tmp_path, monkeypatch):
+    from llm_archive.jobs import run_sync_job
+    from llm_archive.sync import _do_ingest
+    from llm_archive.ingestors.dummy import DummyIngestor
+    from llm_archive.export import thread_md_path
+
+    monkeypatch.setenv("LLM_ARCHIVE_DUMMY_MARKER", "v1")
+    monkeypatch.setenv("LLM_ARCHIVE_ENABLE_TEST_SOURCES", "1")
+    db_path = tmp_path / "archive.db"
+    con = db.connect(db_path)
+
+    config = AppConfig(
+        ingestors={
+            "dummy": IngestorConfig(
+                mode="cookies",
+                enabled=True,
+                sync_interval_ms=60_000,
+                min_sync_interval_ms=30_000,
+            )
+        }
+    )
+    config.export.dir = str(tmp_path / "exports")
+    config.export.auto = False
+
+    ingestor = DummyIngestor()
+
+    async def runner(src: str, force: bool) -> bool:
+        return await _do_ingest(con, ingestor, since=None, force=force, config=config)
+
+    result = await run_sync_job("dummy", config=config, runner=runner, db_path=db_path)
+    assert result.status == "success"
+
+    md_path = thread_md_path("dummy", "dummy:e2e-canary", config)
+    assert not md_path.exists()

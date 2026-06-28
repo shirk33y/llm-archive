@@ -52,6 +52,11 @@ class EmbedConfig(BaseModel):
     model: str = "BAAI/bge-small-en-v1.5"
 
 
+class ExportConfig(BaseModel):
+    auto: bool = True
+    dir: str | None = None
+
+
 class SummarizeConfig(BaseModel):
     auto: bool = False
     model: str = "ollama/qwen2.5:7b"
@@ -71,6 +76,7 @@ class AppConfig(BaseModel):
     browser_dir: str | None = None
     embed: EmbedConfig = Field(default_factory=EmbedConfig)
     summarize: SummarizeConfig = Field(default_factory=SummarizeConfig)
+    export: ExportConfig = Field(default_factory=ExportConfig)
     dev: DevConfig = Field(default_factory=DevConfig)
     ingestors: dict[str, IngestorConfig] = Field(default_factory=dict)
 
@@ -158,6 +164,8 @@ def _raw_to_model(data: dict[str, Any]) -> AppConfig:
         model_data["embed"] = data["embed"]
     if "summarize" in data:
         model_data["summarize"] = data["summarize"]
+    if "export" in data:
+        model_data["export"] = data["export"]
     if "dev" in data:
         model_data["dev"] = data["dev"]
     if ingestors:
@@ -211,6 +219,7 @@ def _default_raw_config() -> dict[str, Any]:
     return {
         "embed": {"auto": True, "provider": "fastembed", "model": "BAAI/bge-small-en-v1.5"},
         "summarize": {"auto": False, "model": "ollama/qwen2.5:7b", "min_new_messages": 3},
+        "export": {"auto": True},
         "ingestors": {
             source_id: _default_ingestor_table(source_id)
             for source_id in INGESTOR_ORDER
@@ -273,7 +282,7 @@ def _toml(data: dict[str, Any]) -> str:
         lines.append(f"{key} = {_toml_value(value)}")
     if lines:
         lines.append("")
-    for section in ("embed", "summarize", "dev"):
+    for section in ("embed", "summarize", "export", "dev"):
         if section in data and isinstance(data[section], dict):
             lines.append(f"[{section}]")
             for key, value in data[section].items():

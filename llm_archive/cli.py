@@ -40,9 +40,10 @@ progress_console = Console()
 _COMMAND_ORDER = [
     "search", "show", "tui", "status", "stats",
     "sync", "embed", "sum",
+    "export", "backup",
     "enable", "disable", "config", "resume",
     "start", "stop", "restart", "logs",
-    "service", "mcp", "backup",
+    "service", "mcp",
 ]
 
 
@@ -1195,9 +1196,26 @@ def backup(verify: bool, json_output: bool):
     console.print(f"backup ok: {target}")
 
 
+@main.command()
+@click.option("--source", type=click.Choice(list(INGESTORS)), default=None, help="Source to export (all sources if omitted)")
+@click.option("--force", is_flag=True, help="Re-export even if md file is fresh")
+@click.option("--db-path", default=None, help="Override database path")
+def export(source: str | None, force: bool, db_path: str | None):
+    """Export threads to markdown files."""
+    from llm_archive.export import backfill
+
+    con = db.connect(Path(db_path) if db_path else db.DB_PATH)
+    try:
+        config = load_config()
+        count = backfill(con, source, config, force=force)
+        console.print(f"exported {count} threads")
+    finally:
+        con.close()
+
+
 @main.group()
 def config():
-    """View/edit/validate config."""
+    pass
 
 
 @config.command("show")

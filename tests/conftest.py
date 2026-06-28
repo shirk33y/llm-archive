@@ -43,6 +43,16 @@ def isolate_archive_paths(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.setattr(db, "DB_PATH", db_path)
 
 
+@pytest.fixture
+def con() -> Iterator[sqlite3.Connection]:
+    con = db.connect()
+    yield con
+    try:
+        con.close()
+    except sqlite3.ProgrammingError:
+        pass
+
+
 @pytest.fixture(autouse=True)
 def close_sqlite_connections(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     real_connect = sqlite3.connect
