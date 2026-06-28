@@ -41,6 +41,8 @@ jobs:
 
       - name: Install via brew
         run: |
+          git config --global user.email "ci@github.com"
+          git config --global user.name "CI"
           brew tap-new shirk33y/local
           ln -sf $PWD/Formula/llm-archive.rb "$(brew --repository shirk33y/local)/Formula/"
           brew install --HEAD shirk33y/local/llm-archive
