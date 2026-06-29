@@ -33,7 +33,11 @@ def _get_embedder(model: str = DEFAULT_MODEL):
     if key not in _cache:
         from fastembed import TextEmbedding
 
-        _cache[key] = TextEmbedding(model)
+        try:
+            _cache[key] = TextEmbedding(model)
+        except Exception:
+            logger.warning("model %r load failed, retrying", model, exc_info=True)
+            _cache[key] = TextEmbedding(model)
     return _cache[key]
 
 

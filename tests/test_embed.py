@@ -267,6 +267,67 @@ def test_threads_needing_embedding_force_with_source(con):
     assert result == ["a:t1"]
 
 
+def test_get_embedder_retries_on_missing_model(monkeypatch):
+    """Stale fastembed cache (dir present, .onnx missing) raises NoSuchFile
+    from onnxruntime. _get_embedder must retry the load (forces re-download)
+    instead of crashing on the first attempt."""
+    from llm_archive import embed
+
+    embed._cache.clear()
+    calls = []
+
+    class _FakeEmbedder:
+        def __init__(self, model):
+            calls.append(model)
+            if len(calls) == 1:
+                raise RuntimeError(
+                    "NoSuchFile: [ONNXRuntimeError] : 3 : NO_SUCHFILE : "
+                    "model_optimized.onnx failed. File doesn't exist"
+                )
+
+        def embed(self, texts):
+            class _Vec:
+                def __init__(self, n):
+                    self._v = [0.0] * n
+
+                def tolist(self):
+                    return self._v
+
+            return [_Vec(384) for _ in texts]
+
+    monkeypatch.setattr("fastembed.TextEmbedding", _FakeEmbedder)
+    try:
+        result = embed.embed_text("test query")
+        assert len(result) == 384
+        assert len(calls) == 2, "should retry once after first load failure"
+    finally:
+        embed._cache.clear()
+
+
+def test_get_embedder_raises_after_persistent_failure(monkeypatch):
+    """If the model file stays missing across retries, embed_text should raise
+    a clear error rather than silently returning garbage."""
+    from llm_archive import embed
+
+    embed._cache.clear()
+    calls = []
+
+    class _AlwaysMissing:
+        def __init__(self, model):
+            calls.append(model)
+            raise RuntimeError(
+                "NoSuchFile: model_optimized.onnx failed. File doesn't exist"
+            )
+
+    monkeypatch.setattr("fastembed.TextEmbedding", _AlwaysMissing)
+    try:
+        with pytest.raises(RuntimeError, match="NoSuchFile"):
+            embed.embed_text("test query")
+        assert len(calls) == 2, "should have retried once before giving up"
+    finally:
+        embed._cache.clear()
+
+
 def test_embed_batch_empty():
     assert embed_batch([]) == []
 
