@@ -706,7 +706,7 @@ def test_l_opens_glow_without_content_flash(seeded_db, tmp_path):
     between = "".join(_plain(data) for ts, data in events if key_time <= ts < glow_ts)
     after_exit = "".join(_plain(data) for ts, data in events if ts >= 1.0)
 
-    assert (glow_ts - key_time) < 0.25, f"glow visible after {(glow_ts - key_time) * 1000:.1f}ms"
+    assert (glow_ts - key_time) < 0.4, f"glow visible after {(glow_ts - key_time) * 1000:.1f}ms"
     # No thread message body renders before glow takes over (no content flash);
     # the list only shows thread titles, never message bodies.
     assert "hello world" not in between

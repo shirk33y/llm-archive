@@ -2,7 +2,8 @@
 #
 # Release script for llm-archive.
 #
-# Pre-flight: ruff check + pytest + service smoke
+# Pre-flight: ruff check + pytest + service smoke + embed smoke
+# Post-formula: brew install + brew test + service heartbeat e2e
 # Version: auto-detect from conventional commits since last tag
 # Bump: pyproject.toml → commit → tag → push
 # Brew: update Formula/llm-archive.rb
@@ -38,6 +39,45 @@ run() {
   fi
 }
 
+# Start `llm service` and verify heartbeat within 3s.
+# Args: $1 llm-archive command (e.g. "uv run llm-archive" or "llm-archive")
+#       $2 label for info/error messages
+#       $3 temp-file prefix
+# Sets: _SMOKE_HOME (temp HOME dir, for follow-up embed smoke in preflight)
+_check_heartbeat() {
+  local llm="$1" label="$2" pfx="$3"
+  _SMOKE_HOME=$(mktemp -d "/tmp/${pfx}-home.XXXXXX")
+  mkdir -p "$_SMOKE_HOME/.config/llm-archive"
+  printf '[ingestors.dummy]\nenabled = false\nsync_interval = "1s"\nmin_sync_interval = "1s"\nwatch = false\n' \
+    > "$_SMOKE_HOME/.config/llm-archive/config.toml"
+
+  local saved="$HOME"
+  export HOME="$_SMOKE_HOME"
+
+  $llm service > "/tmp/${pfx}-svc.log" 2>&1 &
+  local pid=$!
+  sleep 3
+  if ! kill -0 "$pid" 2>/dev/null; then
+    cat "/tmp/${pfx}-svc.log"
+    export HOME="$saved"
+    err "${label} failed to start"
+  fi
+  $llm status --json > "/tmp/${pfx}-status.json" 2>/dev/null || true
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+
+  local hb
+  hb=$(python3 -c "
+import json
+with open('/tmp/${pfx}-status.json') as f:
+    d = json.load(f)
+print('ok' if (d.get('service') or {}).get('heartbeat_at') else '')
+")
+  export HOME="$saved"
+  [ -n "$hb" ] || { cat "/tmp/${pfx}-svc.log"; err "${label} missing heartbeat"; }
+  info "${label} passed"
+}
+
 # ── 0. Pre-flight checks ──────────────────────────────────────────────────
 preflight() {
   echo "Running pre-flight checks..."
@@ -52,44 +92,14 @@ preflight() {
     || err "pytest failed"
   info "unit tests passed"
 
-  # Quick service smoke: does it start and heartbeat?
-  echo "Starting service smoke..."
-  TMPCFG=$(mktemp /tmp/llm-archive-release-config.XXXXXX)
-  printf '[ingestors.dummy]\nenabled = false\nsync_interval = "1s"\nmin_sync_interval = "1s"\nwatch = false\n' > "$TMPCFG"
-  mkdir -p /tmp/llm-archive-release-home
-  _SAVED_HOME="$HOME"
-  export HOME=/tmp/llm-archive-release-home
-  mkdir -p "$HOME/.config/llm-archive"
-  cp "$TMPCFG" "$HOME/.config/llm-archive/config.toml"
-  rm -f "$TMPCFG"
+  # Service smoke: does it start and heartbeat?
+  _check_heartbeat "uv run llm-archive" "service smoke" "llm-archive-release"
 
-  uv run llm-archive service > /tmp/llm-archive-release-svc.log 2>&1 &
-  SVC_PID=$!
-  sleep 3
-  if ! kill -0 "$SVC_PID" 2>/dev/null; then
-    cat /tmp/llm-archive-release-svc.log
-    err "service failed to start"
-  fi
-  uv run llm-archive status --json > /tmp/llm-archive-release-status.json 2>/dev/null || true
-  kill "$SVC_PID" 2>/dev/null || true
-  wait "$SVC_PID" 2>/dev/null || true
-
-  HB=$(python3 -c "
-import json
-with open('/tmp/llm-archive-release-status.json') as f:
-    d = json.load(f)
-hb = (d.get('service') or {}).get('heartbeat_at') or 0
-print('ok' if hb else '')
-")
-  [ -n "$HB" ] || err "service status missing heartbeat"
-  HOME="$_SAVED_HOME"
-  info "service smoke passed"
-
-  # Embed + semantic search smoke
+  # Embed + semantic search smoke (uses the DB the service just created)
   echo "Testing embed + semantic search..."
-  EMBED_OUT=$(uv run llm-archive embed --force --db-path /tmp/llm-archive-release-home/.config/llm-archive/archive.db 2>&1) || true
+  EMBED_OUT=$(uv run llm-archive embed --force --db-path "$_SMOKE_HOME/.config/llm-archive/archive.db" 2>&1) || true
   echo "$EMBED_OUT" | grep -qi "embedded\|already" || { echo "$EMBED_OUT"; err "embed smoke failed"; }
-  SEM_OUT=$(uv run llm-archive search -s "test" --json --db-path /tmp/llm-archive-release-home/.config/llm-archive/archive.db 2>&1) || true
+  SEM_OUT=$(uv run llm-archive search -s "test" --json --db-path "$_SMOKE_HOME/.config/llm-archive/archive.db" 2>&1) || true
   echo "$SEM_OUT" | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); assert d.get('count',0)>=0, d; print(f'semantic: {d[\"count\"]} results')" || err "semantic search smoke failed"
   info "embed + semantic search passed"
 }
@@ -185,10 +195,10 @@ push_formula() {
   run git push origin main
 }
 
-# ── 7. Verify brew install ────────────────────────────────────────────
+# ── 7. Verify brew install + service ────────────────────────────────────
 verify_brew() {
   echo ""
-  echo "Verifying brew install..."
+  echo "Verifying brew install + service..."
 
   # Re-tap to pick up new formula
   run brew untap shirk33y/llm-archive --force 2>/dev/null || true
@@ -196,7 +206,10 @@ verify_brew() {
   run brew trust --formula shirk33y/llm-archive/llm-archive
   run brew install llm-archive || err "brew install failed"
   run brew test llm-archive || err "brew test failed"
-  info "brew install verified"
+
+  # Service e2e: verify brew-installed daemon starts and heartbeats
+  _check_heartbeat "llm-archive" "brew service" "llm-archive-brew"
+  info "brew install + service verified"
 }
 
 # ── Main ──────────────────────────────────────────────────────────────────
