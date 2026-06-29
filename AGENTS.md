@@ -65,6 +65,10 @@ ORDER BY j.started_at DESC
 LIMIT 20;
 ```
 
+## Self improvement
+
+Whenever you run some interesting stats query, consider extending "stats" command output.
+
 ## Commits
 
 `type(scope): description` — lowercase, imperative, no trailing period. Scope optional.
