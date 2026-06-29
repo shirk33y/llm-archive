@@ -272,6 +272,60 @@ class TestTUIStartup:
             elapsed = time.perf_counter() - t0
             assert elapsed < 2.0 * tol, f"open thread {elapsed:.3f}s"
 
+    def test_cli_startup_e2e(self, perf_con, tol):
+        """Full CLI startup: interpreter + imports + DB connect + list render."""
+        import os
+        import select
+        import shutil
+        from tests._pty import spawn_pty
+
+        rng = random.Random(42)
+        now = int(time.time() * 1000)
+        for i in range(20):
+            _seed_thread(
+                perf_con, f"perf:e2e{i}", "perf", 3, 0.5,
+                {"text": 1}, {"text": (20, 100)}, rng, now - i * 1000,
+            )
+        perf_con.commit()
+        db_file = perf_con.execute("PRAGMA database_list").fetchone()[2]
+        perf_con.close()
+
+        bin_path = shutil.which("llm-archive")
+        assert bin_path, "llm-archive not on PATH"
+
+        env = os.environ.copy()
+        env["LLM_ARCHIVE_DB"] = db_file
+        env["TERM"] = "xterm-256color"
+        env.pop("LLM_ARCHIVE_CONFIG", None)
+
+        proc, master = spawn_pty([bin_path, "tui"], env=env, width=100, height=30)
+        t0 = time.perf_counter()
+
+        buf = b""
+        deadline = t0 + 10
+        rendered = False
+        while time.perf_counter() < deadline:
+            r, _, _ = select.select([master], [], [], 0.02)
+            if r:
+                try:
+                    chunk = os.read(master, 65536)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                buf += chunk
+                if buf.count(b"\xe2\x96\xb6") >= 3:
+                    rendered = True
+                    break
+
+        elapsed = time.perf_counter() - t0
+        proc.kill()
+        proc.wait(timeout=3)
+        os.close(master)
+
+        assert rendered, f"list not rendered in {elapsed:.1f}s ({len(buf)}b output)"
+        assert elapsed < 3.0 * tol, f"CLI startup {elapsed:.3f}s"
+
 
 # ─── Full pipeline ─────────────────────────────────────────────────────────────
 
