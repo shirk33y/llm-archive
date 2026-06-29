@@ -12,9 +12,9 @@ from __future__ import annotations
 import json
 import os
 import pty
+import re
 import select
 import struct
-import sys
 import time
 from pathlib import Path
 
@@ -24,14 +24,13 @@ from llm_archive import db
 from llm_archive.tui import (
     ArchiveApp,
     ListScreen,
-    ShowScreen,
     ThreadRow,
     MessageRow,
     _source_color,
     _SOURCE_COLORS,
     _SOURCE_PALETTE,
-    _SUMMARY_SIZES,
     _truncate,
+    _render_thread_content,
 )
 
 
@@ -257,14 +256,15 @@ class TestAppStartup:
             assert "storage full" in str(status.render())
             assert "chatgpt" in str(status.render())
 
-    async def test_multi_source_navigation_and_open(self, multi_app):
+    async def test_multi_source_navigation_and_open(self, multi_app, monkeypatch):
+        monkeypatch.setattr("llm_archive.tui._open_thread_pager", lambda *a, **k: None)
         async with multi_app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("j")
             await pilot.pause()
             await pilot.press("l")
             await pilot.pause()
-            assert isinstance(multi_app.screen, ShowScreen)
+            assert isinstance(multi_app.screen, ListScreen)
 
 
 class TestNavigation:
@@ -354,55 +354,40 @@ class TestSearch:
 
 
 class TestThreadView:
-    """Opening a thread shows ShowScreen."""
+    """l opens a thread via the pager; enter resumes the selected session."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_pager(self, monkeypatch):
+        monkeypatch.setattr("llm_archive.tui._open_thread_pager", lambda *a, **k: None)
 
     async def test_open_thread_title_mode(self, app):
-        """l opens thread in title filter mode (default)."""
+        """l opens thread in title filter mode (default), stays on the list."""
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("l")
             await pilot.pause()
-            assert isinstance(app.screen, ShowScreen)
+            assert isinstance(app.screen, ListScreen)
 
     async def test_open_thread_with_l(self, app):
-        """l opens thread in deep mode."""
+        """l opens thread in deep mode too."""
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.press("tab")
             await pilot.pause()
             await pilot.press("l")
-            await pilot.pause()
-            assert isinstance(app.screen, ShowScreen)
-
-    async def test_open_thread_with_enter(self, app):
-        """Enter handled natively by ListView, fires on_list_view_selected."""
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            await pilot.press("enter")
-            await pilot.pause()
-            assert isinstance(app.screen, ShowScreen)
-
-    async def test_back_from_thread_returns_to_list(self, app):
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            await pilot.press("tab")
-            await pilot.pause()
-            await pilot.press("enter")
-            await pilot.pause()
-            assert isinstance(app.screen, ShowScreen)
-            await pilot.press("escape")
             await pilot.pause()
             assert isinstance(app.screen, ListScreen)
 
 
-class TestShowScreenContent:
-    """ShowScreen renders content safely — markup chars, role labels, markdown."""
+class TestRenderContent:
+    """_render_thread_content renders safely — markup chars, role labels, markdown."""
 
-    @pytest.fixture(autouse=True)
-    def _mock_pager(self, monkeypatch):
-        monkeypatch.setattr(ShowScreen, "_open_pager", lambda self: None)
+    @staticmethod
+    def _thread(con):
+        from llm_archive import db
+        return db.get_thread(con, "test:t1")
 
-    async def test_brackets_in_content(self, con):
+    def test_brackets_in_content(self, con):
         """Rich markup chars like [array] must not crash rendering."""
         _seed_db(con, n_threads=1)
         con.execute(
@@ -410,15 +395,11 @@ class TestShowScreenContent:
             ("--remote-allow-origins='*' > /tmp/windsurf-cdp.log 2>&1 &\"'],\n",),
         )
         con.commit()
-        app = ArchiveApp(db_path=Path(con.execute("PRAGMA database_list").fetchone()[2]))
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            await pilot.press("l")
-            await pilot.pause()
-            assert isinstance(app.screen, ShowScreen)
-            assert not app._exception
+        output = _render_thread_content(self._thread(con), con, width=80)
+        assert "Thread 1" in output
+        assert "remote-allow-origins" in output
 
-    async def test_title_with_markup_chars(self, con):
+    def test_title_with_markup_chars(self, con):
         """Title containing [brackets] must not crash."""
         _seed_db(con, n_threads=1)
         con.execute(
@@ -426,34 +407,22 @@ class TestShowScreenContent:
             ("[bold]evil[/bold] title with [1, 2, 3]",),
         )
         con.commit()
-        app = ArchiveApp(db_path=Path(con.execute("PRAGMA database_list").fetchone()[2]))
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            await pilot.press("l")
-            await pilot.pause()
-            assert isinstance(app.screen, ShowScreen)
-            assert not app._exception
+        output = _render_thread_content(self._thread(con), con, width=80)
+        assert "evil" in output
 
-    async def test_render_includes_messages(self, app):
-        """_render_content produces text with message content."""
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            await pilot.press("l")
-            await pilot.pause()
-            output = app.screen._render_content(width=80)
-            assert "hello world" in output
-            assert "reply" in output
+    def test_render_includes_messages(self, con):
+        _seed_db(con)
+        output = _render_thread_content(self._thread(con), con, width=80)
+        assert "hello world" in output
+        assert "reply" in output
 
-    async def test_render_includes_role_labels(self, app):
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            await pilot.press("l")
-            await pilot.pause()
-            output = app.screen._render_content(width=80)
-            assert "user" in output
-            assert "assistant" in output
+    def test_render_includes_role_labels(self, con):
+        _seed_db(con)
+        output = _render_thread_content(self._thread(con), con, width=80)
+        assert "user" in output
+        assert "assistant" in output
 
-    async def test_render_has_no_cap(self, con):
+    def test_render_has_no_cap(self, con):
         """All messages appear in render — no cap."""
         _seed_db(con, n_threads=1)
         import time
@@ -471,18 +440,12 @@ class TestShowScreenContent:
                 (mid, 0, "text", f"message body {i}", 1, 1),
             )
         con.commit()
-        app = ArchiveApp(db_path=Path(con.execute("PRAGMA database_list").fetchone()[2]))
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            await pilot.press("l")
-            await pilot.pause()
-            output = app.screen._render_content(width=80)
-            assert "message body 2" in output
-            assert "message body 601" in output
-            assert not app._exception
+        output = _render_thread_content(self._thread(con), con, width=80)
+        assert "message body 2" in output
+        assert "message body 601" in output
 
-    async def test_filters_non_text_parts(self, con):
-        """Tool calls, reasoning, etc. are hidden by default."""
+    def test_filters_non_text_parts(self, con):
+        """Tool calls, reasoning, etc. are hidden by default (non-verbose)."""
         _seed_db(con, n_threads=1)
         import time
         now = int(time.time() * 1000)
@@ -504,218 +467,29 @@ class TestShowScreenContent:
                 (mid, 0, kind, text, 1, 1, "bash" if "tool" in kind else ""),
             )
         con.commit()
-        app = ArchiveApp(db_path=Path(con.execute("PRAGMA database_list").fetchone()[2]))
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            await pilot.press("l")
-            await pilot.pause()
-            output = app.screen._render_content(width=80)
-            assert "hello world" in output
-            assert "cat /etc/passwd" not in output
-            assert "root:x:0:0" not in output
-            assert "I should check" not in output
+        output = _render_thread_content(self._thread(con), con, width=80)
+        assert "hello world" in output
+        assert "cat /etc/passwd" not in output
+        assert "root:x:0:0" not in output
+        assert "I should check" not in output
 
-    async def test_verbose_shows_tool_parts(self, con):
-        """Verbose mode shows tool calls and results."""
-        _seed_db(con, n_threads=1)
-        import time
-        now = int(time.time() * 1000)
-        mid = "test:tc1"
-        con.execute(
-            "INSERT INTO messages(id, thread_id, role, content, content_clean, created_at) "
-            "VALUES (?,?,?,?,?,?)",
-            (mid, "test:t1", "assistant", "ls", "ls", now),
-        )
-        con.execute(
-            "INSERT INTO message_parts(message_id, ord, kind, text, visible, searchable, tool_name) "
-            "VALUES (?,?,?,?,?,?,?)",
-            (mid, 0, "tool_call", "ls -la", 1, 1, "bash"),
-        )
-        con.commit()
-        app = ArchiveApp(db_path=Path(con.execute("PRAGMA database_list").fetchone()[2]))
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            await pilot.press("l")
-            await pilot.pause()
-            screen = app.screen
-            clean = screen._render_content(width=80)
-            assert "ls -la" not in clean
-            screen._verbose = True
-            verbose = screen._render_content(width=80)
-            assert "ls -la" in verbose
-            assert "bash" in verbose
-
-    async def test_role_header_grouped(self, con):
+    def test_role_header_grouped(self, con):
         """Consecutive same-role messages share one header."""
         _seed_db(con, n_threads=1)
-        app = ArchiveApp(db_path=Path(con.execute("PRAGMA database_list").fetchone()[2]))
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            await pilot.press("l")
-            await pilot.pause()
-            output = app.screen._render_content(width=80)
-            assert output.count("assistant") == 1
-            assert output.count("user") == 1
-            assert "─" * 4 in output
+        output = _render_thread_content(self._thread(con), con, width=80)
+        assert output.count("assistant") == 1
+        assert output.count("user") == 1
+        assert "─" * 4 in output
 
 
-class TestShowScreenBack:
-    """q closes thread view, returns to list — does NOT quit app."""
+class TestResume:
+    """Enter resumes the selected session via browser/CLI command."""
 
     @pytest.fixture(autouse=True)
-    def _mock_pager(self, monkeypatch):
-        monkeypatch.setattr(ShowScreen, "_open_pager", lambda self: None)
-
-    async def test_q_returns_to_list(self, app):
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            await pilot.press("l")
-            await pilot.pause()
-            assert isinstance(app.screen, ShowScreen)
-            await pilot.press("q")
-            await pilot.pause()
-            assert isinstance(app.screen, ListScreen)
-
-    async def test_escape_returns_to_list(self, app):
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            await pilot.press("l")
-            await pilot.pause()
-            assert isinstance(app.screen, ShowScreen)
-            await pilot.press("escape")
-            await pilot.pause()
-            assert isinstance(app.screen, ListScreen)
-
-
-class TestShowScreenSummary:
-    """s key cycles through summary sizes, skipping missing ones."""
-
-    @pytest.fixture(autouse=True)
-    def _mock_pager(self, monkeypatch):
-        monkeypatch.setattr(ShowScreen, "_open_pager", lambda self: None)
-
-    @staticmethod
-    def _seed_with_summary(con):
-        from llm_archive.db import init_summaries, upsert_thread_summary
-        import time
-        init_summaries(con)
-        upsert_thread_summary(
-            con, "test:t1",
-            tiny="tiny summary text",
-            small="small summary text",
-            medium="medium summary text",
-            large="large summary text",
-            model="test-model",
-            summarized_at=int(time.time()),
-        )
-        con.commit()
-
-    async def test_cycle_to_tiny(self, con):
-        _seed_db(con, n_threads=1)
-        self._seed_with_summary(con)
-        app = ArchiveApp(db_path=Path(con.execute("PRAGMA database_list").fetchone()[2]))
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            await pilot.press("l")
-            await pilot.pause()
-            screen = app.screen
-            assert screen._summary_idx == 0
-            await pilot.press("s")
-            await pilot.pause()
-            assert _SUMMARY_SIZES[screen._summary_idx] == "tiny"
-            output = screen._render_content(width=80)
-            assert "tiny summary text" in output
-
-    async def test_cycle_to_small(self, con):
-        _seed_db(con, n_threads=1)
-        self._seed_with_summary(con)
-        app = ArchiveApp(db_path=Path(con.execute("PRAGMA database_list").fetchone()[2]))
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            await pilot.press("l")
-            await pilot.pause()
-            screen = app.screen
-            await pilot.press("s")
-            await pilot.pause()
-            await pilot.press("s")
-            await pilot.pause()
-            assert _SUMMARY_SIZES[screen._summary_idx] == "small"
-
-    async def test_cycle_wraps_to_full(self, con):
-        _seed_db(con, n_threads=1)
-        self._seed_with_summary(con)
-        app = ArchiveApp(db_path=Path(con.execute("PRAGMA database_list").fetchone()[2]))
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            await pilot.press("l")
-            await pilot.pause()
-            screen = app.screen
-            for _ in range(len(_SUMMARY_SIZES)):
-                await pilot.press("s")
-                await pilot.pause()
-            assert screen._summary_idx == 0
-
-    async def test_no_summary_stays_full(self, con):
-        """Cycling when no summary exists stays on full messages."""
-        _seed_db(con, n_threads=1)
-        app = ArchiveApp(db_path=Path(con.execute("PRAGMA database_list").fetchone()[2]))
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            await pilot.press("l")
-            await pilot.pause()
-            screen = app.screen
-            await pilot.press("s")
-            await pilot.pause()
-            assert screen._summary_idx == 0
-            output = screen._render_content(width=80)
-            assert "hello world" in output
-
-    async def test_partial_summary_skips_missing(self, con):
-        """Only tiny exists — cycling skips small/medium/large."""
-        _seed_db(con, n_threads=1)
-        from llm_archive.db import init_summaries, upsert_thread_summary
-        import time
-        init_summaries(con)
-        upsert_thread_summary(
-            con, "test:t1",
-            tiny="only tiny", small=None, medium=None, large=None,
-            model="m", summarized_at=int(time.time()),
-        )
-        con.commit()
-        app = ArchiveApp(db_path=Path(con.execute("PRAGMA database_list").fetchone()[2]))
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            await pilot.press("l")
-            await pilot.pause()
-            screen = app.screen
-            await pilot.press("s")
-            await pilot.pause()
-            assert _SUMMARY_SIZES[screen._summary_idx] == "tiny"
-            await pilot.press("s")
-            await pilot.pause()
-            assert screen._summary_idx == 0  # wraps to full
-
-    async def test_header_shows_size_label(self, con):
-        _seed_db(con, n_threads=1)
-        self._seed_with_summary(con)
-        app = ArchiveApp(db_path=Path(con.execute("PRAGMA database_list").fetchone()[2]))
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            await pilot.press("l")
-            await pilot.pause()
-            screen = app.screen
-            assert "⟦" not in str(screen._build_header())
-            await pilot.press("s")
-            await pilot.pause()
-            assert "⟦tiny⟧" in str(screen._build_header())
-
-
-class TestShowScreenResume:
-    """Enter resumes session via browser/CLI command."""
-
-    @pytest.fixture(autouse=True)
-    def _mock_pager(self, monkeypatch):
-        monkeypatch.setattr(ShowScreen, "_open_pager", lambda self: None)
+    def _no_real_pager(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr("llm_archive.tui._open_thread_pager", lambda *a, **k: calls.append(True))
+        self._pager_calls = calls
 
     async def test_resume_calls_webbrowser(self, con, monkeypatch):
         _seed_db(con, n_threads=1, sources=["chatgpt"])
@@ -724,11 +498,12 @@ class TestShowScreenResume:
         app = ArchiveApp(db_path=Path(con.execute("PRAGMA database_list").fetchone()[2]))
         async with app.run_test() as pilot:
             await pilot.pause()
-            await pilot.press("l")
-            await pilot.pause()
             await pilot.press("enter")
             await pilot.pause()
+            assert isinstance(app.screen, ListScreen)
         assert opened
+        # Enter is resume-only: it must not also open the thread pager.
+        assert self._pager_calls == []
 
     async def test_resume_unsupported_bells(self, con, monkeypatch):
         _seed_db(con, n_threads=1, sources=["gemini"])
@@ -736,41 +511,10 @@ class TestShowScreenResume:
         app = ArchiveApp(db_path=Path(con.execute("PRAGMA database_list").fetchone()[2]))
         async with app.run_test() as pilot:
             await pilot.pause()
-            await pilot.press("l")
-            await pilot.pause()
-            assert isinstance(app.screen, ShowScreen)
             await pilot.press("enter")
             await pilot.pause()
-            assert isinstance(app.screen, ShowScreen)
-
-
-class TestShowScreenPager:
-    """Pager auto-opens on mount and on 'l' key."""
-
-    async def test_pager_called_on_mount(self, con, monkeypatch):
-        calls = []
-        monkeypatch.setattr(ShowScreen, "_open_pager", lambda self: calls.append(True))
-        _seed_db(con, n_threads=1)
-        app = ArchiveApp(db_path=Path(con.execute("PRAGMA database_list").fetchone()[2]))
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            await pilot.press("l")
-            await pilot.pause()
-        assert calls
-
-    async def test_pager_reopened_with_l(self, con, monkeypatch):
-        calls = []
-        monkeypatch.setattr(ShowScreen, "_open_pager", lambda self: calls.append(True))
-        _seed_db(con, n_threads=1)
-        app = ArchiveApp(db_path=Path(con.execute("PRAGMA database_list").fetchone()[2]))
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            await pilot.press("l")
-            await pilot.pause()
-            initial = len(calls)
-            await pilot.press("l")
-            await pilot.pause()
-            assert len(calls) > initial
+            assert isinstance(app.screen, ListScreen)
+        assert self._pager_calls == []
 
 
 class TestEmptyDB:
@@ -794,6 +538,7 @@ def record_asciicast(
     output_path: Path,
     *,
     keys: list[tuple[float, bytes]] | None = None,
+    env_overrides: dict[str, str] | None = None,
     duration: float = 3.0,
     width: int = 100,
     height: int = 30,
@@ -814,6 +559,8 @@ def record_asciicast(
     keys = keys or []
     env = os.environ.copy()
     env["LLM_ARCHIVE_DB"] = str(db_path)
+    if env_overrides:
+        env.update(env_overrides)
 
     header = json.dumps({
         "version": 2,
@@ -826,8 +573,8 @@ def record_asciicast(
     pid, fd = pty.fork()
     if pid == 0:
         os.execvpe(
-            sys.executable,
-            [sys.executable, "-m", "llm_archive", "tui"],
+            "llm-archive",
+            ["llm-archive", "tui", "--db-path", str(db_path)],
             env,
         )
 
@@ -878,6 +625,58 @@ def record_asciicast(
     return output_path
 
 
+_ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
+def _cast_events(path: Path) -> list[tuple[float, str]]:
+    lines = path.read_text().splitlines()[1:]
+    events: list[tuple[float, str]] = []
+    for line in lines:
+        ts, stream, data = json.loads(line)
+        if stream == "o":
+            events.append((float(ts), str(data)))
+    return events
+
+
+def _plain(data: str) -> str:
+    return _ANSI_RE.sub("", data)
+
+
+def _fake_glow(bin_dir: Path) -> Path:
+    glow = bin_dir / "glow"
+    glow.write_text(
+        "\n".join(
+            [
+                "#!/usr/bin/env bash",
+                "set -euo pipefail",
+                "path=\"${@: -1}\"",
+                "printf '\\033[45mFAKE_GLOW_READY\\033[0m\\n'",
+                "cat \"$path\"",
+                # Behave like a real pager: put the controlling tty in cbreak
+                # mode so single keystrokes arrive (Textual leaves it canonical
+                # during suspend; a bare 'q' is otherwise buffered until EOL).
+                "python3 -c '",
+                "import select,time,termios,tty as T",
+                "f=open(\"/dev/tty\",\"rb\")",
+                "fd=f.fileno()",
+                "old=termios.tcgetattr(fd)",
+                "try:",
+                " T.setcbreak(fd)",
+                " d=time.monotonic()+0.8",
+                " while time.monotonic()<d:",
+                "  r,_,_=select.select([f],[],[],0.05)",
+                "  if r and f.read(1).decode(\"utf-8\",\"replace\") in {\"q\",\"\\x1b\"}: break",
+                "finally:",
+                " termios.tcsetattr(fd,termios.TCSADRAIN,old)",
+                "'",
+            ]
+        )
+        + "\n"
+    )
+    glow.chmod(0o755)
+    return glow
+
+
 def fcntl_set_size(fd: int, width: int, height: int) -> None:
     try:
         import fcntl
@@ -887,6 +686,47 @@ def fcntl_set_size(fd: int, width: int, height: int) -> None:
         fcntl.ioctl(fd, termios.TIOCSWINSZ, winsize)
     except (ImportError, OSError):
         pass
+
+
+def test_l_opens_glow_without_content_flash(seeded_db, tmp_path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _fake_glow(bin_dir)
+    exports = tmp_path / "exports"
+    config = tmp_path / "config.toml"
+    config.write_text(f"[export]\ndir = {str(exports)!r}\n")
+
+    out = tmp_path / "tui_l_glow.cast"
+    key_time = 0.4
+    record_asciicast(
+        seeded_db,
+        out,
+        keys=[(key_time, b"l"), (1.0, b"q")],
+        env_overrides={
+            "LLM_ARCHIVE_CONFIG": str(config),
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+            "TERM": "xterm-256color",
+        },
+        duration=1.4,
+        width=100,
+        height=30,
+    )
+
+    events = _cast_events(out)
+    glow_index = next(
+        i for i, (_ts, data) in enumerate(events) if "FAKE_GLOW_READY" in _plain(data)
+    )
+    glow_ts = events[glow_index][0]
+    between = "".join(_plain(data) for ts, data in events if key_time <= ts < glow_ts)
+    after_exit = "".join(_plain(data) for ts, data in events if ts >= 1.0)
+
+    assert (glow_ts - key_time) < 0.25, f"glow visible after {(glow_ts - key_time) * 1000:.1f}ms"
+    # No thread message body renders before glow takes over (no content flash);
+    # the list only shows thread titles, never message bodies.
+    assert "hello world" not in between
+    # After quitting glow, the list repaints (footer visible), no leaked content.
+    assert "/:search Tab:mode" in after_exit
+    assert "hello world" not in after_exit
 
 
 # ─── Recording tests (marked slow, not in default run) ──────────────

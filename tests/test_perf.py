@@ -197,21 +197,18 @@ class TestDB:
 
 class TestRender:
     def test_render_xl(self, xl_db, tol):
-        from llm_archive.tui import ShowScreen
+        from llm_archive.tui import _render_thread_content
         thread = _thread_row(xl_db, "perf:xl")
         data = db._fetch_thread_data(xl_db, thread)
-        screen = ShowScreen(data, xl_db)
-        elapsed, output = _timed(screen._render_content, 120)
+        elapsed, output = _timed(_render_thread_content, data, xl_db, width=120)
         assert elapsed < 0.5 * tol, f"render {elapsed:.3f}s"
         assert len(output) > 5000
 
     def test_render_xl_verbose(self, xl_db, tol):
-        from llm_archive.tui import ShowScreen
+        from llm_archive.tui import _render_thread_content
         thread = _thread_row(xl_db, "perf:xl")
         data = db._fetch_thread_data(xl_db, thread)
-        screen = ShowScreen(data, xl_db)
-        screen._verbose = True
-        elapsed, output = _timed(screen._render_content, 120)
+        elapsed, output = _timed(_render_thread_content, data, xl_db, width=120, verbose=True)
         assert elapsed < 1.0 * tol, f"verbose render {elapsed:.3f}s"
         assert len(output) > 20000
 
@@ -228,8 +225,8 @@ class TestRender:
 class TestTUIStartup:
     async def test_app_startup_and_list(self, mixed_db, monkeypatch, tol):
         from pathlib import Path as P
-        from llm_archive.tui import ArchiveApp, ShowScreen
-        monkeypatch.setattr(ShowScreen, "_open_pager", lambda _self: None)
+        from llm_archive.tui import ArchiveApp
+        monkeypatch.setattr("llm_archive.tui._open_thread_pager", lambda *a, **k: None)
         db_path = mixed_db.execute("PRAGMA database_list").fetchone()[2]
         app = ArchiveApp(db_path=P(db_path))
         t0 = time.perf_counter()
@@ -242,8 +239,8 @@ class TestTUIStartup:
 
     async def test_list_render_many_threads(self, perf_con, monkeypatch):
         from pathlib import Path as P
-        from llm_archive.tui import ArchiveApp, ShowScreen
-        monkeypatch.setattr(ShowScreen, "_open_pager", lambda _self: None)
+        from llm_archive.tui import ArchiveApp
+        monkeypatch.setattr("llm_archive.tui._open_thread_pager", lambda *a, **k: None)
         rng = random.Random(7)
         now = int(time.time() * 1000)
         for i in range(500):
@@ -261,8 +258,8 @@ class TestTUIStartup:
 
     async def test_open_thread_from_list(self, mixed_db, monkeypatch, tol):
         from pathlib import Path as P
-        from llm_archive.tui import ArchiveApp, ShowScreen, ListScreen
-        monkeypatch.setattr(ShowScreen, "_open_pager", lambda _self: None)
+        from llm_archive.tui import ArchiveApp, ListScreen
+        monkeypatch.setattr("llm_archive.tui._open_thread_pager", lambda *a, **k: None)
         db_path = mixed_db.execute("PRAGMA database_list").fetchone()[2]
         app = ArchiveApp(db_path=P(db_path))
         async with app.run_test() as pilot:
@@ -270,7 +267,7 @@ class TestTUIStartup:
             screen = app.screen
             assert isinstance(screen, ListScreen)
             t0 = time.perf_counter()
-            await pilot.press("enter")
+            await pilot.press("l")
             await pilot.pause()
             elapsed = time.perf_counter() - t0
             assert elapsed < 2.0 * tol, f"open thread {elapsed:.3f}s"
@@ -280,12 +277,11 @@ class TestTUIStartup:
 
 class TestPipeline:
     def test_open_xl_pipeline(self, xl_db, tol):
-        from llm_archive.tui import ShowScreen
+        from llm_archive.tui import _render_thread_content
         t_list, threads = _timed(db.list_threads, xl_db)
         thread = _thread_row(xl_db, "perf:xl")
         t_fetch, data = _timed(db._fetch_thread_data, xl_db, thread)
-        screen = ShowScreen(data, xl_db)
-        t_render, _ = _timed(screen._render_content, 120)
+        t_render, _ = _timed(_render_thread_content, data, xl_db, width=120)
         total = t_list + t_fetch + t_render
         assert total < 2.0 * tol, f"pipeline {total:.3f}s (list={t_list:.3f} fetch={t_fetch:.3f} render={t_render:.3f})"
 
