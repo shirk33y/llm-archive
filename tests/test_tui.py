@@ -11,16 +11,16 @@ from __future__ import annotations
 
 import json
 import os
-import pty
 import re
 import select
-import struct
+import subprocess
 import time
 from pathlib import Path
 
 import pytest
 
 from llm_archive import db
+from tests._pty import spawn_pty
 from llm_archive.tui import (
     ArchiveApp,
     ListScreen,
@@ -570,16 +570,12 @@ def record_asciicast(
         "env": {"SHELL": "/bin/bash", "TERM": os.environ.get("TERM", "xterm-256color")},
     })
 
-    pid, fd = pty.fork()
-    if pid == 0:
-        os.execvpe(
-            "llm-archive",
-            ["llm-archive", "tui", "--db-path", str(db_path)],
-            env,
-        )
-
-    struct.pack("HHHH", height, width, 0, 0)
-    fcntl_set_size(fd, width, height)
+    proc, master = spawn_pty(
+        ["llm-archive", "tui", "--db-path", str(db_path)],
+        env=env,
+        width=width,
+        height=height,
+    )
 
     events: list[list] = []
     start = time.monotonic()
@@ -590,32 +586,33 @@ def record_asciicast(
 
     try:
         while time.monotonic() < deadline:
-            rlist = [fd]
+            rlist = [master]
             timeout = 0.05
 
             if key_idx < len(key_schedule):
                 elapsed = time.monotonic() - start
                 if elapsed >= key_schedule[key_idx][0]:
-                    os.write(fd, key_schedule[key_idx][1])
+                    os.write(master, key_schedule[key_idx][1])
                     key_idx += 1
                     continue
                 timeout = min(timeout, key_schedule[key_idx][0] - elapsed)
 
             readable, _, _ = select.select(rlist, [], [], timeout)
-            if fd in readable:
+            if master in readable:
                 try:
-                    data = os.read(fd, 4096)
+                    data = os.read(master, 4096)
                 except OSError:
                     break
                 if data:
                     ts = time.monotonic() - start
                     events.append([round(ts, 6), "o", data.decode("utf-8", errors="replace")])
     finally:
+        proc.kill()
         try:
-            os.kill(pid, 9)
-            os.waitpid(pid, 0)
-        except (ProcessLookupError, ChildProcessError):
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
             pass
+        os.close(master)
 
     with open(output_path, "w") as f:
         f.write(header + "\n")
@@ -675,17 +672,6 @@ def _fake_glow(bin_dir: Path) -> Path:
     )
     glow.chmod(0o755)
     return glow
-
-
-def fcntl_set_size(fd: int, width: int, height: int) -> None:
-    try:
-        import fcntl
-        import termios
-
-        winsize = struct.pack("HHHH", height, width, 0, 0)
-        fcntl.ioctl(fd, termios.TIOCSWINSZ, winsize)
-    except (ImportError, OSError):
-        pass
 
 
 def test_l_opens_glow_without_content_flash(seeded_db, tmp_path):

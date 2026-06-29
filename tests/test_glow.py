@@ -11,15 +11,13 @@ from __future__ import annotations
 import os
 import select
 import shutil
-import struct
-import termios
+import subprocess
 import time
 
-import fcntl
-import pty
 import pytest
 
 from llm_archive import glow
+from tests._pty import spawn_pty
 
 
 def _capture(monkeypatch, tmp_path, *, size: int = 128, width: int = 100, rc: int = 0):
@@ -110,59 +108,49 @@ def test_real_glow_stays_open_until_user_quits(tmp_path):
     md = tmp_path / "thread.md"
     md.write_text("# Thread\n\n" + "body line of content\n" * 6)
 
-    pid, fd = pty.fork()
-    if pid == 0:
-        env = os.environ.copy()
-        env["TERM"] = "xterm-256color"
-        os.environ.update(env)
-        rc = glow.view(md, width=100)
-        os._exit(rc)
-
-    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 100, 0, 0))
+    env = os.environ.copy()
+    env["TERM"] = "xterm-256color"
+    proc, master = spawn_pty(
+        [shutil.which("glow"), "-p", "-s", "auto", "-w", "100", str(md)],
+        env=env,
+    )
 
     try:
         # Drive the pty for 0.8s WITHOUT sending 'q'. glow in pager mode
         # stays open; glow without --pager renders and exits in ~tens of ms.
         start = time.monotonic()
         while time.monotonic() - start < 0.8:
-            readable, _, _ = select.select([fd], [], [], 0.05)
-            if fd in readable:
+            readable, _, _ = select.select([master], [], [], 0.05)
+            if master in readable:
                 try:
-                    data = os.read(fd, 4096)
+                    data = os.read(master, 4096)
                 except OSError:
                     break
                 if not data:
                     break
                 s = data.decode("utf-8", "replace")
                 if "\x1b]11;?" in s:
-                    os.write(fd, b"\x1b]11;rgb:0000/0000/0000\x1b\\")
+                    os.write(master, b"\x1b]11;rgb:0000/0000/0000\x1b\\")
                 if "\x1b[6n" in s:
-                    os.write(fd, b"\x1b[1;1R")
+                    os.write(master, b"\x1b[1;1R")
 
-        reaped, _ = os.waitpid(pid, os.WNOHANG)
-        assert reaped == 0, "glow exited without the user quitting — not in pager mode"
+        assert proc.poll() is None, "glow exited without the user quitting — not in pager mode"
     finally:
         try:
-            os.write(fd, b"q")
+            os.write(master, b"q")
         except OSError:
             pass
-        deadline = time.monotonic() + 2.0
-        while time.monotonic() < deadline:
-            try:
-                w, _ = os.waitpid(pid, os.WNOHANG)
-            except ChildProcessError:
-                break
-            if w:
-                break
-            time.sleep(0.02)
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        os.close(master)
 
 
 @pytest.mark.skipif(shutil.which("glow") is None, reason="glow not installed")
 def test_real_glow_renders_at_max_size_fast(tmp_path):
     # Guard that MAX_SIZE stays in glow's fast zone: render a file at the
     # threshold with -s auto; must finish in well under a second (~0.4s).
-    import subprocess
-
     md = tmp_path / "at_max.md"
     buf = ["# title\n"]
     written = len(buf[0])
