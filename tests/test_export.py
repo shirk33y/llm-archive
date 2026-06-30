@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 from llm_archive.export import (
@@ -186,6 +187,51 @@ def test_write_thread(tmp_path, con):
     assert "hello world" in content
 
 
+def test_write_thread_uses_supplied_thread_data(tmp_path, con):
+    from llm_archive import db
+    from llm_archive.schema import IngestedThread, IngestedMessage, IngestedPart
+    from unittest.mock import MagicMock
+
+    thread = IngestedThread(
+        id="write:fast",
+        source_id="claude",
+        title="Fast write",
+        created_at=1700000000000,
+        updated_at=1700000100000,
+        messages=[
+            IngestedMessage(
+                id=1,
+                thread_id="write:fast",
+                role="user",
+                created_at=1700000000000,
+                content="foo",
+                parts=[
+                    IngestedPart(kind="text", text="fast path"),
+                ],
+            ),
+        ],
+    )
+    db.save_thread(con, thread)
+    thread_data = db.get_thread(con, "write:fast")
+    assert thread_data is not None
+
+    config = AppConfig()
+    config.export.dir = str(tmp_path / "exports")
+
+    write_con = MagicMock()
+    result = write_thread(
+        write_con,
+        "write:fast",
+        "claude",
+        config,
+        force=True,
+        thread_data=thread_data,
+    )
+    assert result is not None
+    write_con.execute.assert_not_called()
+    assert result.read_text().startswith("<!-- thread:write:fast source:claude -->")
+
+
 def test_write_thread_freshness(tmp_path, con):
     from llm_archive import db
     from llm_archive.schema import IngestedThread, IngestedMessage, IngestedPart
@@ -223,6 +269,130 @@ def test_write_thread_freshness(tmp_path, con):
 
     path3 = write_thread(con, "fresh:test", "gemini", config, force=True)
     assert path3 == path
+
+
+def test_write_thread_appends_new_messages_only(tmp_path, con):
+    from llm_archive import db
+    from llm_archive.schema import IngestedThread, IngestedMessage, IngestedPart
+    from unittest.mock import patch
+
+    config = AppConfig()
+    config.export.dir = str(tmp_path / "exports")
+
+    initial = IngestedThread(
+        id="append:test",
+        source_id="claude",
+        title="Append test",
+        created_at=1700000000000,
+        updated_at=1700000100000,
+        messages=[
+            IngestedMessage(
+                id=1,
+                thread_id="append:test",
+                role="user",
+                created_at=1700000000000,
+                content="foo",
+                parts=[IngestedPart(kind="text", text="first chunk")],
+            ),
+        ],
+    )
+    db.save_thread(con, initial)
+    path = write_thread(con, "append:test", "claude", config, force=True)
+    assert path is not None
+    first = path.read_text()
+    assert first.count("<!-- msg:") == 1
+
+    appended = IngestedThread(
+        id="append:test",
+        source_id="claude",
+        title="Append test",
+        created_at=1700000000000,
+        updated_at=1700000200000,
+        messages=[
+            IngestedMessage(
+                id=1,
+                thread_id="append:test",
+                role="user",
+                created_at=1700000000000,
+                content="foo",
+                parts=[IngestedPart(kind="text", text="first chunk")],
+            ),
+            IngestedMessage(
+                id=2,
+                thread_id="append:test",
+                role="assistant",
+                created_at=1700000005000,
+                content="bar",
+                parts=[IngestedPart(kind="text", text="second chunk")],
+            ),
+        ],
+    )
+    db.save_thread(con, appended)
+
+    with patch.object(Path, "write_text", side_effect=AssertionError("rewrite not allowed")):
+        path2 = write_thread(con, "append:test", "claude", config, force=True)
+
+    assert path2 == path
+    second = path.read_text()
+    assert second.startswith(first)
+    assert second.count("<!-- msg:") == 2
+
+
+def test_write_thread_is_idempotent_under_concurrency(tmp_path):
+    from unittest.mock import MagicMock
+
+    thread_data = {
+        "thread": {
+            "id": "race:test",
+            "source_id": "claude",
+            "title": "Race",
+            "created_at": 1700000000000,
+            "updated_at": 1700000100000,
+        },
+        "messages": [
+            {
+                "id": 1,
+                "role": "user",
+                "created_at": 1700000000000,
+                "parts": [{"kind": "text", "text": "first", "visible": True}],
+            },
+            {
+                "id": 2,
+                "role": "assistant",
+                "created_at": 1700000005000,
+                "parts": [{"kind": "text", "text": "second", "visible": True}],
+            },
+        ],
+    }
+    config = AppConfig()
+    config.export.dir = str(tmp_path / "exports")
+
+    errors: list[Exception] = []
+
+    def _run() -> None:
+        try:
+            write_thread(
+                MagicMock(),
+                "race:test",
+                "claude",
+                config,
+                force=True,
+                thread_data=thread_data,
+            )
+        except Exception as exc:  # pragma: no cover - test helper
+            errors.append(exc)
+
+    t1 = threading.Thread(target=_run)
+    t2 = threading.Thread(target=_run)
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    assert not errors
+    path = thread_md_path("claude", "race:test", config)
+    text = path.read_text()
+    assert text.count("<!-- msg:") == 2
 
 
 def test_backfill(tmp_path, con):

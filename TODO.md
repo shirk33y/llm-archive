@@ -18,6 +18,8 @@
 - [ ] Investigate openchronicle
 - [ ] Store/download images and other artifacts uploaded or produced by AI
 - [ ] Auto route requests through multiple APIs: https://github.com/workweave/router
+- [ ] Strip output from CMM. -cmm: simpler cli, less noise. Research which queries are crucial and most used, streamline them, be so simple as rg, grep, etc. consider toon-format.
+- [ ] Add optional GitHub Actions profiling job for the perf suite
 
 ## Ideas from `unbalancedparentheses/llm-archive`
 

@@ -6,7 +6,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.screen import Screen
-from textual.widgets import Input, Static, ListView, ListItem, Label
+from textual.widgets import Input, OptionList, Static
 from textual.reactive import reactive
 from rich.text import Text
 
@@ -347,6 +347,27 @@ def _render_thread_content(
     return buf.getvalue()
 
 
+def _show_opening_screen(title: str, width: int) -> None:
+    import shutil
+
+    size = shutil.get_terminal_size((width, 24))
+    message = f'Opening "{_truncate(title or "untitled", max(size.columns - 12, 20))}"'
+    row = max(size.lines // 2, 1)
+    col = max((size.columns - len(message)) // 2 + 1, 1)
+    print("\x1b[40m\x1b[37m\x1b[2J\x1b[H", end="")
+    print(f"\x1b[{row};{col}H{message}", end="", flush=True)
+
+
+def _ensure_thread_stub(md_path, thread_id: str, source_id: str, title: str) -> None:
+    md_path.parent.mkdir(parents=True, exist_ok=True)
+    if md_path.exists():
+        return
+    md_path.write_text(
+        f"<!-- thread:{thread_id} source:{source_id} -->\n"
+        f"# {title or 'untitled'}\n\n"
+    )
+
+
 def _open_thread_pager(
     app: App,
     thread_data: dict,
@@ -374,20 +395,22 @@ def _open_thread_pager(
         t = thread_data["thread"]
         thread_id = t.get("id", "")
         source_id = t.get("source_id", "unknown")
+        title = t.get("title", "untitled")
         config = load_config()
 
         try:
             md_path = export.thread_md_path(source_id, thread_id, config)
-            if not md_path.exists() or md_path.stat().st_mtime * 1000 < t.get("updated_at", 0):
-                export.write_thread(con, thread_id, source_id, config, force=True)
-            if md_path.exists():
-                if glow.is_too_large(md_path):
+            rc = None
+            with app.suspend():
+                _show_opening_screen(title, width)
+                if not md_path.exists():
+                    _ensure_thread_stub(md_path, thread_id, source_id, title)
+                if md_path.exists() and glow.is_too_large(md_path):
                     pager = shutil.which("less")
                     if pager:
-                        with app.suspend():
-                            subprocess.run([pager, "-R", str(md_path)])
+                        subprocess.run([pager, "-R", str(md_path)])
                         return
-                with app.suspend():
+                if md_path.exists():
                     rc = glow.view(md_path, width=width)
                 if rc == 0:
                     return
@@ -517,25 +540,20 @@ class ListScreen(Screen):
         self._refresh_list()
 
     def _refresh_list(self):
-        listview = self.query_one(ListView)
-        listview.clear()
+        option_list = self.query_one(OptionList)
         width = max(self.size.width - 2, 20) if self.size else 80
-
-        for row in self.displayed_rows:
-            text = row.render(width, selected=False)
-            listview.append(ListItem(Label(text)))
-
-        if listview.index is None and self.displayed_rows:
-            listview.index = 0
+        option_list.set_options(row.render(width, selected=False) for row in self.displayed_rows)
+        if option_list.highlighted is None and self.displayed_rows:
+            option_list.highlighted = 0
 
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static(
                 "llm-archive — /:search Tab:mode j/k:nav l:view Enter:resume q:quit", classes="help"
             )
-            listview = ListView()
-            listview.styles.height = "1fr"
-            yield listview
+            options = OptionList()
+            options.styles.height = "1fr"
+            yield options
             self.search_input = Input(placeholder="filter...", id="search")
             self.search_input.styles.display = "none"
             yield self.search_input
@@ -556,7 +574,7 @@ class ListScreen(Screen):
         self.search_input.styles.display = "none"
         self.search_query = ""
         self._update_display()
-        self.set_focus(self.query_one(ListView))
+        self.set_focus(self.query_one(OptionList))
 
     def action_toggle_mode(self):
         self.show_deep = not self.show_deep
@@ -564,22 +582,22 @@ class ListScreen(Screen):
         self._update_display()
 
     def action_cursor_down(self):
-        lv = self.query_one(ListView)
-        if lv.index is None:
-            lv.index = 0
-        elif lv.index < len(self.displayed_rows) - 1:
-            lv.index += 1
+        option_list = self.query_one(OptionList)
+        if option_list.highlighted is None:
+            option_list.highlighted = 0
+        elif option_list.highlighted < len(self.displayed_rows) - 1:
+            option_list.highlighted += 1
 
     def action_cursor_up(self):
-        lv = self.query_one(ListView)
-        if lv.index is None:
+        option_list = self.query_one(OptionList)
+        if option_list.highlighted is None:
             return
-        if lv.index > 0:
-            lv.index -= 1
+        if option_list.highlighted > 0:
+            option_list.highlighted -= 1
 
     def _current_row(self):
-        lv = self.query_one(ListView)
-        idx = lv.index or 0
+        option_list = self.query_one(OptionList)
+        idx = option_list.highlighted or 0
         if idx >= len(self.displayed_rows):
             return None
         return self.displayed_rows[idx]
@@ -600,7 +618,7 @@ class ListScreen(Screen):
         if short_id:
             self._show_thread(short_id)
 
-    def on_list_view_selected(self, event: ListView.Selected):
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected):
         self.action_select()
 
     def _show_thread(self, short_id: str):
@@ -640,7 +658,7 @@ class ListScreen(Screen):
     def on_input_submitted(self, event: Input.Submitted):
         if event.input.id == "search":
             self.search_input.styles.display = "none"
-            self.set_focus(self.query_one(ListView))
+            self.set_focus(self.query_one(OptionList))
 
 
 class ArchiveApp(App):
@@ -663,16 +681,14 @@ class ArchiveApp(App):
         color: $text;
         text-style: bold;
     }
-    ListView {
+    OptionList {
         border: none;
         padding: 0;
     }
-    ListView > ListItem {
-        height: 1;
+    OptionList > .option-list--option {
         padding: 0;
-        border: none;
     }
-    ListView > ListItem.--highlight {
+    OptionList > .option-list--option-highlighted {
         background: $primary-darken-2;
     }
     Input {

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from unittest.mock import MagicMock, patch
 
 
@@ -29,16 +30,7 @@ def _make_data(
     }
 
 
-def _write_side(source_id, thread_id, config, md_dir):
-    from llm_archive.export import thread_md_path
-
-    path = thread_md_path(source_id, thread_id, config)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("rendered content")
-    return path
-
-
-def test_open_pager_writes_missing_cache(tmp_path):
+def test_open_pager_creates_stub_for_missing_cache(tmp_path):
     from llm_archive.tui import _open_thread_pager
     from llm_archive.export import thread_md_path
 
@@ -55,17 +47,30 @@ def test_open_pager_writes_missing_cache(tmp_path):
     ):
         mock_load.return_value.export.dir = str(md_dir)
         mock_load.return_value.export.auto = True
-        mock_write.side_effect = lambda c, tid, sid, config, force=True: _write_side(
-            sid, tid, config, md_dir
-        )
 
         _open_thread_pager(mock_app, data, con)
 
         expected = thread_md_path("chatgpt", "test:t1", mock_load.return_value)
-        mock_write.assert_called_once_with(
-            con, "test:t1", "chatgpt", mock_load.return_value, force=True
-        )
+        mock_write.assert_not_called()
+        assert expected.read_text().startswith("<!-- thread:test:t1 source:chatgpt -->")
         mock_view.assert_called_once_with(expected, width=78)
+
+
+def test_opening_screen_prints_centered_title():
+    from llm_archive.tui import _show_opening_screen
+
+    with (
+        patch("shutil.get_terminal_size", return_value=os.terminal_size((80, 24))),
+        patch("builtins.print") as mock_print,
+    ):
+        _show_opening_screen("headless battle seams (@explore subagent)", 80)
+
+    output = "".join(
+        "".join(str(arg) for arg in call.args)
+        for call in mock_print.call_args_list
+    )
+    assert "\x1b[40m\x1b[37m\x1b[2J\x1b[H" in output
+    assert 'Opening "headless battle seams (@explore subagent)"' in output
 
 
 def test_open_pager_skips_write_when_cache_fresh(tmp_path):
@@ -124,15 +129,10 @@ def test_open_pager_writes_when_cache_stale(tmp_path):
     ):
         mock_load.return_value.export.dir = str(md_dir)
         mock_load.return_value.export.auto = True
-        mock_write.side_effect = lambda c, tid, sid, config, force=True: _write_side(
-            sid, tid, config, md_dir
-        )
 
         _open_thread_pager(mock_app, data, con)
 
-        mock_write.assert_called_once_with(
-            con, "test:t3", "chatgpt", mock_load.return_value, force=True
-        )
+        mock_write.assert_not_called()
         mock_view.assert_called_once()
 
 
@@ -162,6 +162,7 @@ def test_open_pager_uses_less_for_huge_file(tmp_path):
     from llm_archive import glow
 
     md_dir = tmp_path / "exports"
+    md_dir.mkdir(parents=True, exist_ok=True)
 
     con = MagicMock()
     data = _make_data(
@@ -175,14 +176,12 @@ def test_open_pager_uses_less_for_huge_file(tmp_path):
         patch("llm_archive.config.load_config") as mock_load,
         patch("llm_archive.glow.is_available", return_value=True),
         patch("llm_archive.glow.view") as mock_view,
-        patch("llm_archive.export.write_thread") as mock_write,
         patch("subprocess.run") as mock_run,
     ):
         mock_load.return_value.export.dir = str(md_dir)
         mock_load.return_value.export.auto = True
-        mock_write.side_effect = lambda c, tid, sid, config, force=True: (
-            md_dir.mkdir(parents=True, exist_ok=True),
-            thread_md_path(sid, tid, config).write_bytes(b"x" * (glow.MAX_SIZE + 1)),
+        thread_md_path("chatgpt", "test:huge", mock_load.return_value).write_bytes(
+            b"x" * (glow.MAX_SIZE + 1)
         )
 
         _open_thread_pager(mock_app, data, con)

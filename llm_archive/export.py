@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import re
+from typing import Iterator
 from pathlib import Path
 
 from llm_archive import db
@@ -12,6 +14,12 @@ logger = get_logger("export")
 _HASH_LINE_RE = re.compile(r"^#{1,6}(\s|$)", re.MULTILINE)
 _HTML_OPEN_RE = re.compile(r"<!--")
 _HTML_CLOSE_RE = re.compile(r"-->")
+_MSG_MARKER_RE = re.compile(r"^<!-- msg:", re.MULTILINE)
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - platform fallback
+    fcntl = None
 
 
 def _default_export_dir() -> Path:
@@ -31,6 +39,24 @@ def thread_md_path(source_id: str, thread_id: str, config: AppConfig | None = No
     return export_dir(config) / f"{source_id}_{thread_id}.md"
 
 
+def _export_lock_path(config: AppConfig | None = None) -> Path:
+    return export_dir(config) / ".export.lock"
+
+
+@contextmanager
+def _export_lock(config: AppConfig | None = None) -> Iterator[None]:
+    lock_path = _export_lock_path(config)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("w") as lock:
+        if fcntl is not None:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if fcntl is not None:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
 def _escape_hashes(text: str) -> str:
     return _HASH_LINE_RE.sub(lambda m: "\\" + m.group(0), text)
 
@@ -47,35 +73,18 @@ def _escape_body(text: str) -> str:
     return text
 
 
-def render_thread(thread_data: dict, msg_num_start: int = 1) -> str:
-    from datetime import datetime, timezone
-
-    t = thread_data["thread"]
-    source = t.get("source_id", "?")
-    thread_id = t.get("id", "?")
-    title = t.get("title") or "untitled"
-    created = t.get("created_at", 0)
-    updated = t.get("updated_at", 0)
+def _render_messages(messages: list[dict], msg_num_start: int = 1) -> str:
+    from llm_archive.ids import to_base53
 
     lines: list[str] = []
-    lines.append(f"<!-- thread:{thread_id} source:{source} -->")
-    lines.append(f"# {title}")
-    if created:
-        dt = datetime.fromtimestamp(created / 1000, tz=timezone.utc)
-        lines.append(f"<!-- created: {dt.isoformat()} -->")
-    if updated:
-        dt = datetime.fromtimestamp(updated / 1000, tz=timezone.utc)
-        lines.append(f"<!-- updated: {dt.isoformat()} -->")
-    lines.append("")
-
-    messages = thread_data.get("messages", [])
     for i, msg in enumerate(messages, msg_num_start):
-        from llm_archive.ids import to_base53
         role = msg.get("role", "unknown")
         short = to_base53(i)
         ts = msg.get("created_at", 0)
         ts_str = ""
         if ts:
+            from datetime import datetime, timezone
+
             dt = datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
             ts_str = f" · {dt.strftime('%Y-%m-%d %H:%M')}"
 
@@ -114,38 +123,88 @@ def render_thread(thread_data: dict, msg_num_start: int = 1) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+def render_thread(thread_data: dict, msg_num_start: int = 1) -> str:
+    from datetime import datetime, timezone
+
+    t = thread_data["thread"]
+    source = t.get("source_id", "?")
+    thread_id = t.get("id", "?")
+    title = t.get("title") or "untitled"
+    created = t.get("created_at", 0)
+    updated = t.get("updated_at", 0)
+
+    lines: list[str] = []
+    lines.append(f"<!-- thread:{thread_id} source:{source} -->")
+    lines.append(f"# {title}")
+    if created:
+        dt = datetime.fromtimestamp(created / 1000, tz=timezone.utc)
+        lines.append(f"<!-- created: {dt.isoformat()} -->")
+    if updated:
+        dt = datetime.fromtimestamp(updated / 1000, tz=timezone.utc)
+        lines.append(f"<!-- updated: {dt.isoformat()} -->")
+    lines.append("")
+    lines.append(_render_messages(thread_data.get("messages", []), msg_num_start).rstrip())
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _exported_message_count(path: Path) -> int | None:
+    try:
+        text = path.read_text()
+    except OSError:
+        return None
+    return len(_MSG_MARKER_RE.findall(text))
+
+
+def render_thread_append(thread_data: dict, start_index: int = 0) -> str:
+    messages = thread_data.get("messages", [])
+    if start_index < 0 or start_index >= len(messages):
+        return ""
+    return _render_messages(messages[start_index:], msg_num_start=start_index + 1)
+
+
 def write_thread(
     con,
     thread_id: str,
     source_id: str | None = None,
     config: AppConfig | None = None,
     force: bool = False,
+    thread_data: dict | None = None,
 ) -> Path | None:
-    row = con.execute(
-        "SELECT id, source_id, title, created_at, updated_at FROM threads WHERE id=?",
-        (thread_id,),
-    ).fetchone()
-    if not row:
-        return None
+    if thread_data is None:
+        row = con.execute(
+            "SELECT id, source_id, title, created_at, updated_at FROM threads WHERE id=?",
+            (thread_id,),
+        ).fetchone()
+        if not row:
+            return None
+        thread = dict(row)
+        thread_data = db._fetch_thread_data(con, thread)
+    else:
+        thread = dict(thread_data["thread"])
 
-    thread = dict(row)
     if source_id is None:
         source_id = str(thread.get("source_id", "unknown"))
 
     path = thread_md_path(source_id, thread_id, config)
+    with _export_lock(config):
+        if path.exists():
+            exported_count = _exported_message_count(path)
+            total_count = len(thread_data.get("messages", []))
+            if exported_count is not None:
+                if exported_count >= total_count:
+                    return path
+                tail = render_thread_append(thread_data, start_index=exported_count)
+                if tail:
+                    with path.open("a") as f:
+                        f.write(tail)
+                    logger.debug(f"appended {thread_id} -> {path}")
+                    return path
 
-    if not force and path.exists():
-        mtime_ms = int(path.stat().st_mtime * 1000)
-        if mtime_ms >= thread.get("updated_at", 0):
-            return path
-
-    thread_data = db._fetch_thread_data(con, thread)
-    content = render_thread(thread_data)
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content)
-    logger.debug(f"exported {thread_id} -> {path}")
-    return path
+        content = render_thread(thread_data)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+        logger.debug(f"exported {thread_id} -> {path}")
+        return path
 
 
 def backfill(

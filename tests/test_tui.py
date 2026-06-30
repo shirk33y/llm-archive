@@ -16,11 +16,14 @@ import select
 import subprocess
 import time
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
 from llm_archive import db
 from tests._pty import spawn_pty
+from textual.widgets import OptionList
+
 from llm_archive.tui import (
     ArchiveApp,
     ListScreen,
@@ -215,16 +218,16 @@ class TestAppStartup:
             await pilot.pause()
             assert isinstance(app.screen, ListScreen)
 
-    async def test_listview_exists_after_mount(self, app):
+    async def test_option_list_exists_after_mount(self, app):
         async with app.run_test() as pilot:
             await pilot.pause()
-            lv = app.screen.query_one("ListView")
-            assert lv is not None
+            options = app.screen.query_one(OptionList)
+            assert options is not None
 
     async def test_threads_loaded(self, app):
         async with app.run_test() as pilot:
             await pilot.pause()
-            screen = app.screen
+            screen = cast(Any, app.screen)
             assert len(screen.all_threads) == 3
             assert len(screen.displayed_rows) == 3
 
@@ -234,6 +237,7 @@ class TestAppStartup:
         async with app.run_test() as pilot:
             await pilot.pause()
             screen = app.screen
+            assert isinstance(screen, ListScreen)
             sources = {t.source for t in screen.all_threads}
             assert "dummy" not in sources
             assert "claude" in sources
@@ -242,6 +246,7 @@ class TestAppStartup:
         async with multi_app.run_test() as pilot:
             await pilot.pause()
             screen = multi_app.screen
+            assert isinstance(screen, ListScreen)
             sources = {t.source for t in screen.all_threads}
             assert sources == {"claude", "chatgpt", "opencode"}
 
@@ -268,54 +273,54 @@ class TestAppStartup:
 
 
 class TestNavigation:
-    """j/k + arrow navigation via ListView.index."""
+    """j/k + arrow navigation via OptionList.highlighted."""
 
     async def test_cursor_down_j(self, app):
         async with app.run_test() as pilot:
             await pilot.pause()
-            lv = app.screen.query_one("ListView")
-            assert lv.index == 0
+            options = app.screen.query_one(OptionList)
+            assert options.highlighted == 0
             await pilot.press("j")
             await pilot.pause()
-            assert lv.index == 1
+            assert options.highlighted == 1
 
     async def test_cursor_down_arrow(self, app):
-        """Arrow keys handled natively by ListView."""
+        """Arrow keys handled natively by OptionList."""
         async with app.run_test() as pilot:
             await pilot.pause()
-            lv = app.screen.query_one("ListView")
-            assert lv.index == 0
+            options = app.screen.query_one(OptionList)
+            assert options.highlighted == 0
             await pilot.press("down")
             await pilot.pause()
-            assert lv.index == 1
+            assert options.highlighted == 1
 
     async def test_cursor_up_k(self, app):
         async with app.run_test() as pilot:
             await pilot.pause()
-            lv = app.screen.query_one("ListView")
+            options = app.screen.query_one(OptionList)
             await pilot.press("k")
             await pilot.pause()
-            assert lv.index == 0
+            assert options.highlighted == 0
 
     async def test_cursor_up_arrow(self, app):
         async with app.run_test() as pilot:
             await pilot.pause()
-            lv = app.screen.query_one("ListView")
+            options = app.screen.query_one(OptionList)
             await pilot.press("down")
             await pilot.pause()
-            assert lv.index == 1
+            assert options.highlighted == 1
             await pilot.press("up")
             await pilot.pause()
-            assert lv.index == 0
+            assert options.highlighted == 0
 
     async def test_cursor_down_clamped_at_end(self, app):
         async with app.run_test() as pilot:
             await pilot.pause()
-            lv = app.screen.query_one("ListView")
+            options = app.screen.query_one(OptionList)
             for _ in range(10):
                 await pilot.press("j")
                 await pilot.pause()
-            assert lv.index == 2
+            assert options.highlighted == 2
 
 
 class TestSearch:
@@ -385,7 +390,9 @@ class TestRenderContent:
     @staticmethod
     def _thread(con):
         from llm_archive import db
-        return db.get_thread(con, "test:t1")
+        thread = db.get_thread(con, "test:t1")
+        assert thread is not None
+        return thread
 
     def test_brackets_in_content(self, con):
         """Rich markup chars like [array] must not crash rendering."""
@@ -527,7 +534,9 @@ class TestEmptyDB:
         async with app.run_test() as pilot:
             await pilot.pause()
             assert not app._exception
-            assert len(app.screen.all_threads) == 0
+            screen = app.screen
+            assert isinstance(screen, ListScreen)
+            assert len(screen.all_threads) == 0
 
 
 # ─── Asciicast recording (PTY → asciicast v2 JSON) ──────────────────
