@@ -1041,3 +1041,230 @@ class TestPipeline:
             e_fetch, _ = _timed(db.get_thread, mixed_db, t["thread_id"])
             total += e_fetch
         assert total < 1.0 * tol, f"10 threads {total:.3f}s"
+
+
+# ─── Append-only export verification ─────────────────────────────────────────
+@pytest.mark.perf
+class TestAppendOnlyExport:
+    def test_append_only_does_not_rewrite_full_content(self, tmp_path, perf_con, perf_report):
+        """Prove append-only writes only new messages, not full thread content."""
+        from llm_archive import export, db
+        from llm_archive.schema import IngestedThread, IngestedMessage, IngestedPart
+
+        config = SimpleNamespace(
+            export=SimpleNamespace(dir=str(tmp_path / "exports"), auto=True)
+        )
+        
+        # Initial thread with 3 messages
+        initial = IngestedThread(
+            id="append:perf",
+            source_id="perf",
+            title="Append performance test",
+            created_at=1700000000000,
+            updated_at=1700000100000,
+            messages=[
+                IngestedMessage(
+                    id=i,
+                    thread_id="append:perf",
+                    role="user" if i % 2 == 0 else "assistant",
+                    created_at=1700000000000 + i * 1000,
+                    content=f"message {i}",
+                    parts=[IngestedPart(kind="text", text=f"chunk {i}")],
+                )
+                for i in range(3)
+            ],
+        )
+        db.save_thread(perf_con, initial)
+        
+        # Initial export
+        t0 = time.perf_counter()
+        path1 = export.write_thread(perf_con, "append:perf", "perf", config, force=True)
+        write_time_1 = time.perf_counter() - t0
+        content1 = path1.read_text()
+        size1 = path1.stat().st_size
+        msg_markers_1 = content1.count("<!-- msg:")
+
+        # Add 2 more messages
+        updated = IngestedThread(
+            id="append:perf",
+            source_id="perf",
+            title="Append performance test",
+            created_at=1700000000000,
+            updated_at=1700000200000,
+            messages=[
+                IngestedMessage(
+                    id=i,
+                    thread_id="append:perf",
+                    role="user" if i % 2 == 0 else "assistant",
+                    created_at=1700000000000 + i * 1000,
+                    content=f"message {i}",
+                    parts=[IngestedPart(kind="text", text=f"chunk {i}")],
+                )
+                for i in range(5)
+            ],
+        )
+        db.save_thread(perf_con, updated)
+
+        # Append-only export should be much faster than full rewrite
+        t0 = time.perf_counter()
+        path2 = export.write_thread(perf_con, "append:perf", "perf", config, force=True)
+        write_time_2 = time.perf_counter() - t0
+        content2 = path2.read_text()
+        size2 = path2.stat().st_size
+        msg_markers_2 = content2.count("<!-- msg:")
+
+        perf_report.metric("append_only.write_first", write_time_1, bytes=size1, messages=msg_markers_1)
+        perf_report.metric("append_only.write_append", write_time_2, bytes=size2, messages=msg_markers_2)
+        perf_report.metric("append_only.size_growth", size2 - size1, delta_messages=msg_markers_2 - msg_markers_1)
+
+        assert path1 == path2, "same path returned"
+        assert content2.startswith(content1), "content starts with original"
+        assert msg_markers_1 == 3, "first export has 3 messages"
+        assert msg_markers_2 == 5, "second export has 5 messages"
+        assert size2 > size1, "file grew with new messages"
+        assert write_time_2 < write_time_1 * 0.8, f"append {write_time_2:.4f}s should be faster than rewrite {write_time_1:.4f}s"
+
+    def test_viewer_stub_only_creates_minimal_content(self, xl_db, tmp_path, monkeypatch, perf_report):
+        """Prove stub creation writes minimal content, not full thread export."""
+        from llm_archive import export
+        from llm_archive.tui import _open_thread_pager
+
+        config = SimpleNamespace(
+            export=SimpleNamespace(dir=str(tmp_path / "exports"), auto=True)
+        )
+        data = db.get_thread(xl_db, "perf:xl")
+        assert data is not None
+
+        md_path = export.thread_md_path("perf", "perf:xl", config)
+        assert not md_path.exists(), "file should not exist yet"
+
+        stub_writes = []
+        original_write = Path.write_text
+        original_open = Path.open
+
+        def track_write(self, *args, **kwargs):
+            stub_writes.append(self)
+            return original_write(self, *args, **kwargs)
+
+        def track_open(self, mode="r", *args, **kwargs):
+            if "a" in mode:
+                stub_writes.append((self, mode))
+            return original_open(self, mode=mode, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "write_text", track_write)
+        monkeypatch.setattr(Path, "open", track_open)
+
+        class _Suspend:
+            def __enter__(self):
+                return None
+            def __exit__(self, *_args):
+                return False
+
+        class _App:
+            console = SimpleNamespace(size=SimpleNamespace(width=100))
+            def suspend(self):
+                return _Suspend()
+
+        monkeypatch.setattr("llm_archive.glow.is_available", lambda: True)
+        monkeypatch.setattr("llm_archive.glow.is_too_large", lambda _path: False)
+        monkeypatch.setattr("llm_archive.glow.view", lambda _p, **kw: 0)
+
+        _open_thread_pager(cast(Any, _App()), data, xl_db)
+
+        assert md_path.exists(), "stub file was created"
+        stub_content = md_path.read_text()
+        stub_size = md_path.stat().st_size
+
+        # Stub should be minimal: header + opening screen marker
+        assert "<!-- msg:" not in stub_content, "stub should not have message markers yet"
+        assert "<!-- thread:" in stub_content, "stub should have thread header"
+        assert stub_size < 4096, f"stub should be small, got {stub_size} bytes"
+
+        perf_report.metric("viewer.stub_size", stub_size)
+        perf_report.insight(f"stub creation writes {stub_size} bytes without full export")
+
+        # Now do full export - should append messages
+        full_path = export.write_thread(xl_db, "perf:xl", "perf", config, force=True)
+        full_content = full_path.read_text()
+        full_size = full_path.stat().st_size
+
+        perf_report.metric("viewer.full_size", full_size)
+        perf_report.metric("viewer.size_ratio", full_size / stub_size)
+        perf_report.insight(f"full export is {full_size / stub_size:.1f}x larger than stub")
+
+        assert full_path == md_path, "same path"
+        assert full_content.startswith(stub_content), "full content starts with stub"
+        assert full_size > stub_size, "full export larger than stub"
+        assert "<!-- msg:" in full_content, "full export has messages"
+
+    def test_concurrent_exports_with_file_lock(self, tmp_path, perf_con, perf_report):
+        """Prove file lock prevents concurrent export conflicts."""
+        from llm_archive import export, db
+        from llm_archive.schema import IngestedThread, IngestedMessage, IngestedPart
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        config = SimpleNamespace(
+            export=SimpleNamespace(dir=str(tmp_path / "exports"), auto=True)
+        )
+
+        thread_id = "concurrent:lock"
+        base_thread = IngestedThread(
+            id=thread_id,
+            source_id="perf",
+            title="Concurrent lock test",
+            created_at=1700000000000,
+            updated_at=1700000100000,
+            messages=[
+                IngestedMessage(
+                    id=i,
+                    thread_id=thread_id,
+                    role="user",
+                    created_at=1700000000000 + i * 1000,
+                    content=f"base message {i}",
+                    parts=[IngestedPart(kind="text", text=f"base chunk {i}")],
+                )
+                for i in range(10)
+            ],
+        )
+        db.save_thread(perf_con, base_thread)
+
+        db_path = tmp_path / "perf.db"
+
+        def export_worker(worker_id):
+            con = db.connect(db_path)
+            try:
+                return export.write_thread(con, thread_id, "perf", config, force=True)
+            finally:
+                con.close()
+
+        # Run concurrent exports
+        t0 = time.perf_counter()
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            futures = [executor.submit(export_worker, i) for i in range(10)]
+            results = [f.result() for f in as_completed(futures)]
+        elapsed = time.perf_counter() - t0
+
+        perf_report.metric("lock.concurrent_exports_time", elapsed, workers=10)
+
+        # All should succeed and return same path
+        assert len(results) == 10, "all exports completed"
+        assert all(r == results[0] for r in results), "all returned same path"
+
+        md_path = results[0]
+        assert md_path.exists(), "file exists"
+        content = md_path.read_text()
+
+        # Verify no corruption: exactly 10 message markers
+        msg_count = content.count("<!-- msg:")
+        perf_report.metric("lock.final_message_count", msg_count)
+
+        assert msg_count == 10, f"expected 10 messages, got {msg_count}"
+        assert "<!-- thread:" in content, "has thread header"
+        assert "base chunk 0" in content, "has first message"
+
+        # Verify file is not corrupted (valid markdown structure)
+        lines_content = content.split("\n")
+        assert lines_content[0].startswith("<!-- thread:"), "starts with thread header"
+        assert any(line.startswith("# ") for line in lines_content[:10]), "has title within first 10 lines"
+
+        perf_report.insight(f"concurrent exports completed in {elapsed:.4f}s with valid output")

@@ -398,13 +398,14 @@ def _open_thread_pager(
         title = t.get("title", "untitled")
         config = load_config()
 
+        md_path = export.thread_md_path(source_id, thread_id, config)
+        if not md_path.exists():
+            _ensure_thread_stub(md_path, thread_id, source_id, title)
+
         try:
-            md_path = export.thread_md_path(source_id, thread_id, config)
             rc = None
             with app.suspend():
                 _show_opening_screen(title, width)
-                if not md_path.exists():
-                    _ensure_thread_stub(md_path, thread_id, source_id, title)
                 if md_path.exists() and glow.is_too_large(md_path):
                     pager = shutil.which("less")
                     if pager:
