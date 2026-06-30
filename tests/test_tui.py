@@ -649,40 +649,39 @@ def _plain(data: str) -> str:
 
 
 def _fake_glow(bin_dir: Path) -> Path:
-    glow = bin_dir / "glow"
-    glow.write_text(
-        "\n".join(
-            [
-                "#!/usr/bin/env bash",
-                "set -euo pipefail",
-                "path=\"${@: -1}\"",
-                "printf '\\033[45mFAKE_GLOW_READY\\033[0m\\n'",
-                "cat \"$path\"",
-                # Behave like a real pager: put the controlling tty in cbreak
-                # mode so single keystrokes arrive (Textual leaves it canonical
-                # during suspend; a bare 'q' is otherwise buffered until EOL).
-                "python3 -c '",
-                "import select,time,termios,tty as T",
-                "f=open(\"/dev/tty\",\"rb\")",
-                "fd=f.fileno()",
-                "old=termios.tcgetattr(fd)",
-                "try:",
-                " T.setcbreak(fd)",
-                " d=time.monotonic()+0.8",
-                " while time.monotonic()<d:",
-                "  r,_,_=select.select([f],[],[],0.05)",
-                "  if r and f.read(1).decode(\"utf-8\",\"replace\") in {\"q\",\"\\x1b\"}: break",
-                "finally:",
-                " termios.tcsetattr(fd,termios.TCSADRAIN,old)",
-                "'",
-            ]
+    # Create fake for both backends so preferred() finds one regardless
+    # of whether the real mdcat/glow is installed on the host.
+    for name in ("mdcat", "glow"):
+        f = bin_dir / name
+        f.write_text(
+            "\n".join(
+                [
+                    "#!/usr/bin/env bash",
+                    "set -euo pipefail",
+                    "path=\"${@: -1}\"",
+                    "printf '\033[45mFAKE_GLOW_READY\033[0m\n'",
+                    "cat \"$path\"",
+                    # Behave like a real pager: cbreak mode for single keystrokes
+                    "python3 -c '",
+                    "import select,time,termios,tty as T",
+                    "f=open(\"/dev/tty\",\"rb\")",
+                    "fd=f.fileno()",
+                    "old=termios.tcgetattr(fd)",
+                    "try:",
+                    " T.setcbreak(fd)",
+                    " d=time.monotonic()+0.8",
+                    " while time.monotonic()<d:",
+                    "  r,_,_=select.select([f],[],[],0.05)",
+                    "  if r and f.read(1).decode(\"utf-8\",\"replace\") in {\"q\",\"\\x1b\"}: break",
+                    "finally:",
+                    " termios.tcsetattr(fd,termios.TCSADRAIN,old)",
+                    "'",
+                ]
+            )
+            + "\n"
         )
-        + "\n"
-    )
-    glow.chmod(0o755)
-    return glow
-
-
+        f.chmod(0o755)
+    return bin_dir / "glow"
 def test_l_opens_glow_without_content_flash(seeded_db, tmp_path):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
