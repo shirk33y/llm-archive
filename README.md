@@ -1,3 +1,5 @@
+<!-- project-index-summary: Local archive for AI chats. Syncs web and file-based providers into SQLite, then searches them from CLI, TUI, or MCP. -->
+
 # llm-archive
 
 Local archive for AI chats. Syncs web and file-based providers into SQLite, then searches them from CLI, TUI, or MCP.
